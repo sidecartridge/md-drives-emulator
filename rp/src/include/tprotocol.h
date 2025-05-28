@@ -35,9 +35,11 @@
  * @param payload The payload from which to generate the token.
  * @return The generated random token.
  */
-#define TPROTO_GET_RANDOM_TOKEN(payload)             \
-  (((*((uint32_t *)(payload)) & 0xFFFF0000) >> 16) | \
-   ((*((uint32_t *)(payload)) & 0x0000FFFF) << 16))
+#define TPROTO_GET_RANDOM_TOKEN(payload)                           \
+  ({                                                               \
+    volatile uint32_t *__ptr = (volatile uint32_t *)(payload);     \
+    ((*__ptr & 0xFFFF0000) >> 16) | ((*__ptr & 0x0000FFFF) << 16); \
+  })
 
 /**
  * @brief Macro to set a random token to a memory address.
@@ -47,8 +49,18 @@
  * @param mem_address The memory address to set the token to.
  * @param token The token value to set.
  */
+// #define TPROTO_SET_RANDOM_TOKEN(mem_address, token) \
+//   *((volatile uint32_t *)(mem_address)) = token;
+
 #define TPROTO_SET_RANDOM_TOKEN(mem_address, token) \
-  *((volatile uint32_t *)(mem_address)) = token;
+  do {                                              \
+    *((volatile uint32_t *)(mem_address)) = token;  \
+  } while (0)
+
+#define TPROTO_SET_RANDOM_TOKEN64(mem_address, token64) \
+  do {                                                  \
+    *((volatile uint64_t *)(mem_address)) = token64;    \
+  } while (0)
 
 #define TPROTO_NEXT32_PAYLOAD_PTR(payload) (payload += 2)
 
@@ -108,8 +120,8 @@ static TransmissionProtocol transmission = {0};
 // Inline assembly example for storing a 16-bit payload value (ARM).
 // Adjust or remove if not on ARM or if alignment concerns exist.
 // --------------------------------------
-static inline __attribute__((always_inline)) void store_payload_16_asm(
-    uint16_t value, uint8_t *dest) {
+static inline __attribute__((always_inline)) void __not_in_flash_func(
+    store_payload_16_asm)(uint16_t value, uint8_t *dest) {
 #if defined(__arm__) || defined(__ARM_ARCH)
   asm volatile("strh %0, [%1]" : : "r"(value), "r"(dest) : "memory");
 #else
@@ -186,9 +198,11 @@ static inline __attribute__((always_inline)) void __not_in_flash_func(
     process_command)(ProtocolCallback callback) {
 #if defined(_DEBUG) && (_DEBUG != 0) && defined(SHOW_COMMANDS) && \
     (SHOW_COMMANDS != 0)
-  DPRINTF("COMMAND: %d / PAYLOAD SIZE: %d / CHECKSUM: 0x%04X\n",
-          transmission.command_id, transmission.payload_size,
-          transmission.final_checksum);
+  DPRINTF(
+      "COMMAND: %d / PAYLOAD SIZE: %d / CHECKSUM: 0x%04X / RTOKEN: 0x%04X\n",
+      transmission.command_id, transmission.payload_size,
+      transmission.final_checksum,
+      TPROTO_GET_RANDOM_TOKEN(transmission.payload));
 #endif
 
   if (callback) {
@@ -257,6 +271,9 @@ static inline void __not_in_flash_func(tprotocol_parse)(
         // Checksum mismatch. Notify the caller
         protocolChecksumErrorCallback(&transmission);
       }
+    default:
+      // Invalid state, reset to header detection
+      nextTPstep = HEADER_DETECTION;
       break;
   }
 };
