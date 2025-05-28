@@ -27,11 +27,23 @@ static const Command *commands;
 // Number of commands in the table
 static size_t numCommands = 0;
 
+// Command level
+static uint8_t commandLevel = TERM_COMMAND_LEVEL_SINGLE_KEY;
+
+// last single key command
+static char lastSingleKeyCommand = 0;
+
+uint8_t term_getCommandLevel(void) { return commandLevel; }
+
+void term_setCommandLevel(uint8_t level) { commandLevel = level; }
+
 // Setter for commands and numCommands
 void term_setCommands(const Command *cmds, size_t count) {
   commands = cmds;
   numCommands = count;
 }
+
+void term_setLastSingleKeyCommand(char key) { lastSingleKeyCommand = key; }
 
 /**
  * @brief Callback that handles the protocol command received.
@@ -181,17 +193,6 @@ static void termRenderChar(char chr) {
   prevCursorY = cursorY;
 }
 
-// Prints entire screen to stdout
-static void termPrintScreen(void) {
-  for (int posY = 0; posY < TERM_SCREEN_SIZE_Y; posY++) {
-    for (int posX = 0; posX < TERM_SCREEN_SIZE_X; posX++) {
-      char chr = screen[posY * TERM_SCREEN_SIZE_X + posX];
-      putchar(chr ? chr : ' ');
-    }
-    putchar('\n');
-  }
-}
-
 /**
  * @brief Processes a complete VT52 escape sequence.
  *
@@ -276,6 +277,16 @@ static void vt52ProcessSequence(const char *seq, size_t length) {
         termRenderChar('\0');
       }
       break;
+    case 'p':  // Enable reverse video (inverted text)
+    {
+      u8g2_DrawBox(display_getU8g2Ref(), 0, cursorY * DISPLAY_TERM_CHAR_HEIGHT,
+                   DISPLAY_WIDTH, DISPLAY_TERM_CHAR_HEIGHT);
+      u8g2_SetDrawColor(display_getU8g2Ref(), 0);
+    } break;
+    case 'q':  // Disable reverse video (normal text)
+    {
+      u8g2_SetDrawColor(display_getU8g2Ref(), 1);
+    } break;
     default:
       // Unrecognized sequence. Optionally, print or ignore.
       // For now, we'll ignore it.
@@ -338,7 +349,7 @@ void term_printString(const char *str) {
 
 // Called whenever a character is entered by the user
 // This is the single point of entry for user input
-static void termInputChar(char chr) {
+static void termInputChar(char chr, bool shiftKey) {
   // Check for backspace
   if (chr == '\b') {
     display_termChar(prevCursorX, prevCursorY, ' ');
@@ -371,44 +382,102 @@ static void termInputChar(char chr) {
     return;
   }
 
-  // If it's newline or carriage return, finalize the line
-  if (chr == '\n' || chr == '\r') {
-    // Render newline on screen
-    termRenderChar('\n');
-
-    // Process input_buffer
-    // Split the input into command and argument
-    char command[TERM_INPUT_BUFFER_SIZE] = {0};
-    char arg[TERM_INPUT_BUFFER_SIZE] = {0};
-    sscanf(inputBuffer, "%63s %63[^\n]", command,
-           arg);  // Split at the first space
-
-    bool commandFound = false;
-    for (size_t i = 0; i < numCommands; i++) {
-      if (strcmp(command, commands[i].command) == 0) {
-        commands[i].handler(arg);  // Pass the argument to the handler
-        commandFound = true;
+  switch (commandLevel) {
+    case TERM_COMMAND_LEVEL_SINGLE_KEY: {
+      DPRINTF("Single key command: %c\n", chr);
+      // If the charactrer is a single key command:
+      // No shift key: lowercase the character
+      // Shift key: uppercase the character
+      if (shiftKey) {
+        chr = toupper(chr);
+      } else {
+        chr = tolower(chr);
       }
-    }
-    if ((!commandFound) && (strlen(command) > 0)) {
-      // The custom unknown command manager is called when the command is empty
-      // in the command table. This is useful to manage custom entries.
       for (size_t i = 0; i < numCommands; i++) {
-        if (strlen(commands[i].command) == 0) {
-          commands[i].handler(inputBuffer);  // Pass the argument to the handler
+        if (chr == commands[i].command[0]) {
+          lastSingleKeyCommand = chr;
+          commands[i].handler(NULL);  // Pass the argument to the handler
+          break;
         }
       }
+      // Reset input buffer
+      memset(inputBuffer, 0, TERM_INPUT_BUFFER_SIZE);
+      inputLength = 0;
+      display_termRefresh();
+      return;
     }
+    case TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY: {
+      DPRINTF("Single key command reentry: %c\n", lastSingleKeyCommand);
+      for (size_t i = 0; i < numCommands; i++) {
+        if (lastSingleKeyCommand == commands[i].command[0]) {
+          char paramString[2] = {chr, '\0'};
+          commands[i].handler(paramString);  // Pass the argument as string
+          break;
+        }
+      }
+      memset(inputBuffer, 0, TERM_INPUT_BUFFER_SIZE);
+      inputLength = 0;
+      display_termRefresh();
+      return;
+    }
+    case TERM_COMMAND_LEVEL_COMMAND_INPUT: {
+      if (chr == '\n' || chr == '\r') {
+        // Render newline on screen
+        termRenderChar('\n');
 
-    // Reset input buffer
-    memset(inputBuffer, 0, TERM_INPUT_BUFFER_SIZE);
-    inputLength = 0;
+        // Split the input into command and argument
+        char command[TERM_INPUT_BUFFER_SIZE] = {0};
+        char arg[TERM_INPUT_BUFFER_SIZE] = {0};
+        sscanf(inputBuffer, "%63s %63[^\n]", command,
+               arg);  // Split at the first space
+        bool commandFound = false;
+        for (size_t i = 0; i < numCommands; i++) {
+          if (strcmp(command, commands[i].command) == 0) {
+            commands[i].handler(arg);  // Pass the argument to the handler
+            commandFound = true;
+          }
+        }
+        if ((!commandFound) && (strlen(command) > 0)) {
+          // The custom unknown command manager is called when the command is
+          // empty in the command table. This is useful to manage custom
+          // entries.
+          for (size_t i = 0; i < numCommands; i++) {
+            if (strlen(commands[i].command) == 0) {
+              commands[i].handler(
+                  inputBuffer);  // Pass the argument to the handler
+            }
+          }
+        }
 
-    term_printString("> ");
-    display_termRefresh();
-    return;
+        // Reset input buffer
+        memset(inputBuffer, 0, TERM_INPUT_BUFFER_SIZE);
+        inputLength = 0;
+
+        term_printString("> ");
+        display_termRefresh();
+        return;
+      }
+      break;
+    }
+    case TERM_COMMAND_LEVEL_DATA_INPUT: {
+      if (chr == '\n' || chr == '\r') {
+        // Render newline on screen
+        termRenderChar('\n');
+        for (size_t i = 0; i < numCommands; i++) {
+          if (lastSingleKeyCommand == commands[i].command[0]) {
+            commands[i].handler(
+                inputBuffer);  // Pass the argument to the handler
+            break;
+          }
+        }
+        return;
+      }
+      break;
+    }
+    default:
+      DPRINTF("Unknown command level: %d\n", commandLevel);
+      break;
   }
-
   // If it's a normal character
   // Add it to input_buffer if there's space
   if (inputLength < TERM_INPUT_BUFFER_SIZE - 1) {
@@ -424,12 +493,28 @@ static void termInputChar(char chr) {
   }
 }
 
+void term_forceInputChar(char chr, bool shiftKey) {
+  // Simulate the input of a character
+  termInputChar(chr, shiftKey);
+}
+
 // For convenience, we can also have a helper function that "types" a string
 // as if typed by user
 static void termTypeString(const char *str) {
   while (*str) {
-    termInputChar(*str);
+    termInputChar(*str, false);  // No shift key
     str++;
+  }
+}
+
+// Prints entire screen to stdout
+void term_printScreen(void) {
+  for (int posY = 0; posY < TERM_SCREEN_SIZE_Y; posY++) {
+    for (int posX = 0; posX < TERM_SCREEN_SIZE_X; posX++) {
+      char chr = screen[posY * TERM_SCREEN_SIZE_X + posX];
+      putchar(chr ? chr : ' ');
+    }
+    putchar('\n');
   }
 }
 
@@ -532,9 +617,10 @@ void __not_in_flash_func(term_loop)() {
     switch (lastProtocol.command_id) {
       case APP_TERMINAL_START: {
         display_termStart(DISPLAY_TILES_WIDTH, DISPLAY_TILES_HEIGHT);
+        commandLevel = TERM_COMMAND_LEVEL_SINGLE_KEY;
+        term_clearInputBuffer();
         term_clearScreen();
-        term_printString("Type 'help' for available commands.\n");
-        termInputChar('\n');
+        termInputChar('m', false);  // Force menu
         SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_TERM);
         DPRINTF("Send command to display: DISPLAY_COMMAND_TERM\n");
       } break;
@@ -552,6 +638,23 @@ void __not_in_flash_func(term_loop)() {
         // Get the keyboard scan code from the bits 16 to 23 of the payload
         uint8_t scanCode =
             (payload32 & TERM_KEYBOARD_SCAN_MASK) >> TERM_KEYBOARD_SCAN_SHIFT;
+        switch (scanCode) {
+          case TERM_KEYBOARD_SCAN_CODE_UP:
+            keystroke = TERM_KEYBOARD_KEY_UP;
+            break;
+          case TERM_KEYBOARD_SCAN_CODE_DOWN:
+            keystroke = TERM_KEYBOARD_KEY_DOWN;
+            break;
+          case TERM_KEYBOARD_SCAN_CODE_LEFT:
+            keystroke = TERM_KEYBOARD_KEY_LEFT;
+            break;
+          case TERM_KEYBOARD_SCAN_CODE_RIGHT:
+            keystroke = TERM_KEYBOARD_KEY_RIGHT;
+            break;
+          default:
+            // Unknown scan code, ignore it
+            break;
+        }
         if (keystroke >= TERM_KEYBOARD_KEY_START &&
             keystroke <= TERM_KEYBOARD_KEY_END) {
           // Print the keystroke and the shift key status
@@ -562,7 +665,7 @@ void __not_in_flash_func(term_loop)() {
           DPRINTF("Keystroke: %d. Shift key: %d, Scan code: %d\n", keystroke,
                   shiftKey, scanCode);
         }
-        termInputChar(keystroke);
+        termInputChar(keystroke, shiftKey > 0);
         break;
       }
       default:

@@ -92,6 +92,16 @@
 
 #define TERM_PARAMETERS_MAX_SIZE 20  // Maximum size of the parameters
 
+#define TERM_KEYBOARD_SCAN_CODE_UP 72
+#define TERM_KEYBOARD_SCAN_CODE_DOWN 80
+#define TERM_KEYBOARD_SCAN_CODE_LEFT 75
+#define TERM_KEYBOARD_SCAN_CODE_RIGHT 77
+
+#define TERM_KEYBOARD_KEY_UP 16
+#define TERM_KEYBOARD_KEY_DOWN 14
+#define TERM_KEYBOARD_KEY_LEFT 2
+#define TERM_KEYBOARD_KEY_RIGHT 6
+
 // Display command to enter the terminal mode and ignore other keys
 #define DISPLAY_COMMAND_TERM 0x3  // Enter terminal mode
 
@@ -107,6 +117,15 @@ typedef struct {
   const char *command;
   void (*handler)(const char *arg);
 } Command;
+
+typedef enum {
+  TERM_COMMAND_LEVEL_SINGLE_KEY = 0,                  // single key command
+  TERM_COMMAND_LEVEL_COMMAND_INPUT = 1,               // command input
+  TERM_COMMAND_LEVEL_DATA_INPUT = 2,                  // data input
+  TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY = 3,  // command
+                                                      // single key reentry
+
+} term_CommandLevel;
 
 void __not_in_flash_func(term_dma_irq_handler_lookup)(void);
 
@@ -141,6 +160,26 @@ void term_clearScreen(void);
  * commands.
  */
 void term_setCommands(const Command *cmds, size_t count);
+
+/**
+ * @brief Retrieves the current command level.
+ *
+ * This function returns the current command level.
+ *
+ * @return The current command level as an 8-bit unsigned integer.
+ */
+uint8_t term_getCommandLevel(void);
+
+/**
+ * @brief Sets the command level.
+ *
+ * This function updates the command level by setting the global variable used
+ * to determine the current command execution level.
+ *
+ * @param level The new command level to be set.
+ */
+void term_setCommandLevel(uint8_t level);
+
 /**
  * @brief Clears the terminal's input buffer.
  *
@@ -158,6 +197,39 @@ void term_clearInputBuffer(void);
  * @return char* A pointer to the terminal's input buffer.
  */
 char *term_getInputBuffer(void);
+
+/**
+ * @brief Forces the input of a character as if typed by the user.
+ *
+ * This function simulates the insertion of a character into the terminal. It supports optional
+ * modification of the input by treating the character as shifted when the shift key parameter is true.
+ *
+ * @param chr The character to be input.
+ * @param shiftKey A boolean flag indicating if the character should be processed with a shift modifier.
+ */
+void term_forceInputChar(char chr, bool shiftKey);
+
+/**
+ * @brief Prints the current screen content.
+ *
+ * This function is responsible for outputting the contents of the screen buffer
+ * to the stdout.
+ *
+ * @note Ensure that the screen buffer is properly initialized before calling
+ * this function.
+ */
+void term_printScreen(void);
+
+/**
+ * @brief Updates the last single key command.
+ *
+ * This function records the most recent single key command. It is used to track
+ * the user's input when executing terminal-based commands.
+ *
+ * @param key The single key command to be recorded.
+ */
+void term_setLastSingleKeyCommand(char key);
+
 
 // Generic commands to be used in the terminal
 // Manage application setttings
