@@ -13,8 +13,8 @@ target_include_directories(httpc PUBLIC
 target_link_libraries(httpc PRIVATE
     pico_stdlib    # Core Pico SDK library
     pico_lwip_http
-    pico_lwip_mbedtls
-    pico_mbedtls
+#    pico_lwip_mbedtls
+#    pico_mbedtls
 )
 
 # Conditionally link the CYW43 architecture library if supported

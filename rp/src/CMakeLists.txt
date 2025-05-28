@@ -92,11 +92,13 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/romemul.pio)
 target_sources(${PROJECT_NAME} PRIVATE
         aconfig.c
         blink.c
+        chandler.c
         display.c
         display_term.c
-        download.c
         emul.c
+        floppy.c
         gconfig.c
+        gemdrive.c
         hw_config.c
         network.c
         reset.c
@@ -104,6 +106,9 @@ target_sources(${PROJECT_NAME} PRIVATE
         sdcard.c
         select.c
         term.c
+        usb_descriptors.c
+        usb_mass.c
+        tusb_config.h
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files
@@ -114,10 +119,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${LINK_LIBRARIES}        # External or additional libraries passed as variables
     hardware_flash           # Flash memory access
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library   
+    pico_rand                # hardware-backed RNG
     pico_stdlib              # Core functionality
-    pico_multicore          # Multicore support
+    pico_multicore           # Multicore support
     httpc                    # HTTP client
     settings                 # Custom settings library
+    tinyusb_device           # USB mount
     u8g2                     # for display
 )
 
@@ -131,9 +138,9 @@ else()
     message(WARNING "CYW43 architecture not supported")
 endif()
 
-# Link custom memmap with reserved memory for ROMs
-set_target_properties(${PROJECT_NAME} PROPERTIES
-        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld
+# 🔑  Make sure our config directory is FIRST on the search list
+target_include_directories(${PROJECT_NAME} BEFORE PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/ff
 )
 
 # Needed to include lwipopts.h properly
@@ -182,7 +189,7 @@ if(NOT RELEASE_DATE)
 endif()
 
 if (NOT _DEBUG)
-        set(_DEBUG 1)
+        set(_DEBUG 0)
 endif()
 
 # Debug outputs
@@ -228,11 +235,22 @@ add_definitions(-DPICO_FLASH_ASSUME_CORE0_SAFE=1)
 # Select HTTPS or HTTP downloads of the firmware
 add_definitions(-DAPP_DOWNLOAD_HTTPS=0)
 
-# Remove unused data
-target_link_options(${PROJECT_NAME} PRIVATE
-   "-Wl,--gc-sections"
-   "-Wl,--strip-all"
+# Remove unused data in release modes
+if(${_DEBUG} STREQUAL "0")
+    target_link_options(${PROJECT_NAME} PRIVATE
+    "-Wl,--gc-sections"
+    "-Wl,--strip-all"
+    )
+else()
+    target_link_options(${PROJECT_NAME} PRIVATE
+    "-Wl,--gc-sections")
+endif()
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PICO_PRINTF_NONE=1
+    PICO_SCANF_NONE=1
 )
+
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)
@@ -269,4 +287,21 @@ if(CLANG_FORMAT_BIN)
 
 else()
     message(WARNING "clang-format not found!")
+endif()
+
+# Define your binary type
+set(PICO_BINARY_TYPE default)  # Change to e.g. no_flash if needed
+
+# Set binary type using the variable
+pico_set_binary_type(${PROJECT_NAME} ${PICO_BINARY_TYPE})
+
+# Conditionally set linker script
+if(NOT "${PICO_BINARY_TYPE}" STREQUAL "copy_to_ram")
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld
+    )
+else()
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp_copy_to_ram.ld
+    )
 endif()
