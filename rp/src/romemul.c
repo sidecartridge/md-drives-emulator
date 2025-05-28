@@ -206,8 +206,12 @@ int init_romemul(IRQInterceptionCallback requestCallback,
   // Grant high bus priority to the DMA, so it can shove the processors out
   // of the way. This should only be needed if you are pushing things up to
   // >16bits/clk here, i.e. if you need to saturate the bus completely.
+  // bus_ctrl_hw->priority =
+  //     BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+
   bus_ctrl_hw->priority =
-      BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+      BUSCTRL_BUS_PRIORITY_PROC0_BITS |
+      BUSCTRL_BUS_PRIORITY_PROC1_BITS;  // CPU priority over DMA
 
   // Copy the content of the FLASH to RAM before initializing the emulator code
   // If not initialized, assume somebody else will copy "something" to RAM

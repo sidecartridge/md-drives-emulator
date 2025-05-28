@@ -48,7 +48,7 @@ int main() {
 #if defined(_DEBUG) && (_DEBUG != 0)
   // Initialize chosen serial port
   stdio_init_all();
-  setvbuf(stdout, NULL, _IONBF,
+  setvbuf(stdout, NULL, _IOLBF,
           1);  // specify that the stream should be unbuffered
 
   // Only startup information to display
