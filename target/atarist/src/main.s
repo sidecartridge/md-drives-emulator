@@ -30,7 +30,14 @@ COLS_HIGH			equ 20		; 16 bit columns in the ST
 ROWS_HIGH			equ 200		; 200 rows in the ST
 BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
 PRE_RESET_WAIT		equ $FFFFF
-TRANSTABLE			equ $FA1000	; Translation table for high resolution
+TRANSTABLE			equ $FA0800	; Translation table for high resolution
+GEMDRIVE			equ $FA1000 ; GEMDRIVE address
+FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
+
+; If 1, the display will not use the framebuffer and will write directly to the
+; display memory. This is useful to reduce the memory usage in the rp2040
+; When not using the framebuffer, the endianess swap must be done in the atari ST
+DISPLAY_BYPASS_FRAMEBUFFER 	equ 1
 
 CMD_NOP				equ 0		; No operation command
 CMD_RESET			equ 1		; Reset command
@@ -43,13 +50,15 @@ _conterm			equ $484	; Conterm device number
 
 ; Constants needed for the commands
 RANDOM_TOKEN_ADDR:        equ (ROM4_ADDR + $F000) 	      ; Random token address at $FAF000
-RANDOM_TOKEN_SEED_ADDR:   equ (RANDOM_TOKEN_ADDR + 4) 	  ; RANDOM_TOKEN_ADDR + 4 bytes
-RANDOM_TOKEN_POST_WAIT:   equ $1        		      	  ; Wait this cycles after the random number generator is ready
+RANDOM_TOKEN_SEED_ADDR    equ (RANDOM_TOKEN_ADDR + 4) 	  ; RANDOM_TOKEN_ADDR + 4 bytes
+RANDOM_TOKEN_POST_WAIT    equ $1                          ; Wait this cycles after the random number generator is ready
+COMMAND_TIMEOUT           equ $0000FFF 				      ; Timeout for the command
 
 SHARED_VARIABLES:     	  equ (RANDOM_TOKEN_ADDR + (16 * 4)); random token + 16*4 bytes to the shared variables area
 
 ROMCMD_START_ADDR:        equ $FB0000					  ; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    	  equ ($ABCD) 					  ; Magic number header to identify a command
+CMD_RETRIES_COUNT	  	  equ 3						  ; Number of retries for the command
 CMD_SET_SHARED_VAR		  equ 1							  ; This is a fake command to set the shared variables
 														  ; Used to store the system settings
 ; App commands for the terminal
@@ -59,6 +68,7 @@ APP_TERMINAL 				equ $0 ; The terminal app
 APP_TERMINAL_START   		equ $0 ; Start terminal command
 APP_TERMINAL_KEYSTROKE 		equ $1 ; Keystroke command
 
+_dskbufp                equ $4c6                            ; Address of the disk buffer pointer    
 
 
 	include inc/sidecart_macros.s
@@ -167,10 +177,22 @@ pre_auto:
 ; Enable bconin to return shift key status
 	or.b #%1000, _conterm.w
 
+; Check if reset after power on or reset button
+	moveq.l #0, d1                       ; Set the payload size of the command
+	move.w #$400,d0                      ; Send the reset command to the cartridge CMD_RESET_GEM
+	bsr send_sync_command_to_sidecart    ; Send the command to the Multi-device
+	tst.w d0
+	beq.s .get_resolution		; If the command is supported, we jump to the GEMDRIVE emulation core
+	wait_sec
+	bra rom_function			
+
+
 ; Get the resolution of the screen
+.get_resolution:
 	get_rez
 	cmp.w #2, d0				; Check if the resolution is 640x400 (high resolution)
 	beq .print_loop_high		; If it is, print the message in high resolution
+
 
 .print_loop_low:
 	vsync_wait
@@ -181,6 +203,9 @@ pre_auto:
 	move.l #((FRAMEBUFFER_SIZE / 2) -1), d0			; Set the number of words to copy
 .copy_screen_low:
 	move.w (a1)+ , d1			; Copy a word from the cartridge ROM
+	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
+	rol.w #8, d1				; swap high and low bytes
+	endif
 	move.w d1, d2				; Copy the word to d2
 	swap d2						; Swap the bytes
 	move.w d1, d2				; Copy the word to d2
@@ -207,6 +232,11 @@ pre_auto:
 	move.l #(COLS_HIGH -1), d1	; Set the number of columns to copy - 1 
 .copy_screen_col_high:
 	move.w (a0)+ , d2			; Copy a word from the cartridge ROM
+
+	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
+	rol.w #8, d2				; swap high and low bytes
+	endif
+
 	move.w d2, d3				; Copy the word to d3
 	and.w #$FF00, d3			; Mask the high byte
 	lsr.w #7, d3				; Shift the high byte 7 bits to the right
@@ -267,7 +297,9 @@ boot_gem:
 
 rom_function:
 	; Place here your driver code
-	rts
+	jsr FLOPPYEMUL		; Call the floppy emulation code
+	jmp GEMDRIVE		; Jump to the GEMDRIVE code
+
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file
     include "inc/sidecart_functions.s"

@@ -6,9 +6,17 @@
 ; /1 : The command code
 ; /2 : The payload size (even number always)
 send_sync           macro
+                    move.w #CMD_RETRIES_COUNT, d7        ; Set the number of retries
+.\@send_sync_retry:
+                    movem.l d1-d7, -(sp)                 ; Save the registers
                     moveq.l #\2, d1                      ; Set the payload size of the command
                     move.w #\1,d0                        ; Command code
                     bsr send_sync_command_to_sidecart    ; Send the command to the Multi-device
+                    movem.l (sp)+, d1-d7                 ; Restore the registers
+                    tst.w d0                             ; Check the result of the command
+                    beq.s .\@send_sync_ok                  ; If the command was ok, exit
+                    dbf d7, .\@send_sync_retry           ; If the command failed, retry
+.\@send_sync_ok:
                     endm    
 
 ; Send a synchronous write command to the Multi-device passing arguments in the D3-D5 registers
@@ -16,10 +24,17 @@ send_sync           macro
 ; /1 : The command code
 ; /2 : The buffer size to send in bytes (will be rounded to the next word)
 send_write_sync     macro
+                    move.w #CMD_RETRIES_COUNT, d6        ; Set the number of retries
+.\@send_write_sync_retry:
+                    movem.l d1-d6/a4, -(sp)                 ; Save the registers
                     move.w #\1,d0                           ; Command code
-                    moveq.l #12, d1                         ; Set the payload size of the command (d3.l, d4.l and d5.l)
                     move.l #\2,d6                           ; Number of bytes to send
                     bsr send_sync_write_command_to_sidecart ; Send the command to the Multi-device
+                    movem.l (sp)+, d1-d6/a4                 ; Restore the registers
+                    tst.w d0                                ; Check the result of the command
+                    beq.s .\@send_write_sync_ok             ; If the command was ok, exit
+                    dbf d6, .\@send_write_sync_retry        ; If the command failed, retry
+.\@send_write_sync_ok:
                     endm    
 
 ; Wait for second (aprox 50 VBlanks)
