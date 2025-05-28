@@ -27,17 +27,17 @@
 #define MEM_SANITY_CHECK 1
 #define MEM_OVERFLOW_CHECK 1
 
-#define MEMP_NUM_PBUF 32
+#define MEMP_NUM_PBUF 4
 #define MEMP_NUM_TCP_PCB 10
 #define MEMP_NUM_TCP_SEG 32
 #define MEMP_NUM_ARP_QUEUE 10
-#define PBUF_POOL_SIZE 32
+#define PBUF_POOL_SIZE 4
 #define LWIP_ARP 1
 #define LWIP_ETHERNET 1
 #define LWIP_ICMP 1
 #define LWIP_RAW 0
 #define TCP_MSS 1460
-#define TCP_WND (12 * TCP_MSS)
+#define TCP_WND (4 * TCP_MSS)
 #define TCP_SND_BUF (8 * TCP_MSS)
 #define TCP_SND_QUEUELEN ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / (TCP_MSS))
 #define LWIP_NETIF_STATUS_CALLBACK 1
