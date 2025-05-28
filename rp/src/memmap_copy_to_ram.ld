@@ -23,20 +23,10 @@
 
 MEMORY
 {
-    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 1024k  /* The first 1024kb available */
-    ROM_TEMP(rw) : ORIGIN = 0x10100000, LENGTH = 128k /* Store the 128KB ROM loaded here */
-
-/* This is the default flash space for the app if you don't need room to store data */
-/*    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 1152k  The first 1152kb available */
-    RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 128k  /* Half RAM available */
-    ROM_IN_RAM (rwx) : ORIGIN = 0x20020000, LENGTH = 128K
+    INCLUDE "pico_flash_region.ld"
+    RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 256k
     SCRATCH_X(rwx) : ORIGIN = 0x20040000, LENGTH = 4k
     SCRATCH_Y(rwx) : ORIGIN = 0x20041000, LENGTH = 4k
-    BOOSTER_APP_FLASH(r) : ORIGIN = 0x10120000, LENGTH = 768K /* Size of the flash for the booster app */ 
-    CONFIG_FLASH(rwx): ORIGIN = 0x101E0000, LENGTH = 120K /* At the top 120Kb of the Flash we have the config information. 30 sectors */
-    GLOBAL_LOOKUP_FLASH(r): ORIGIN = 0x101FE000, LENGTH = 4K /* The lookup table with apps UUID and the sector number of their config */
-    GLOBAL_CONFIG_FLASH(r): ORIGIN = 0x101FF000, LENGTH = 4K /* At the top 4KB of the Flash we have the global lookup information */
-    /* The booster code must be allocated from 0x10120000 to 0x101DFFFF */
 }
 
 ENTRY(_entry_point)
@@ -68,38 +58,18 @@ SECTIONS
        launches only, to perform proper flash setup.
     */
 
-    .text : {
+    .flashtext : {
         __logical_binary_start = .;
         KEEP (*(.vectors))
         KEEP (*(.binary_info_header))
         __binary_info_header_end = .;
+        KEEP (*(.embedded_block))
+        __embedded_block_end = .;
         KEEP (*(.reset))
-        /* TODO revisit this now memset/memcpy/float in ROM */
-        /* bit of a hack right now to exclude all floating point and time critical (e.g. memset, memcpy) code from
-         * FLASH ... we will include any thing excluded here in .data below by default */
-        *(.init)
-        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .text*)
-        *(.fini)
-        /* Pull all c'tors into .text */
-        *crtbegin.o(.ctors)
-        *crtbegin?.o(.ctors)
-        *(EXCLUDE_FILE(*crtend?.o *crtend.o) .ctors)
-        *(SORT(.ctors.*))
-        *(.ctors)
-        /* Followed by destructors */
-        *crtbegin.o(.dtors)
-        *crtbegin?.o(.dtors)
-        *(EXCLUDE_FILE(*crtend?.o *crtend.o) .dtors)
-        *(SORT(.dtors.*))
-        *(.dtors)
-
-        *(.eh_frame*)
-        . = ALIGN(4);
-    } > FLASH
+    }
 
     .rodata : {
-        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .rodata*)
-        . = ALIGN(4);
+        /* segments not marked as .flashdata are instead pulled into .data (in RAM) to avoid accidental flash accesses */
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
         . = ALIGN(4);
     } > FLASH
@@ -132,14 +102,42 @@ SECTIONS
         *(.ram_vector_table)
     } > RAM
 
+    .uninitialized_data (NOLOAD): {
+        . = ALIGN(4);
+        *(.uninitialized_data*)
+    } > RAM
+
+    .text : {
+        __ram_text_start__ = .;
+        *(.init)
+        *(.text*)
+        *(.fini)
+        /* Pull all c'tors into .text */
+        *crtbegin.o(.ctors)
+        *crtbegin?.o(.ctors)
+        *(EXCLUDE_FILE(*crtend?.o *crtend.o) .ctors)
+        *(SORT(.ctors.*))
+        *(.ctors)
+        /* Followed by destructors */
+        *crtbegin.o(.dtors)
+        *crtbegin?.o(.dtors)
+        *(EXCLUDE_FILE(*crtend?.o *crtend.o) .dtors)
+        *(SORT(.dtors.*))
+        *(.dtors)
+
+        *(.eh_frame*)
+        . = ALIGN(4);
+        __ram_text_end__ = .;
+    } > RAM AT> FLASH
+    __ram_text_source__ = LOADADDR(.text);
+    . = ALIGN(4);
+
     .data : {
         __data_start__ = .;
         *(vtable)
 
         *(.time_critical*)
 
-        /* remaining .text and .rodata; i.e. stuff we exclude above because we want it in RAM */
-        *(.text*)
         . = ALIGN(4);
         *(.rodata*)
         . = ALIGN(4);
@@ -178,16 +176,48 @@ SECTIONS
 
         *(.jcr)
         . = ALIGN(4);
-        /* All data end */
-        __data_end__ = .;
     } > RAM AT> FLASH
+
+    .tdata : {
+        . = ALIGN(4);
+		*(.tdata .tdata.* .gnu.linkonce.td.*)
+        /* All data end */
+        __tdata_end = .;
+    } > RAM AT> FLASH
+    PROVIDE(__data_end__ = .);
+
     /* __etext is (for backwards compatibility) the name of the .data init source pointer (...) */
     __etext = LOADADDR(.data);
 
-    .uninitialized_data (NOLOAD): {
+    .tbss (NOLOAD) : {
         . = ALIGN(4);
-        *(.uninitialized_data*)
+        __bss_start__ = .;
+        __tls_base = .;
+        *(.tbss .tbss.* .gnu.linkonce.tb.*)
+        *(.tcommon)
+
+        __tls_end = .;
     } > RAM
+
+    .bss  : {
+        . = ALIGN(4);
+        __tbss_end = .;
+
+        *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.bss*)))
+        *(COMMON)
+        . = ALIGN(4);
+        __bss_end__ = .;
+    } > RAM
+
+    .heap (NOLOAD):
+    {
+        __end__ = .;
+        end = __end__;
+        KEEP(*(.heap*))
+    } > RAM
+    /* historically on GCC sbrk was growing past __HeapLimit to __StackLimit, however
+       to be more compatible, we now set __HeapLimit explicitly to where the end of the heap is */
+    __HeapLimit = ORIGIN(RAM) + LENGTH(RAM);
 
     /* Start and end symbols must be word-aligned */
     .scratch_x : {
@@ -205,32 +235,6 @@ SECTIONS
         __scratch_y_end__ = .;
     } > SCRATCH_Y AT > FLASH
     __scratch_y_source__ = LOADADDR(.scratch_y);
-
-    /* RAM used for ROM_IN_RAM */
-    .rom_in_ram : {
-        __rom_in_ram_start__ = .;
-        *(.rom_in_ram.*)
-        . = ALIGN(4);
-        __rom_in_ram_end__ = .;
-    } > ROM_IN_RAM AT > FLASH
-    __rom_in_ram_source__ = LOADADDR(.rom_in_ram);
-
-    .bss  : {
-        . = ALIGN(4);
-        __bss_start__ = .;
-        *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.bss*)))
-        *(COMMON)
-        . = ALIGN(4);
-        __bss_end__ = .;
-    } > RAM
-
-    .heap (NOLOAD):
-    {
-        __end__ = .;
-        end = __end__;
-        KEEP(*(.heap*))
-        __HeapLimit = .;
-    } > RAM
 
     /* .stack*_dummy section doesn't contains any symbols. It is only
      * used for linker to calculate size of stack sections, and assign
@@ -251,58 +255,28 @@ SECTIONS
     } > SCRATCH_Y
 
     .flash_end : {
+        KEEP(*(.embedded_end_block*))
         PROVIDE(__flash_binary_end = .);
     } > FLASH
 
-   .rom_temp :
-    {
-        _rom_temp_start = .;
-        KEEP(*(.rom_temp))
-        _rom_temp_end = .;
-    } > ROM_TEMP
-
-   .booster_app_flash :
-    {
-        _booster_app_flash_start = .;
-        KEEP(*(.booster_app_flash))
-        _booster_app_flash_end = .;
-    } > BOOSTER_APP_FLASH
-
-
-   .config_flash :
-    {
-        _config_flash_start = .;
-        KEEP(*(.config_flash))
-        _config_flash_end = .;
-    } > CONFIG_FLASH
-
-   .global_lookup_flash :
-    {
-        _global_lookup_flash_start = .;
-        KEEP(*(.global_lookup_flash))
-        _global_lookup_flash_end = .;
-    } > GLOBAL_LOOKUP_FLASH
-
-
-    .global_config_flash :
-    {
-        _global_config_flash_start = .;
-        KEEP(*(.global_config_flash))
-        _global_config_flash_end = .;
-    } > GLOBAL_CONFIG_FLASH
-
-
-
-
-
-
     /* stack limit is poorly named, but historically is maximum heap ptr */
-    __StackLimit = ORIGIN(RAM) + LENGTH(RAM) + LENGTH(ROM_IN_RAM);
+    __StackLimit = ORIGIN(RAM) + LENGTH(RAM);
     __StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X);
     __StackTop = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     __StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy);
     __StackBottom = __StackTop - SIZEOF(.stack_dummy);
     PROVIDE(__stack = __StackTop);
+
+    /* picolibc and LLVM */
+    PROVIDE (__heap_start = __end__);
+    PROVIDE (__heap_end = __HeapLimit);
+    PROVIDE( __tls_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss)) );
+    PROVIDE( __tls_size_align = (__tls_size + __tls_align - 1) & ~(__tls_align - 1));
+    PROVIDE( __arm32_tls_tcb_offset = MAX(8, __tls_align) );
+
+    /* llvm-libc */
+    PROVIDE (_end = __end__);
+    PROVIDE (__llvm_libc_heap_limit = __HeapLimit);
 
     /* Check if data + heap + stack exceeds RAM limit */
     ASSERT(__StackLimit >= __HeapLimit, "region RAM overflowed")
@@ -310,3 +284,4 @@ SECTIONS
     ASSERT( __binary_info_header_end - __logical_binary_start <= 256, "Binary info must be in first 256 bytes of the binary")
     /* todo assert on extra code */
 }
+
