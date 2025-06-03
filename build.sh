@@ -89,6 +89,8 @@ else
     sed -i "s/<APP_VERSION>/$VERSION/g" dist/app.json
 fi
 
+cp dist/$APP_UUID_KEY.uf2 dist/$APP_UUID_KEY-$VERSION.uf2
+
 # Show the content of the $APP_UUID_KEY.json file
 echo "Content of the $APP_UUID_KEY.json file:"
 mv dist/app.json dist/$APP_UUID_KEY.json
