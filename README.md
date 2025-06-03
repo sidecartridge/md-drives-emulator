@@ -1,10 +1,14 @@
-# SidecarTridge Multi-device Microfirmware App template
+# SidecarTridge Multi-device Drives Emulator
 
-This is the template to create a Microfirmware app for the SidecarTridge Multidevice-app for Atari ST computers.
+This is the SidecarTridge Multi-device Drives Emulator, a microfirmware app designed to emulate various drives for the SidecarTridge system. 
 
-# ⚠️ ATTENTION! READ THIS FIRST
+## Installation
 
-The process for creating a microfirmware app from this template is now documented in the official [SidecarTridge Multi-device documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/). To avoid inconsistencies and outdated information, we've centralized the instructions there. Please refer to the official documentation for the latest guidance.
+To install the SidecarTridge Multi-device Drives Emulator, simply download the latest version using the [Booster application](https://booster.sidecartridge.com/) and launch it.
+
+## Devevelopment
+
+TODO
 
 ## License
 
