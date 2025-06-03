@@ -246,12 +246,6 @@ else()
     "-Wl,--gc-sections")
 endif()
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-    PICO_PRINTF_NONE=1
-    PICO_SCANF_NONE=1
-)
-
-
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)
 
