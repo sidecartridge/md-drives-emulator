@@ -86,8 +86,9 @@ mkdir build
 # Build the project
 echo "Building the project"
 cd build
-#cmake ../src -DCMAKE_BUILD_TYPE=$BUILD_TYPE
-cmake ../src -DCMAKE_BUILD_TYPE=Debug
+cmake ../src -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+#cmake ../src -DCMAKE_BUILD_TYPE=Debug
+#cmake ../src -DCMAKE_BUILD_TYPE=MinSizeRel
 make -j4 
 
 # Copy the built firmware to the /dist folder
