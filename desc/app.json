@@ -1,10 +1,13 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
+  "name": "Mutidrive emulator",
+  "description": "Hard disk and Floppy disk emulator for Atari ST/STE/MegaST/MegaSTE",
   "image": "https://placehold.co/256x256/png",
   "tags": [
-    "Sample",
+    "HD",
+    "GEMDRIVE",
+    "Floppy",
+    "RTC"
   ],
   "devices": [
     "Atari ST",
