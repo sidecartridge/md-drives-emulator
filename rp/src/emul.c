@@ -377,8 +377,9 @@ static void menu(void) {
     SettingsConfigEntry *gemDriveReadonly = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_READONLY);
     DPRINTF("Readonly: %s\n", gemDriveReadonly->value);
-    term_printString("\n  Read O[n]ly? ");
-    term_printString(isTrue(gemDriveReadonly->value) ? "Yes" : "No");
+    // term_printString("\n  Read O[n]ly? ");
+    // term_printString(isTrue(gemDriveReadonly->value) ? "Yes" : "No");
+    term_printString("\n\n");
 
     term_printString("\n\n");
   } else {
@@ -437,13 +438,14 @@ static void menu(void) {
     term_printString("No\n\n\n\n\n\n");
   }
 
+  // TODO: Merge code with the RTC options
   // Display the RTC options
   term_printString("[R]TC Enabled? ");
   // Is it enabled?
   SettingsConfigEntry *rtcEnabled = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
   DPRINTF("RTC: %s\n", rtcEnabled->value);
-  if (isTrue(rtcEnabled->value)) {
+  if (false && isTrue(rtcEnabled->value)) {
     term_printString("Yes\n");
     term_printString("  [H]ost NTP: ");
     // Print the NTP server host
