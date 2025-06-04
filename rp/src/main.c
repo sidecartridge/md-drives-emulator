@@ -39,6 +39,9 @@ int main() {
   // damage the hardware, but it's possible to make the hardware unstable.
   vreg_set_voltage(RP2040_VOLTAGE);
 
+#undef PICO_FLASH_SPI_CLKDIV
+#define PICO_FLASH_SPI_CLKDIV 1
+
   // A note about outputting debug information through the UART. It's not
   // recommended to output debug information through the UART in a production
   // environment in the callback functions of the DMAs used to communicate with
@@ -61,6 +64,7 @@ int main() {
   const char *currentVoltage = VOLTAGE_VALUES[RP2040_VOLTAGE];
   DPRINTF("Clock frequency: %i KHz\n", currentClockFrequencyKhz);
   DPRINTF("Voltage: %s\n", currentVoltage);
+  DPRINTF("FLASH SPI CLKDIV: %i\n", PICO_FLASH_SPI_CLKDIV);
   DPRINTF("PICO_FLASH_SIZE_BYTES: %i\n", PICO_FLASH_SIZE_BYTES);
 
   // Show information about the flash memory layout
