@@ -347,9 +347,9 @@ _floppy_verify_emulated_a:
     ; Trapped XBIOS call 10 with the floppy disk drive format function
     ; Return always formatted with errors
 _floppy_format:
-    movem.l d0-d7/a0-a6,-(sp)
-    send_sync CMD_DEBUG, 16             ; Send the command to the Sidecart. 2 bytes of payload
-    movem.l (sp)+, d0-d7/a0-a6
+;    movem.l d0-d7/a0-a6,-(sp)
+;    send_sync CMD_DEBUG, 16             ; Send the command to the Sidecart. 2 bytes of payload
+;    movem.l (sp)+, d0-d7/a0-a6
     move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
     rts
 
@@ -367,11 +367,8 @@ _floppy_format_emulated_a:
     ; Trapped XBIOS calls 8 and 9 with the floppy disk drive read and write functions
     ;
 _floppy_rw:
-    movem.l d0-d7/a0-a6,-(sp)
-    send_sync CMD_DEBUG, 16             ; Send the command to the Sidecart. 2 bytes of payload
-    movem.l (sp)+, d0-d7/a0-a6
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts
+;    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
+;    rts
 
 
 
@@ -381,11 +378,38 @@ _floppy_rw:
     move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
     rts 
 
-_floppy_read_emulated_a:   
+_floppy_read_emulated_a:
+    movem.l d3-d7/a3-a6, -(sp)
+
+
+    moveq #0, d6
+    move.w 20(a0),d6           ; track number
+    mulu secpcyl_A,d6        ; calculate sectors per cylinder
+
+    moveq #0, d4
+    move.w 22(a0),d4           ; Get the side number
+    mulu secptrack_A,d4      ; calculate sectors per track
+
+    add.l d4, d6               ; d6 = track number * sec/cyl + side number * sec/track
+    add.w 18(a0),d6            ; d6 = side no * sec/cyl + track no * sec/track + start sect no
+    subq.w #1,d6               ; d6 = logical sector number to start the transfer
+    
+    moveq #0, d4               ; Use A:
+    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
+    move.w 24(a0),d1           ; number of sectors to read/write
+    move.l 8(a0),a4            ; buffer address
+    moveq #0, d5               ; read mode
+    bsr do_transfer_sidecart
+
+    movem.l (sp)+,d3-d7/a3-a6
+    rte
+
+
     movem.l d1-d7/a1-a6,-(sp)
     lea -52(sp),sp                  ; Rewind to the beginning of the stack parameters of the call
     addq.l #6,a0
     move.l  2(a0),6(sp)             ; buffer
+
     move.w 18(a0),10(sp)            ; sector count
     clr.l d0
     move.w 12(a0),d0                ; start sect no
