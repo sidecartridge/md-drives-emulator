@@ -22,7 +22,8 @@
 
 // File/dir entry list browsable
 #define MAX_ENTRIES_DIR 256
-#define MAX_FILENAME_LENGTH 40
+#define MAX_FILENAME_LENGTH \
+  (SETTINGS_MAX_VALUE_LENGTH - 1)  // Max length of a filename
 
 #define FS_ST_READONLY 0x1  // Read only
 #define FS_ST_HIDDEN 0x2    // Hidden
