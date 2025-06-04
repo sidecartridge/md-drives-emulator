@@ -804,6 +804,25 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   // Copy the temporary BPB data to the provided BPB structure
   *bpb = bpb_tmp;
 
+  // Print the BPB data for debugging
+  DPRINTF("BPB Data:\n");
+  DPRINTF("  recsize: %u\n", bpb->recsize);
+  DPRINTF("  clsiz: %u\n", bpb->clsiz);
+  DPRINTF("  clsizb: %u\n", bpb->clsizb);
+  DPRINTF("  rdlen: %u\n", bpb->rdlen);
+  DPRINTF("  fsiz: %u\n", bpb->fsiz);
+  DPRINTF("  fatrec: %u\n", bpb->fatrec);
+  DPRINTF("  datrec: %u\n", bpb->datrec);
+  DPRINTF("  numcl: %u\n", bpb->numcl);
+  DPRINTF("  bflags: %u\n", bpb->bflags);
+  DPRINTF("  trackcnt: %u\n", bpb->trackcnt);
+  DPRINTF("  sidecnt: %u\n", bpb->sidecnt);
+  DPRINTF("  secpcyl: %u\n", bpb->secpcyl);
+  DPRINTF("  secptrack: %u\n", bpb->secptrack);
+  DPRINTF("  reserved: %u %u %u\n", bpb->reserved[0], bpb->reserved[1],
+          bpb->reserved[2]);
+  DPRINTF("  disk_number: %u\n", bpb->disk_number);
+
   return FR_OK;
 }
 
