@@ -1,6 +1,6 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "Mutidrive emulator",
+  "name": "Multidrive emulator",
   "description": "Hard disk and Floppy disk emulator for Atari ST/STE/MegaST/MegaSTE",
   "image": "https://placehold.co/256x256/png",
   "tags": [
