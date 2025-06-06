@@ -223,69 +223,6 @@ detect_ms16:
     send_sync CMD_SAVE_HARDWARE, 12
     rts
 
-; New hdv_rw routine
-; Read/Write the emulated disk if it's drive A or B
-; While testing the code in the ATARI ST side, read the data from the sample image
-; But the final implementation should read from the RP2040 side thanks to the 
-; commands sent from the ATARI ST side
-new_hdv_rw_routine:
-    cmp.w #0,14(sp)             ; Is this the disk_number we are emulating?
-    beq.s _exe_emul_rw_A        ; If is the disk A to emulate, read/write the emulated disk
-    cmp.w #1,14(sp)             ; Is it the Drive B?
-    beq.s _exe_emul_rw_B        ; If is the disk B to emulate, read/write the emulated disk
-;    move.l old_hdv_rw,-(sp)     ; If is not the disk A or B, restore the old hdv_rw
-    rts
-
-_exe_emul_rw_A:
-    ; Test Drive A
-    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
-    beq.s _not_emul_rw_A
-    move.w BPB_data_A,d2       ; Sector size of the emulated drive A
-    moveq #0, d4               ; Use A:
-    bra.s exe_emul_rw
-_not_emul_rw_A:
-;    move.l old_hdv_rw,-(sp)
-    rts
-
-_exe_emul_rw_B:
-    ; Test Drive B
-    btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
-    beq.s _not_emul_rw_B
-    move.w BPB_data_B,d2       ; Sector size of the emulated drive B
-    moveq #1, d4               ; Use B:
-    bra.s exe_emul_rw
-_not_emul_rw_B:
-    clr.w 14(sp)                ; Map B as A
-;    move.l old_hdv_rw,-(sp)
-    rts
-
-exe_emul_rw:
-    sf d3                       ; Set FALSE flag for RWABS call
-exe_emul_rw_all:
-    tst.l 6(sp)                 ; Check if buffer address is 0
-    beq.s no_buffer_error       ; just skip by error?
-
-    and.l #$0000FFFF,d2         ; limit the size of the sectors to 65535
-    moveq #0,d0
-    move.l d0,d1
-    move.l d0,d5
-    move.w 12(sp),d0            ; recno, logical sector number
-    move.w 10(sp),d1            ; Number of sectors to read/write
-    move.w 4(sp), d5            ; rwflag
-    move.l 6(sp), a0            ; Buffer address
-
-    bsr do_transfer_sidecart    ; Do the transfer sidecart
-
-no_buffer_error:
-    clr.l d0
-    tst.b d3
-    bne.s xbios_exit
-    rts
-xbios_exit:
-    lea 52(sp),sp
-    movem.l (sp)+,d1-d7/a1-a6
-    rte
-
 ; New XBIOS map A calls to Sidecart,
 ; B to physical A if it exists
 ; The XBIOS, like the BIOS may utilize registers D0-D2 and A0-A2 as scratch registers and their
@@ -317,9 +254,9 @@ _notlong:
 ;    movem.l (sp)+, d0-d7/a0-a6
                                     ; get XBIOS call number
     cmp.w #8,6(a0)                  ; is it XBIOS call Flopwr?
-    beq _floppy_rw                ; if yes, go to flopppy read
+    beq _floppy_read                ; if yes, go to flopppy read
     cmp.w #9,6(a0)                  ; is it XBIOS call Floprd?
-    beq _floppy_rw                ; if yes, go to flopppy read
+    beq _floppy_write               ; if yes, go to flopppy write
     cmp.w #13,6(a0)                 ; is it XBIOS call Flopver?
     beq.s _floppy_verify            ; if yes, go to flopppy verify
     cmp.w #10,6(a0)                 ; is it XBIOS call Flopfmt?
@@ -364,76 +301,56 @@ _floppy_format_emulated_a:
     rte
 
     ;
-    ; Trapped XBIOS calls 8 and 9 with the floppy disk drive read and write functions
+    ; Trapped XBIOS calls 9 with the floppy disk drive write functions
     ;
-_floppy_rw:
-;    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-;    rts
+_floppy_write:
+    moveq #1, d0                       ; d0 = write flag
+    tst.w 16(a0)
+    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
+    bra.s _floppy_xbios_emulated_b
 
+    ;
+    ; Trapped XBIOS calls 8 with the floppy disk drive read functions
+    ;
+_floppy_read:
+    moveq #0, d0                       ; d0 = read flag
+    tst.w 16(a0)
+    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
 
-
-    cmp.w #1,16(a0)
-    bne.s _floppy_read_emulated_a     ; if is not B then is A
-    clr.w 16(a0)                      ; Map B drive to physical A
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts 
-
-_floppy_read_emulated_a:
+_floppy_xbios_emulated_b:
     movem.l d3-d7/a3-a6, -(sp)
-
-
+    move.w BPB_data_B, d2      ; Sector size of the emulated drive B
+    moveq #1, d4               ; Use B:
     moveq #0, d6
     move.w 20(a0),d6           ; track number
-    mulu secpcyl_A,d6        ; calculate sectors per cylinder
-
-    moveq #0, d4
+    mulu secpcyl_B,d6          ; calculate sectors per cylinder
     move.w 22(a0),d4           ; Get the side number
-    mulu secptrack_A,d4      ; calculate sectors per track
+    mulu secptrack_B,d4        ; calculate sectors per track
+    bra.s _floppy_xbios_emulated
 
+_floppy_xbios_emulated_a:
+    movem.l d3-d7/a3-a6, -(sp)
+    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
+    moveq #0, d4               ; Use A:
+    moveq #0, d6
+    move.w 20(a0),d6           ; track number
+    mulu secpcyl_A,d6          ; calculate sectors per cylinder
+    move.w 22(a0),d4           ; Get the side number
+    mulu secptrack_A,d4        ; calculate sectors per track
+
+_floppy_xbios_emulated:
     add.l d4, d6               ; d6 = track number * sec/cyl + side number * sec/track
     add.w 18(a0),d6            ; d6 = side no * sec/cyl + track no * sec/track + start sect no
     subq.w #1,d6               ; d6 = logical sector number to start the transfer
     
-    moveq #0, d4               ; Use A:
-    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
     move.w 24(a0),d1           ; number of sectors to read/write
     move.l 8(a0),a4            ; buffer address
-    moveq #0, d5               ; read mode
+    move.l d0, d5              ; rwflag
     bsr do_transfer_sidecart
 
     movem.l (sp)+,d3-d7/a3-a6
-    rte
-
-
-    movem.l d1-d7/a1-a6,-(sp)
-    lea -52(sp),sp                  ; Rewind to the beginning of the stack parameters of the call
-    addq.l #6,a0
-    move.l  2(a0),6(sp)             ; buffer
-
-    move.w 18(a0),10(sp)            ; sector count
     clr.l d0
-    move.w 12(a0),d0                ; start sect no
-    subq.w #1,d0                    ; one less because flosector starts  with 1, not 0
-
-; Now need to calc logical sector #
-    clr.l d1
-    move.w 14(a0),d1                ; track no
-    clr.l d2
-    move.w 16(a0),d2                ; side no
-    clr.l d4
-    mulu secpcyl_A,d1               ; sec/track
-    add.w d1,d0                     ; track no * sec/track + start sect no
-
-    mulu secptrack_A,d2             ; sec/cyl
-    add.w d2,d0                     ; side no * sec/cyl + track no * sec/track + start sect no
-    move.w d0,12(sp)                ; logical start sector for read from emulated disk
-    move.w #-1, 4(sp)               ; flag for read
-    st d3                           ; Set TRUE flag for XBIOS call
-    move.w BPB_data_A, d2           ; Sector size of the emulated drive A
-    cmp.w #9,(a0)                   ; is write?
-    beq exe_emul_rw_all
-    clr.w 4(sp)                     ; No, is read
-    bra exe_emul_rw_all 
+    rte
 
 
 bios_trap:
