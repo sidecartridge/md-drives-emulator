@@ -140,12 +140,10 @@ typedef bool (*EntryFilterFn)(const char *name, BYTE attr);
  *
  * @return FRESULT Return code indicating the status of the operation.
  */
-FRESULT sdcard_loadDirectory(const char *path,
-                             char entries_arr[][MAX_FILENAME_LENGTH + 1],
-                             uint16_t *entry_count, uint16_t *selected,
-                             uint16_t *page, bool dirs_only,
-                             EntryFilterFn filter_fn,
-                             char top_dir[MAX_FILENAME_LENGTH + 1]);
+FRESULT __not_in_flash_func(sdcard_loadDirectory)(
+    const char *path, char entries_arr[][MAX_FILENAME_LENGTH + 1],
+    uint16_t *entry_count, uint16_t *selected, uint16_t *page, bool dirs_only,
+    EntryFilterFn filter_fn, char top_dir[MAX_FILENAME_LENGTH + 1]);
 
 /**
  * @brief Splits a full path into its drive letter, folder path, and file
