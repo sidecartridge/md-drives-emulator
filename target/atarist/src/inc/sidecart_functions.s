@@ -11,7 +11,7 @@ SHARED_VARIABLE_SVERSION                equ 1       ; TOS version from Sversion
 COMMAND_SYNC_CODE_SIZE                  equ (4 + _end_sync_code_in_stack - _start_sync_code_in_stack)
 COMMAND_SYNC_WRITE_CODE_SIZE            equ (4 + _end_sync_write_code_in_stack - _start_sync_write_code_in_stack)
 
-COMMAND_SYNC_USE_DSKBUF                 equ 0       ; Use different disk buffers to store the sync wait code
+COMMAND_SYNC_USE_DSKBUF                 equ 1       ; Use different disk buffers to store the sync wait code
                                                     ; 2: Use the stack to store the code. Dangerous
                                                     ; 1: Use the disk buffer to store the code. Safe
                                                     ; 0: Use the ROM address to store the code. Safe
@@ -232,11 +232,10 @@ _start_sync_code_in_stack_loop:
     subq.l #1, d0                            ; Timeout
 _sync_token_found:
 
-    move.l #RANDOM_TOKEN_POST_WAIT, d7
-_postwait_me:
-    dbf d7, _postwait_me
-
-_no_wait_me:
+;    move.l #RANDOM_TOKEN_POST_WAIT, d7
+;_postwait_me:
+;    dbf d7, _postwait_me
+;_no_wait_me:
     rts                                 ; Return to the code
 _end_sync_code_in_stack:
 
@@ -272,7 +271,7 @@ send_sync_write_command_to_sidecart:
 
     ifne COMMAND_SYNC_USE_DSKBUF != 0   ; Copy the code for stack and disk buffer
         move.l #COMMAND_SYNC_CODE_SIZE, d7
-        lea _start_sync_code_write_in_stack, a1    ; a1 points to the start of the code in ROM
+        lea _start_sync_write_code_in_stack, a1    ; a1 points to the start of the code in ROM
         lsr.w #1, d7
         subq #1, d7
 _copy_sync_code_write:
@@ -441,13 +440,10 @@ _start_sync_write_code_in_stack_loop:
     subq.l #1, d0                                  ; Timeout
 
 _sync_write_token_found:
-
-
-    move.l #RANDOM_TOKEN_POST_WAIT, d6
-_postwait_write_me:
-    dbf d6, _postwait_write_me
-
-_no_wait_write_me:
+;    move.l #RANDOM_TOKEN_POST_WAIT, d6
+;_postwait_write_me:
+;    dbf d6, _postwait_write_me
+;_no_wait_write_me:
     rts                                 ; Return to the code
 
 _end_sync_write_code_in_stack:
