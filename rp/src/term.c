@@ -33,9 +33,9 @@ static uint8_t commandLevel = TERM_COMMAND_LEVEL_SINGLE_KEY;
 // last single key command
 static char lastSingleKeyCommand = 0;
 
-uint8_t term_getCommandLevel(void) { return commandLevel; }
+inline uint8_t term_getCommandLevel(void) { return commandLevel; }
 
-void term_setCommandLevel(uint8_t level) { commandLevel = level; }
+inline void term_setCommandLevel(uint8_t level) { commandLevel = level; }
 
 // Setter for commands and numCommands
 void term_setCommands(const Command *cmds, size_t count) {
@@ -85,9 +85,6 @@ static inline void __not_in_flash_func(handle_protocol_checksum_error)(
 
 // Interrupt handler for DMA completion
 void __not_in_flash_func(term_dma_irq_handler_lookup)(void) {
-  // Read the rom3 signal and if so then process the command
-  dma_hw->ints1 = 1U << 2;
-
   // Read once to avoid redundant hardware access
   uint32_t addr = dma_hw->ch[2].al3_read_addr_trig;
 
@@ -101,6 +98,9 @@ void __not_in_flash_func(term_dma_irq_handler_lookup)(void) {
     tprotocol_parse(addr_lsb, handle_protocol_command,
                     handle_protocol_checksum_error);
   }
+
+  // Read the rom3 signal and if so then process the command
+  dma_hw->ints1 = 1U << 2;
 }
 
 static char screen[TERM_SCREEN_SIZE];
