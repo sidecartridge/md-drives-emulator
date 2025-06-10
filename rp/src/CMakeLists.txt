@@ -192,6 +192,10 @@ if (NOT _DEBUG)
         set(_DEBUG 0)
 endif()
 
+if (${_DEBUG}  STREQUAL "1")
+    add_compile_definitions(USE_PRINTF USE_DBG_PRINTF)
+endif()
+
 # Debug outputs
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 # Workaround to disable USB output in release builds
