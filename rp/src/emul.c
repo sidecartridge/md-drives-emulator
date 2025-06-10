@@ -130,7 +130,7 @@ static DirNavigation *navState = NULL;
 static FloppyFormatState floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
 static FloppyImageHeader floppyImageHeader = {0};
 
-static bool isTrue(const char *value) {
+static bool __not_in_flash_func(isTrue)(const char *value) {
   if ((value == NULL) || (value[0] == '\0')) {
     return false;
   }
@@ -141,7 +141,7 @@ static bool isTrue(const char *value) {
   return false;
 }
 
-char *right(const char *str, int n) {
+char *__not_in_flash_func(right)(const char *str, int n) {
   if (str == NULL || n < 0) return NULL;
 
   int len = strlen(str);
@@ -163,7 +163,7 @@ char *right(const char *str, int n) {
 }
 
 // Function to verify if a domain name is valid
-static bool isValidDomain(const char *domain) {
+static bool __not_in_flash_func(isValidDomain)(const char *domain) {
   if (domain == NULL) return false;
   size_t len = strlen(domain);
   if (len == 0 || len > MAX_DOMAIN_LENGTH) {
@@ -206,7 +206,7 @@ static bool isValidDomain(const char *domain) {
 }
 
 // Check if the input buffer is a valid drive letter
-static bool isValidDrive(const char *drive) {
+static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   if (drive == NULL || drive[0] == '\0') {
     return false;
   }
@@ -215,7 +215,7 @@ static bool isValidDrive(const char *drive) {
 }
 
 // Remove last path component (".." navigation)
-static void pathUp() {
+static void __not_in_flash_func(pathUp)() {
   char temp[MAX_FILENAME_LENGTH + 1];
   char *segments[MAX_ENTRIES_DIR];
   int sp = 0;
@@ -259,7 +259,7 @@ static void pathUp() {
 
 // Filter: include only files with extensions .st or .st.rw
 //(case-insensitive), and omit hidden files (those starting with a dot).
-static bool floppiesFilter(const char *name, BYTE attr) {
+static bool __not_in_flash_func(floppiesFilter)(const char *name, BYTE attr) {
   if (name[0] == '.') {
     return false;  // skip dotfiles
   }
@@ -280,7 +280,8 @@ static bool floppiesFilter(const char *name, BYTE attr) {
 
 // Filter: include only files with extensions .msa.
 //(case-insensitive), and omit hidden files (those starting with a dot).
-static bool floppiesMSAFilter(const char *name, BYTE attr) {
+static bool __not_in_flash_func(floppiesMSAFilter)(const char *name,
+                                                   BYTE attr) {
   if (name[0] == '.') {
     return false;  // skip dotfiles
   }
@@ -313,7 +314,7 @@ static void showTitle() {
       "Drives Emulator - " RELEASE_VERSION "\n\x1Bq");
 }
 
-static void menu(void) {
+static void __not_in_flash_func(menu)(void) {
   floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
   term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
 
@@ -492,7 +493,7 @@ static void menu(void) {
   term_printString("\nSelect an option: ");
 }
 
-static void showCounter(int cdown) {
+static void __not_in_flash_func(showCounter)(int cdown) {
   // Clear the bar
   char msg[64];
   if (cdown > 0) {
@@ -616,7 +617,7 @@ static void drawPage(uint16_t top_offset) {
   term_printString("SPACE to confirm selection. ESC to exit");
 }
 
-static enum navStatus navigate_directory(
+static enum navStatus __not_in_flash_func(navigate_directory)(
     bool first_time, bool dirs_only, char key, EntryFilterFn filter_fn,
     char top_folder[MAX_FILENAME_LENGTH + 1]) {
   enum navStatus status = NAV_DIR_ERROR;
@@ -736,7 +737,7 @@ static enum navStatus navigate_directory(
   return status;
 }
 
-void cmdGemdriveFolder(const char *arg) {
+void __not_in_flash_func(cmdGemdriveFolder)(const char *arg) {
   // Check if the GEMDRIVE is enabled
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -879,7 +880,7 @@ void cmdFloppyEnabled(const char *arg) {
   display_refresh();
 }
 
-void cmdFloppiesFolder(const char *arg) {
+void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
