@@ -25,6 +25,8 @@
 
 #define ROMEMUL_BUS_BITS 17
 
+#define ROMEMUL_DMA_IRQ (DMA_IRQ_1)  // Use DMA IRQ 1 for ROM emulator
+
 typedef void (*IRQInterceptionCallback)();
 
 // extern int read_addr_rom_dma_channel;
