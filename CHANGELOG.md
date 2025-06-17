@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.0.3alpha (2025-06-17) - Alpha release
+
+This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
+
+### Changes
+- **Re-enable framebuffer**: Now instead of directly writing to the screen memory, the framebuffer is used to manage screen updates. This change improves the performance and responsiveness of the display.
+
+- **Faster timeout**: When there is an error due to timeout writing in the command buffer, the timeout has been reduced to a factor of 10. This change improves the responsiveness of the system specially when accesing the GEMDRIVE mode.
+
+### New features
+Real Time Clock (RTC) support has been added. The RTC is now available in the system, allowing for accurate timekeeping and date management.
+
+### Fixes
+Everything is a massive and ongoing fix...
+
 ## v1.0.2alpha (2025-06-10) - Alpha release
 
 This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
