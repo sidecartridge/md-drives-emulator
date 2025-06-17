@@ -33,11 +33,12 @@ PRE_RESET_WAIT		equ $FFFFF
 TRANSTABLE			equ $FA0800	; Translation table for high resolution
 GEMDRIVE			equ $FA1000 ; GEMDRIVE address
 FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
+RTCEMUL 			equ $FA3400 ; RTC emulation address
 
 ; If 1, the display will not use the framebuffer and will write directly to the
 ; display memory. This is useful to reduce the memory usage in the rp2040
 ; When not using the framebuffer, the endianess swap must be done in the atari ST
-DISPLAY_BYPASS_FRAMEBUFFER 	equ 1
+DISPLAY_BYPASS_FRAMEBUFFER 	equ 0
 
 CMD_NOP				equ 0		; No operation command
 CMD_RESET			equ 1		; Reset command
@@ -297,8 +298,9 @@ boot_gem:
 
 rom_function:
 	; Place here your driver code
+	jsr GEMDRIVE		; Jump to the GEMDRIVE code
 	jsr FLOPPYEMUL		; Call the floppy emulation code
-	jmp GEMDRIVE		; Jump to the GEMDRIVE code
+	jmp RTCEMUL 		; Call the RTC emulation code
 
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file

@@ -65,8 +65,11 @@ gemdrive.o: prepare
 floppy.o: prepare
 	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/floppy.s -o $(BUILD_DIR)/floppy.o
 
+rtc.o: prepare
+	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/rtc.s -o $(BUILD_DIR)/rtc.o
+
 .PHONY: build
-build: main.o gemdrive.o floppy.o
+build: main.o gemdrive.o floppy.o rtc.o
 	$(VLINK) $(addprefix $(BUILD_DIR)/,$^) $(VLINKFLAGS) -o $(BUILD_DIR)/$(BIN)
 
 .PHONY: dist
