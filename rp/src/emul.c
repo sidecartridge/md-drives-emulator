@@ -382,7 +382,7 @@ static void __not_in_flash_func(menu)(void) {
     // term_printString(isTrue(gemDriveReadonly->value) ? "Yes" : "No");
     term_printString("\n\n");
 
-    term_printString("\n\n");
+    term_printString("\n");
   } else {
     term_printString("No\n\n\n\n\n");
   }
@@ -436,7 +436,7 @@ static void __not_in_flash_func(menu)(void) {
     // Format floppy
     term_printString("\n  Format [I]mage | [C]onvert MSA to ST\n\n");
   } else {
-    term_printString("No\n\n\n\n\n\n");
+    term_printString("No\n\n\n\n\n\n\n");
   }
 
   // TODO: Merge code with the RTC options
@@ -446,7 +446,7 @@ static void __not_in_flash_func(menu)(void) {
   SettingsConfigEntry *rtcEnabled = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
   DPRINTF("RTC: %s\n", rtcEnabled->value);
-  if (false && isTrue(rtcEnabled->value)) {
+  if (isTrue(rtcEnabled->value)) {
     term_printString("Yes\n");
     term_printString("  [H]ost NTP: ");
     // Print the NTP server host
@@ -487,9 +487,10 @@ static void __not_in_flash_func(menu)(void) {
   } else {
     term_printString("No\n");
   }
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 3, 0);
-  term_printString("[E]xit desktop    [X] Return to Booster\n");
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
+  term_printString("[E]xit desktop    [X] Return to Booster");
 
+  vt52Cursor(TERM_SCREEN_SIZE_Y, 0);
   term_printString("\nSelect an option: ");
 }
 
@@ -540,7 +541,7 @@ void cmdExit(const char *arg) {
   term_printString("Exiting terminal...\n");
   // Send continue to desktop command
   haltCountdown = true;
-  appStatus = APP_EMULATION_INIT;
+  appStatus = APP_MODE_NTP_INIT;
 }
 
 void cmdBooster(const char *arg) {
@@ -1902,19 +1903,58 @@ void __not_in_flash_func(emul_start)() {
         dma_setResponseCB(
             chandler_dma_irq_handler_lookup);  // Set the chanlder handler
         chandler_init();                       // Initialize the command handler
+
         // Initializing the GEMDRIVE
         DPRINTF("Initializing the GEMDRIVE...\n");
         gemdrive_init();
         // Initializing Floppy drives
         DPRINTF("Initializing the floppy drives...\n");
         floppy_init();  // Initialize the floppy drives
+        // Initialize the RTC
+        DPRINTF("Initializing the RTC...\n");
+        rtc_initf();  // Initialize the RTC emulator
 
         chandler_addCB(gemdrive_loop);  // Add the GEMDRIVE loop
         chandler_addCB(floppy_loop);    // Add the floppy drives loop
+        chandler_addCB(rtc_loop);       // Add the RTC loop
 
         // Check remote commands
         appStatus = APP_EMULATION_RUNTIME;
         DPRINTF("GEMDRIVE initialized\n");
+        break;
+      }
+      case APP_MODE_NTP_DONE: {
+        // The NTP time has been set, we can now continue the emulation
+        DPRINTF("NTP time set, continuing...\n");
+        // Set the app status to APP_EMULATION_RUNTIME
+        appStatus = APP_EMULATION_INIT;
+        DPRINTF("RTC initialized. Moving on...\n");
+        display_refresh();
+        sleep_ms(SLEEP_LOOP_MS);
+        break;
+      }
+      case APP_MODE_NTP_INIT: {
+        // Querying the NTP time
+        DPRINTF("Querying the NTP time...\n");
+        int ret = rtc_queryNTPTime();
+        if (ret < 0) {
+          DPRINTF("Error querying the NTP time: %d\n", ret);
+          term_printString("Failed to set time.\n");
+        } else {
+          term_printString("Time set successfully!\n");
+          datetime_t rtcTime = {0};
+          rtc_get_datetime(&rtcTime);
+          char msg[40];
+          snprintf(msg, sizeof(msg),
+                   "Clock set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
+                   rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour,
+                   rtcTime.min, rtcTime.sec);
+          term_printString(msg);
+        }
+        // Check remote commands
+        appStatus = APP_MODE_NTP_DONE;
+        DPRINTF("RTC initialized\n");
+        display_refresh();
         break;
       }
       case APP_MODE_SETUP:
@@ -1934,7 +1974,7 @@ void __not_in_flash_func(emul_start)() {
             display_refresh();
             if (countdown <= 0) {
               haltCountdown = true;
-              appStatus = APP_EMULATION_INIT;
+              appStatus = APP_MODE_NTP_INIT;
             }
           }
         }
