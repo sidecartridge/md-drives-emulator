@@ -14,7 +14,7 @@ ROM_EXCHG_BUFFER_ADDR:    equ (ROM4_START_ADDR + $8200)     ; ROM4 buffer addres
 RANDOM_TOKEN_ADDR:        equ (ROM_EXCHG_BUFFER_ADDR)
 RANDOM_TOKEN_SEED_ADDR:   equ (RANDOM_TOKEN_ADDR + 4)     ; RANDOM_TOKEN_ADDR + 4 bytes
 RANDOM_TOKEN_POST_WAIT:   equ $1                          ; Wait this cycles after the random number generator is ready
-COMMAND_TIMEOUT           equ $0000FFFF                   ; Timeout for the command
+COMMAND_TIMEOUT           equ $00000FFF                   ; Timeout for the command
 
 ROMCMD_START_ADDR:  equ (ROM3_START_ADDR)	      ; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    equ ($ABCD) 			  	  ; Magic number header to identify a command
