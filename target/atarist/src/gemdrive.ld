@@ -16,4 +16,8 @@ SECTIONS
         floppy.o(.text)
     }
 
+    /* Place rtc.s .text at 0x003400 */
+    .text_rtc 0x003400 : {
+        rtc.o(.text)
+    }
 }

@@ -103,6 +103,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         network.c
         reset.c
         romemul.c
+        rtc.c
         sdcard.c
         select.c
         term.c
@@ -190,6 +191,10 @@ endif()
 
 if (NOT _DEBUG)
         set(_DEBUG 0)
+endif()
+
+if (${_DEBUG}  STREQUAL "1")
+    add_compile_definitions(USE_PRINTF USE_DBG_PRINTF)
 endif()
 
 # Debug outputs

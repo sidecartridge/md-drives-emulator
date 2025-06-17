@@ -40,7 +40,7 @@ int main() {
   vreg_set_voltage(RP2040_VOLTAGE);
 
 #undef PICO_FLASH_SPI_CLKDIV
-#define PICO_FLASH_SPI_CLKDIV 1
+#define PICO_FLASH_SPI_CLKDIV 4
 
   // A note about outputting debug information through the UART. It's not
   // recommended to output debug information through the UART in a production

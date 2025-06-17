@@ -130,7 +130,7 @@ static DirNavigation *navState = NULL;
 static FloppyFormatState floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
 static FloppyImageHeader floppyImageHeader = {0};
 
-static bool isTrue(const char *value) {
+static bool __not_in_flash_func(isTrue)(const char *value) {
   if ((value == NULL) || (value[0] == '\0')) {
     return false;
   }
@@ -141,7 +141,7 @@ static bool isTrue(const char *value) {
   return false;
 }
 
-char *right(const char *str, int n) {
+char *__not_in_flash_func(right)(const char *str, int n) {
   if (str == NULL || n < 0) return NULL;
 
   int len = strlen(str);
@@ -163,7 +163,7 @@ char *right(const char *str, int n) {
 }
 
 // Function to verify if a domain name is valid
-static bool isValidDomain(const char *domain) {
+static bool __not_in_flash_func(isValidDomain)(const char *domain) {
   if (domain == NULL) return false;
   size_t len = strlen(domain);
   if (len == 0 || len > MAX_DOMAIN_LENGTH) {
@@ -206,7 +206,7 @@ static bool isValidDomain(const char *domain) {
 }
 
 // Check if the input buffer is a valid drive letter
-static bool isValidDrive(const char *drive) {
+static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   if (drive == NULL || drive[0] == '\0') {
     return false;
   }
@@ -215,7 +215,7 @@ static bool isValidDrive(const char *drive) {
 }
 
 // Remove last path component (".." navigation)
-static void pathUp() {
+static void __not_in_flash_func(pathUp)() {
   char temp[MAX_FILENAME_LENGTH + 1];
   char *segments[MAX_ENTRIES_DIR];
   int sp = 0;
@@ -259,7 +259,7 @@ static void pathUp() {
 
 // Filter: include only files with extensions .st or .st.rw
 //(case-insensitive), and omit hidden files (those starting with a dot).
-static bool floppiesFilter(const char *name, BYTE attr) {
+static bool __not_in_flash_func(floppiesFilter)(const char *name, BYTE attr) {
   if (name[0] == '.') {
     return false;  // skip dotfiles
   }
@@ -280,7 +280,8 @@ static bool floppiesFilter(const char *name, BYTE attr) {
 
 // Filter: include only files with extensions .msa.
 //(case-insensitive), and omit hidden files (those starting with a dot).
-static bool floppiesMSAFilter(const char *name, BYTE attr) {
+static bool __not_in_flash_func(floppiesMSAFilter)(const char *name,
+                                                   BYTE attr) {
   if (name[0] == '.') {
     return false;  // skip dotfiles
   }
@@ -313,7 +314,7 @@ static void showTitle() {
       "Drives Emulator - " RELEASE_VERSION "\n\x1Bq");
 }
 
-static void menu(void) {
+static void __not_in_flash_func(menu)(void) {
   floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
   term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
 
@@ -381,7 +382,7 @@ static void menu(void) {
     // term_printString(isTrue(gemDriveReadonly->value) ? "Yes" : "No");
     term_printString("\n\n");
 
-    term_printString("\n\n");
+    term_printString("\n");
   } else {
     term_printString("No\n\n\n\n\n");
   }
@@ -435,7 +436,7 @@ static void menu(void) {
     // Format floppy
     term_printString("\n  Format [I]mage | [C]onvert MSA to ST\n\n");
   } else {
-    term_printString("No\n\n\n\n\n\n");
+    term_printString("No\n\n\n\n\n\n\n");
   }
 
   // TODO: Merge code with the RTC options
@@ -445,7 +446,7 @@ static void menu(void) {
   SettingsConfigEntry *rtcEnabled = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
   DPRINTF("RTC: %s\n", rtcEnabled->value);
-  if (false && isTrue(rtcEnabled->value)) {
+  if (isTrue(rtcEnabled->value)) {
     term_printString("Yes\n");
     term_printString("  [H]ost NTP: ");
     // Print the NTP server host
@@ -486,13 +487,14 @@ static void menu(void) {
   } else {
     term_printString("No\n");
   }
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 3, 0);
-  term_printString("[E]xit desktop    [X] Return to Booster\n");
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
+  term_printString("[E]xit desktop    [X] Return to Booster");
 
+  vt52Cursor(TERM_SCREEN_SIZE_Y, 0);
   term_printString("\nSelect an option: ");
 }
 
-static void showCounter(int cdown) {
+static void __not_in_flash_func(showCounter)(int cdown) {
   // Clear the bar
   char msg[64];
   if (cdown > 0) {
@@ -539,7 +541,7 @@ void cmdExit(const char *arg) {
   term_printString("Exiting terminal...\n");
   // Send continue to desktop command
   haltCountdown = true;
-  appStatus = APP_EMULATION_INIT;
+  appStatus = APP_MODE_NTP_INIT;
 }
 
 void cmdBooster(const char *arg) {
@@ -616,7 +618,7 @@ static void drawPage(uint16_t top_offset) {
   term_printString("SPACE to confirm selection. ESC to exit");
 }
 
-static enum navStatus navigate_directory(
+static enum navStatus __not_in_flash_func(navigate_directory)(
     bool first_time, bool dirs_only, char key, EntryFilterFn filter_fn,
     char top_folder[MAX_FILENAME_LENGTH + 1]) {
   enum navStatus status = NAV_DIR_ERROR;
@@ -736,7 +738,7 @@ static enum navStatus navigate_directory(
   return status;
 }
 
-void cmdGemdriveFolder(const char *arg) {
+void __not_in_flash_func(cmdGemdriveFolder)(const char *arg) {
   // Check if the GEMDRIVE is enabled
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -879,7 +881,7 @@ void cmdFloppyEnabled(const char *arg) {
   display_refresh();
 }
 
-void cmdFloppiesFolder(const char *arg) {
+void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
@@ -1901,19 +1903,58 @@ void __not_in_flash_func(emul_start)() {
         dma_setResponseCB(
             chandler_dma_irq_handler_lookup);  // Set the chanlder handler
         chandler_init();                       // Initialize the command handler
+
         // Initializing the GEMDRIVE
         DPRINTF("Initializing the GEMDRIVE...\n");
         gemdrive_init();
         // Initializing Floppy drives
         DPRINTF("Initializing the floppy drives...\n");
         floppy_init();  // Initialize the floppy drives
+        // Initialize the RTC
+        DPRINTF("Initializing the RTC...\n");
+        rtc_initf();  // Initialize the RTC emulator
 
         chandler_addCB(gemdrive_loop);  // Add the GEMDRIVE loop
         chandler_addCB(floppy_loop);    // Add the floppy drives loop
+        chandler_addCB(rtc_loop);       // Add the RTC loop
 
         // Check remote commands
         appStatus = APP_EMULATION_RUNTIME;
         DPRINTF("GEMDRIVE initialized\n");
+        break;
+      }
+      case APP_MODE_NTP_DONE: {
+        // The NTP time has been set, we can now continue the emulation
+        DPRINTF("NTP time set, continuing...\n");
+        // Set the app status to APP_EMULATION_RUNTIME
+        appStatus = APP_EMULATION_INIT;
+        DPRINTF("RTC initialized. Moving on...\n");
+        display_refresh();
+        sleep_ms(SLEEP_LOOP_MS);
+        break;
+      }
+      case APP_MODE_NTP_INIT: {
+        // Querying the NTP time
+        DPRINTF("Querying the NTP time...\n");
+        int ret = rtc_queryNTPTime();
+        if (ret < 0) {
+          DPRINTF("Error querying the NTP time: %d\n", ret);
+          term_printString("Failed to set time.\n");
+        } else {
+          term_printString("Time set successfully!\n");
+          datetime_t rtcTime = {0};
+          rtc_get_datetime(&rtcTime);
+          char msg[40];
+          snprintf(msg, sizeof(msg),
+                   "Clock set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
+                   rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour,
+                   rtcTime.min, rtcTime.sec);
+          term_printString(msg);
+        }
+        // Check remote commands
+        appStatus = APP_MODE_NTP_DONE;
+        DPRINTF("RTC initialized\n");
+        display_refresh();
         break;
       }
       case APP_MODE_SETUP:
@@ -1933,7 +1974,7 @@ void __not_in_flash_func(emul_start)() {
             display_refresh();
             if (countdown <= 0) {
               haltCountdown = true;
-              appStatus = APP_EMULATION_INIT;
+              appStatus = APP_MODE_NTP_INIT;
             }
           }
         }

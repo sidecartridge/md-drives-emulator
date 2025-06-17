@@ -157,22 +157,22 @@ static int initRomEmulator(PIO pio, IRQInterceptionCallback requestCallback,
                         &pio->rxf[smReadROM], 1, true);
 
   // If there is a requestCallback function, then enable the DMA IRQ and set the
-  // callback Otherwise, simply don't enable the DMA IRQ Use the DMA_IRQ_1 for
-  // the read_addr_rom_dma_channel
+  // callback Otherwise, simply don't enable the DMA IRQ Use the ROMEMUL_DMA_IRQ
+  // for the read_addr_rom_dma_channel
   if (requestCallback != NULL) {
     DPRINTF("Enabling DMA IRQ for read_addr_rom_dma_channel.\n");
     dma_channel_set_irq1_enabled(readAddrRomDmaChannel, true);
-    irq_set_exclusive_handler(DMA_IRQ_1, requestCallback);
-    irq_set_enabled(DMA_IRQ_1, true);
+    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, requestCallback);
+    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
   }
   // If there is a responseCallback function, then enable the DMA IRQ and set
-  // the callback Otherwise, simply don't enable the DMA IRQ Use the DMA_IRQ_1
-  // for the lookup_data_rom_dma_channel
+  // the callback Otherwise, simply don't enable the DMA IRQ Use the
+  // ROMEMUL_DMA_IRQ for the lookup_data_rom_dma_channel
   if (responseCallback != NULL) {
     DPRINTF("Enabling DMA IRQ for lookup_data_rom_dma_channel.\n");
     dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, true);
-    irq_set_exclusive_handler(DMA_IRQ_1, responseCallback);
-    irq_set_enabled(DMA_IRQ_1, true);
+    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, responseCallback);
+    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
   }
 
   DPRINTF("ROM emulator initialized.\n");
@@ -185,17 +185,18 @@ void dma_setResponseCB(IRQInterceptionCallback responseCallback) {
         "Changing DMA callback function for lookup_data_rom_dma_channel.\n");
     // Disable DMA IRQ before modifying
     dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, false);
-    irq_set_enabled(DMA_IRQ_1, false);
+    irq_set_enabled(ROMEMUL_DMA_IRQ, false);
 
     // Remove any existing handler first
-    irq_remove_handler(DMA_IRQ_1, irq_get_exclusive_handler(DMA_IRQ_1));
+    irq_remove_handler(ROMEMUL_DMA_IRQ,
+                       irq_get_exclusive_handler(ROMEMUL_DMA_IRQ));
 
     // Now safely set the new one
-    irq_set_exclusive_handler(DMA_IRQ_1, responseCallback);
+    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, responseCallback);
 
     // Re-enable
     dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, true);
-    irq_set_enabled(DMA_IRQ_1, true);
+    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
     DPRINTF("DMA callback function changed.\n");
   }
 }
@@ -206,12 +207,12 @@ int init_romemul(IRQInterceptionCallback requestCallback,
   // Grant high bus priority to the DMA, so it can shove the processors out
   // of the way. This should only be needed if you are pushing things up to
   // >16bits/clk here, i.e. if you need to saturate the bus completely.
-  // bus_ctrl_hw->priority =
-  //     BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
-
   bus_ctrl_hw->priority =
-      BUSCTRL_BUS_PRIORITY_PROC0_BITS |
-      BUSCTRL_BUS_PRIORITY_PROC1_BITS;  // CPU priority over DMA
+      BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+
+  // bus_ctrl_hw->priority =
+  //     BUSCTRL_BUS_PRIORITY_PROC0_BITS |
+  //     BUSCTRL_BUS_PRIORITY_PROC1_BITS;  // CPU priority over DMA
 
   // Copy the content of the FLASH to RAM before initializing the emulator code
   // If not initialized, assume somebody else will copy "something" to RAM

@@ -201,11 +201,13 @@ char *term_getInputBuffer(void);
 /**
  * @brief Forces the input of a character as if typed by the user.
  *
- * This function simulates the insertion of a character into the terminal. It supports optional
- * modification of the input by treating the character as shifted when the shift key parameter is true.
+ * This function simulates the insertion of a character into the terminal. It
+ * supports optional modification of the input by treating the character as
+ * shifted when the shift key parameter is true.
  *
  * @param chr The character to be input.
- * @param shiftKey A boolean flag indicating if the character should be processed with a shift modifier.
+ * @param shiftKey A boolean flag indicating if the character should be
+ * processed with a shift modifier.
  */
 void term_forceInputChar(char chr, bool shiftKey);
 
@@ -229,7 +231,6 @@ void term_printScreen(void);
  * @param key The single key command to be recorded.
  */
 void term_setLastSingleKeyCommand(char key);
-
 
 // Generic commands to be used in the terminal
 // Manage application setttings

@@ -107,7 +107,7 @@ unsigned char u8x8DCustom(u8x8_t *u8x8, unsigned char msg, unsigned char argInt,
 
 // Initialize u8g2 with the custom buffer
 void display_setupU8g2() {
-  DPRINTF("Displat Bypass framebuffer? %s\n",
+  DPRINTF("Display Bypass framebuffer? %s\n",
           DISPLAY_BYPASS_FRAMEBUFFER ? "YES" : "NO");
 
 #if DISPLAY_BYPASS_FRAMEBUFFER == 1

@@ -162,12 +162,10 @@ void sdcard_getInfo(FATFS *fsPtr, uint32_t *totalSizeMb,
   *freeSpaceMb = freeSpaceBytes / SDCARD_MEGABYTE;
 }
 
-FRESULT sdcard_loadDirectory(const char *path,
-                             char entries_arr[][MAX_FILENAME_LENGTH + 1],
-                             uint16_t *entry_count, uint16_t *selected,
-                             uint16_t *page, bool dirs_only,
-                             EntryFilterFn filter_fn,
-                             char top_dir[MAX_FILENAME_LENGTH + 1]) {
+FRESULT __not_in_flash_func(sdcard_loadDirectory)(
+    const char *path, char entries_arr[][MAX_FILENAME_LENGTH + 1],
+    uint16_t *entry_count, uint16_t *selected, uint16_t *page, bool dirs_only,
+    EntryFilterFn filter_fn, char top_dir[MAX_FILENAME_LENGTH + 1]) {
   FILINFO fno;
   DIR dir;
   FRESULT res;

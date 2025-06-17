@@ -25,6 +25,7 @@
 #include "network.h"
 #include "pico/stdlib.h"
 #include "romemul.h"
+#include "rtc.h"
 #include "sdcard.h"
 #include "select.h"
 #include "term.h"
@@ -38,6 +39,8 @@
 enum {
   APP_EMULATION_RUNTIME = 0,  // Emulation during runtime
   APP_EMULATION_INIT = 1,     // Emulation init
+  APP_MODE_NTP_INIT = 2,      // NTP initialization
+  APP_MODE_NTP_DONE = 3,      // NTP done
   APP_MODE_SETUP = 255        // Setup
 };
 
