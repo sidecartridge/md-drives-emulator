@@ -960,7 +960,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
   // #endif
 
   // Only check the GEMDRVEMUL commands
-  if (!(lastProtocol->command_id & (APP_GEMDRVEMUL << 8))) return;
+  if (((lastProtocol->command_id >> 8) & 0xFF) != APP_GEMDRVEMUL) return;
 
   // Handle the command
   switch (lastProtocol->command_id) {
