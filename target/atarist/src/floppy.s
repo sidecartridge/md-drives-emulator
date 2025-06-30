@@ -85,8 +85,11 @@ floppy_start:
     tst.l (FLOPPY_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     beq .exit_graciouslly ; If the Floppy emulation is not enabled
 
+; Disable the MegaSTE cache and 16Mhz
+    jsr set_8mhz_megaste
+
 ; A little delay to let the rp2040 breathe
-    wait_sec
+;	wait_sec
 
 ; Get the hardware version 
     bsr detect_ms16
@@ -511,9 +514,9 @@ _bios_rwabs_b_continue:
 ;  none
 do_transfer_sidecart:
     ; START: WE MUST 'NOP' 16 BYTES HERE
-    move.b $ffff8e21.w, -(sp)        ; Save the old value of cpu speed. 4 BYTES
-	and.b #%00000001,$ffff8e21.w     ; disable MSTe cache. 6 BYTES
-	bclr.b #0,$ffff8e21.w            ; set CPU speed at 8mhz. 6 BYTES
+    move.b MEGASTE_SPEED_CACHE_REG.w, -(sp)        ; Save the old value of cpu speed. 4 BYTES
+	and.b #%00000001,MEGASTE_SPEED_CACHE_REG.w     ; disable MSTe cache. 6 BYTES
+	bclr.b #0,MEGASTE_SPEED_CACHE_REG.w            ; set CPU speed at 8mhz. 6 BYTES
     ; END: WE MUST 'NOP' 16 BYTES HERE
     tst.w d5                    ; test rwflag
     bne write_sidecart          ; if not, write
@@ -525,7 +528,7 @@ write_sidecart:
 
 exit_transfer_sidecart:
     ; START: WE MUST 'NOP' 4 BYTES HERE
-    move.b (sp)+, $ffff8e21.w   ; Restore the old value of cpu speed. 4 BYTES
+    move.b (sp)+, MEGASTE_SPEED_CACHE_REG.w   ; Restore the old value of cpu speed. 4 BYTES
     ; END: WE MUST 'NOP' 4 BYTES HERE
     rts
 
