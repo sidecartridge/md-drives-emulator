@@ -406,6 +406,8 @@ void rtc_initf() {
 
   SET_SHARED_PRIVATE_VAR(RTCEMUL_SVAR_ENABLED, 0, memorySharedAddress,
                          RTCEMUL_SHARED_VARIABLES_OFFSET);
+  SET_SHARED_PRIVATE_VAR(RTCEMUL_SVAR_GET_TIME_ADDR, 0, memorySharedAddress,
+                         RTCEMUL_SHARED_VARIABLES_OFFSET);
 
   // RTC type
   SettingsConfigEntry *rtcType =
@@ -508,7 +510,7 @@ void rtc_initf() {
 void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
                                    uint16_t *payloadPtr) {
   // Only check the RTCEMUL commands
-  if (!(lastProtocol->command_id & (APP_RTCEMUL << 8))) return;
+  if (((lastProtocol->command_id >> 8) & 0xFF) != APP_RTCEMUL) return;
 
   // Handle the command
   switch (lastProtocol->command_id) {
@@ -536,19 +538,6 @@ void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("RTCEMUL_SAVE_VECTORS received. Saving the vectors\n");
       break;
     }
-    case RTCEMUL_REENTRY_LOCK: {
-      WRITE_LONGWORD_RAW(
-          memorySharedAddress, RTCEMUL_REENTRY_TRAP,
-          0xFFFFFFFF);  // Set the reentry trap address to 0xFFFFFFFF
-      DPRINTF("RTCEMUL_REENTRY_LOCK received. Locking the reentry trap\n");
-      break;
-    }
-    case RTCEMUL_REENTRY_UNLOCK: {
-      WRITE_LONGWORD_RAW(memorySharedAddress, RTCEMUL_REENTRY_TRAP,
-                         0x0);  // Set the reentry trap address to 0x0
-      DPRINTF("RTCEMUL_REENTRY_UNLOCK received. Unlocking the reentry trap\n");
-      break;
-    }
     case RTCEMUL_SET_SHARED_VAR: {
       uint16_t *payload = ((uint16_t *)(lastProtocol)->payload);
       // Jump the random token
@@ -567,7 +556,7 @@ void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
     }
     default:
       // Unknown command
-      DPRINTF("Unknown command\n");
+      DPRINTF("Unknown command: %x\n", lastProtocol->command_id);
       break;
   }
 }
