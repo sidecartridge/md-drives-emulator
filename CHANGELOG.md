@@ -13,6 +13,7 @@ No changes in the current features.
 ### Fixes
 Everything is a massive and ongoing fix...
 
+---
 
 ## v1.0.3alpha (2025-06-17) - Alpha release
 
@@ -29,6 +30,8 @@ Real Time Clock (RTC) support has been added. The RTC is now available in the sy
 ### Fixes
 Everything is a massive and ongoing fix...
 
+---
+
 ## v1.0.2alpha (2025-06-10) - Alpha release
 
 This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
@@ -43,5 +46,9 @@ No new features have been added in this release.
 ### Fixes
 Everything is a massive and ongoing fix...
 
+---
+
 ## v1.0.1alpha (2025-06-05) - Alpha release
 - First version
+
+---
