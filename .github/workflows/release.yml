@@ -35,10 +35,7 @@ jobs:
       run: sed -i 's/-it//' /usr/local/bin/stcmd
 
     - name: Run - Build PICO_W release version
-      run: ./build.sh pico_w release image
-
-    - name: Run - Build PICO_W debug version
-      run: ./build.sh pico_w debug
+      run: ../build.sh pico_w Release 1805c20c-5b83-4ea1-9264-6fe13da448a0
 
     - name: Get current date
       id: build
