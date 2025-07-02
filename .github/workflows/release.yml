@@ -55,11 +55,17 @@ jobs:
         awk '/^---$/ { exit } { print }' CHANGELOG.md >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
 
+    - name: Copy release artifacts
+      run: |
+        mkdir -p release
+        cp dist/*.uf2 release/
+        cp dist/*.json release/
+
     - name: Upload the binaries to release
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: dist/*.json,dist/*.uf2
+        file: release/*
         tag: ${{ github.ref }}
         release_name: ${{ env.RELEASE_VERSION }}
         body: |
