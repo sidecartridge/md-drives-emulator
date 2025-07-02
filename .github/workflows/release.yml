@@ -37,6 +37,10 @@ jobs:
     - name: Run - remove interactive
       run: sed -i 's/-it//' /usr/local/bin/stcmd
 
+    - name: Install dependencies
+      run: |
+        pip install boto3
+          
     - name: Run - Build PICO_W release version
       run: ./build.sh pico_w Release 1805c20c-5b83-4ea1-9264-6fe13da448a0
 
@@ -77,4 +81,26 @@ jobs:
         file_glob: true
         overwrite: true
         make_latest: true
+
+    - name: Upload artifacts to S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: us-east-1  # or your bucket's region
+      run: |
+        python3 <<EOF
+        import os
+        import boto3
+
+        s3 = boto3.client('s3')
+        release_dir = 'release'
+        bucket_name = 'atarist.sidecartridge.com'
+
+        for filename in os.listdir(release_dir):
+            local_path = os.path.join(release_dir, filename)
+            s3_path = filename  # uploaded at root of the bucket
+            print(f"Uploading {local_path} to s3://{bucket_name}/{s3_path}")
+            s3.upload_file(local_path, bucket_name, s3_path)
+        EOF
+
   
