@@ -171,6 +171,9 @@ first:
     even
 
 pre_auto:
+; Disable the MegaSTE cache and 16Mhz
+    jsr set_8mhz_megaste
+
 ; Get the screen memory address to display
 	get_screen_base
 	move.l d0, a6				; Save the screen memory address in A6

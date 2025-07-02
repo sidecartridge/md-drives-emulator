@@ -56,6 +56,8 @@
 
 // Now the index for the shared variables of the program
 #define RTCEMUL_SVAR_ENABLED (RTCEMUL_SHARED_VARIABLE_SIZE + 0)  // enabled flag
+#define RTCEMUL_SVAR_GET_TIME_ADDR \
+  (RTCEMUL_SHARED_VARIABLE_SIZE + 1)  //  Get time address
 
 // We will need 32 bytes extra for the variables of the floppy emulator
 #define RTCEMUL_VARIABLES_OFFSET                    \
@@ -68,10 +70,9 @@
 #define RTCEMUL_DATETIME_MSDOS \
   (RTCEMUL_DATETIME_BCD + 8)  // datetime_bcd + 8 bytes
 #define RTCEMUL_OLD_XBIOS_TRAP \
-  (RTCEMUL_DATETIME_MSDOS + 8)  // datetime_msdos + 8 bytes
-#define RTCEMUL_REENTRY_TRAP \
-  (RTCEMUL_OLD_XBIOS_TRAP + 4)                        // old_bios trap + 4 bytes
-#define RTCEMUL_Y2K_PATCH (RTCEMUL_REENTRY_TRAP + 4)  // reentry_trap + 4 byte
+  (RTCEMUL_DATETIME_MSDOS + 8)  // datetime_msdos + 8 bytes // old_bios trap + 4
+                                // bytes
+#define RTCEMUL_Y2K_PATCH (RTCEMUL_OLD_XBIOS_TRAP + 4)  // reentry_trap + 4 byte
 
 #define NTP_DEFAULT_HOST "pool.ntp.org"
 #define NTP_DEFAULT_PORT 123
@@ -90,13 +91,7 @@
   (APP_RTCEMUL << 8 | 1)  // Read the time from the internal RTC
 #define RTCEMUL_SAVE_VECTORS \
   (APP_RTCEMUL << 8 | 2)  // Save the vectors of the RTC emulator
-#define RTCEMUL_REENTRY_LOCK \
-  (APP_RTCEMUL << 8 |        \
-   3)  // Command code to lock the reentry to XBIOS in the Sidecart
-#define RTCEMUL_REENTRY_UNLOCK \
-  (APP_RTCEMUL << 8 |          \
-   4)  // Command code to unlock the reentry to XBIOS in the Sidecart
-#define RTCEMUL_SET_SHARED_VAR (APP_RTCEMUL << 8 | 5)  // Set a shared variable
+#define RTCEMUL_SET_SHARED_VAR (APP_RTCEMUL << 8 | 3)  // Set a shared variable
 
 #define RTCEMUL_PARAMETERS_MAX_SIZE 20  // Maximum size of the parameters
 

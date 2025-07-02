@@ -1196,7 +1196,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
   // #endif
 
   // Only check the FLOPPYEMUL commands
-  if (!(lastProtocol->command_id & (APP_FLOPPYEMUL << 8))) return;
+  if (((lastProtocol->command_id >> 8) & 0xFF) != APP_FLOPPYEMUL) return;
 
   // Handle the command
   switch (lastProtocol->command_id) {
@@ -1291,6 +1291,11 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         DPRINTF(
             "Floppy Emulator: Self-modifying code to remove MegaSTE specific "
             "code\n");
+      } else {
+        // Self-modifying code to change the speed of the cpu and cache or not.
+        DPRINTF(
+            "Floppy Emulator: MegaSTE specific code detected. Do not "
+            "modify.\n");
       }
       break;
     }

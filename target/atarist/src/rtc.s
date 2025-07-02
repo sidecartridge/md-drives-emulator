@@ -25,15 +25,14 @@ APP_RTCEMUL             equ $0300                           ; MSB is the app cod
 CMD_TEST_NTP            equ ($0 + APP_RTCEMUL)              ; Command code to ping to the Sidecart
 CMD_READ_DATETME        equ ($1 + APP_RTCEMUL)              ; Command code to read the date and time from the Sidecart
 CMD_SAVE_VECTORS        equ ($2 + APP_RTCEMUL)              ; Command code to save the vectors in the Sidecart
-CMD_REENTRY_LOCK        equ ($3 + APP_RTCEMUL)              ; Command code to lock the reentry to XBIOS in the Sidecart
-CMD_REENTRY_UNLOCK      equ ($4 + APP_RTCEMUL)              ; Command code to unlock the reentry to XBIOS in the Sidecart
-CMD_SET_SHARED_VAR      equ ($5 + APP_RTCEMUL)              ; Command code to set a shared variable in the Sidecart
+CMD_SET_SHARED_VAR      equ ($3 + APP_RTCEMUL)              ; Command code to set a shared variable in the Sidecart
 
 RTCEMUL_SHARED_VARIABLES         equ (RANDOM_TOKEN_SEED_ADDR + 4)        ; ROM EXCHANGE BUFFER address
 RTCEMUL_SHARED_VARIABLE_SIZE     equ (RTCEMUL_GAP_SIZE / 4) ;  6KB gap divided by 4 bytes per longword
 RTCEMUL_SHARED_VARIABLES_COUNT   equ 32  ; Size of the shared variables of the shared functions
 
 SVAR_ENABLED            equ (RTCEMUL_SHARED_VARIABLE_SIZE)      ; Enabled flag
+SVAR_GET_TIME_ADDR      equ (RTCEMUL_SHARED_VARIABLE_SIZE + 1)            ; Get time address
 
 ; We will need 32 bytes extra for the variables of the floppy emulator
 RTCEMUL_VARIABLES_OFFSET equ (ROM_EXCHG_BUFFER_ADDR + RTCEMUL_GAP_SIZE + RTCEMUL_SHARED_VARIABLES_COUNT)
@@ -41,8 +40,9 @@ RTCEMUL_VARIABLES_OFFSET equ (ROM_EXCHG_BUFFER_ADDR + RTCEMUL_GAP_SIZE + RTCEMUL
 RTCEMUL_DATETIME_BCD    equ (RTCEMUL_VARIABLES_OFFSET)      ; first variable in the RTC emulator
 RTCEMUL_DATETIME_MSDOS  equ (RTCEMUL_DATETIME_BCD + 8)      ; datetime_bcd + 8 bytes
 RTCEMUL_OLD_XBIOS       equ (RTCEMUL_DATETIME_MSDOS + 8)    ; datetime_msdos + 8 bytes
-RTCEMUL_REENTRY_TRAP    equ (RTCEMUL_OLD_XBIOS + 4)         ; old_bios + 4 bytes
-RTCEMUL_Y2K_PATCH       equ (RTCEMUL_REENTRY_TRAP + 4)      ; reentry_trap + 4 byte
+RTCEMUL_Y2K_PATCH       equ (RTCEMUL_OLD_XBIOS + 4)      ; reentry_trap + 4 byte
+RTCEMUL_GET_TIME_ADDR   equ (RTCEMUL_Y2K_PATCH + 4)         ; y2k_patch + 4 bytes
+
 
 XBIOS_TRAP_ADDR         equ $b8                             ; TRAP #14 Handler (XBIOS)
 _dskbufp        equ $4c6    ; Address of the disk buffer pointer    
@@ -55,28 +55,17 @@ _longframe      equ $59e    ; Address of the long frame flag. If this value is 0
 
     org $FA3400         ; Start of the code. First 4KB bytes are reserved for the terminal.
 
-; Send a synchronous command to the Sidecart setting the reentry flag for the next XBIOS calls
-; inside our trapped XBIOS calls. Should be always paired with reentry_xbios_unlock
-reentry_xbios_lock	macro
-                    movem.l d0-d7/a0-a6,-(sp)            ; Save all registers
-                    send_sync CMD_REENTRY_LOCK,0         ; Command code to lock the reentry
-                    movem.l (sp)+,d0-d7/a0-a6            ; Restore all registers
-                	endm
-
-; Send a synchronous command to the Sidecart clearing the reentry flag for the next XBIOS calls
-; inside our trapped XBIOS calls. Should be always paired with reentry_xbios_lock
-reentry_xbios_unlock  macro
-                    movem.l d0-d7/a0-a6,-(sp)            ; Save all registers
-                    send_sync CMD_REENTRY_UNLOCK,0       ; Command code to unlock the reentry
-                    movem.l (sp)+,d0-d7/a0-a6            ; Restore all registers
-                	endm
-
 rom_function:
     tst.l (RTCEMUL_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     beq _exit_graciouslly ; If the RTC emulation is not enabled
 
+; Disable the MegaSTE cache and 16Mhz
+    jsr set_8mhz_megaste
+
+; A little delay to let the rp2040 breathe
+;	wait_sec
+
 ; Get information about the hardware
-	wait_sec
     bsr detect_hw
     bsr get_tos_version
 _ntp_ready:
@@ -144,11 +133,11 @@ _read_timeout:
     rts
 
 custom_xbios:
-    btst #0, RTCEMUL_REENTRY_TRAP      ; Check if the reentry is locked
-    beq.s _custom_bios_trapped         ; If the bit is active, we are in a reentry call. We need to exec_old_handler the code
-
-    move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
-    rts 
+;    btst #0, RTCEMUL_REENTRY_TRAP      ; Check if the reentry is locked
+;    beq.s _custom_bios_trapped         ; If the bit is active, we are in a reentry call. We need to exec_old_handler the code
+;
+;    move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
+;    rts 
 
 _custom_bios_trapped:
     btst #5, (sp)                    ; Check if called from user mode
@@ -171,28 +160,38 @@ _notlong:
     cmp.w #23,6(a0)                 ; is it XBIOS call 23 / getdatetime?
     beq.s _getdatetime              ; if yes, go to our own routine
     cmp.w #22,6(a0)                 ; is it XBIOS call 22 / setdatetime?
-    beq.s _setdatetime              ; if yes, go to our own routine
-
-_continue_xbios:
+    beq.s _setdatetime              ; if yes, go to our own routine:
     move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
     rts 
 
 ; Adjust the time when reading to compensate for the Y2K problem
 ; We should not tap this call for EmuTOS
 _getdatetime:
-    reentry_xbios_lock
-	move.w #23,-(sp)
-	trap #14
-	addq.l #2,sp
+; This code has been disable because if there is another driver initialized after this code trapping the XBIOS,
+; it won't work as intended.
+;    tst.l (RTCEMUL_SHARED_VARIABLES + (SVAR_GET_TIME_ADDR * 4)) ; If SVAR_GET_TIME_ADDR is set, we can directly use it
+;    bne.s _bypass_command
+    ; We need to save the current get time function address
+    movem.l d3-d4/a0, -(sp)
+    move.l #SVAR_GET_TIME_ADDR, d3   ; D3 Variable index
+    move.l 2(a0), d4                   ; D4 Variable value
+    send_sync CMD_SET_SHARED_VAR, 8
+    movem.l (sp)+, d3-d4/a0
+_bypass_command:
+    move.l #_getdatetime_fix, 2(a0)
+    move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
+    rts 
+_getdatetime_fix:
 	add.l #$3c000000,d0 ; +30 years for all TOS except EmuTOS
-    reentry_xbios_unlock
-	rte
+    move.l (RTCEMUL_SHARED_VARIABLES + (SVAR_GET_TIME_ADDR * 4)), a0
+	jmp (a0)
 
 ; Adjust the time when setting to compensate for the Y2K problem
 ; We should not tap this call for TOS 2.06 and EmuTOS
 _setdatetime:
 	sub.l #$3c000000,8(a0)
-    bra.s _continue_xbios
+    move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
+    rts 
 
 ; Get the date and time from the RP2040 and set the IKBD information
 ; d0.l : Date and time in MSDOS format

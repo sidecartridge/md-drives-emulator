@@ -160,7 +160,6 @@ VEC_GEMDOS              equ $21                             ; Trap #1 GEMDOS vec
 XBIOS_TRAP_ADDR         equ $b8                             ; TRAP #14 Handler (XBIOS)
 DSKBUFP_TMP_ADDR        equ $100                            ; Address of the temporary registry buffer to store the DSKBUF pointer
 DSKBUFP_SWAP_ADDR       equ $200                            ; Address of the temporary swap buffer to store the DSKBUF pointer
-MEGASTE_SPEED_CACHE_REG equ $FFFF8E21                       ; Address of the registry to change speed and cache in the MegaSTE
 USE_DSKBUF              equ 0                               ; Use the DSKBUF pointer to store the address of the buffer to read the data from the Sidecart. 0 = Stack, 1 = disk buffer
 
 GEMDOS_EINTRN           equ -65 ; GEMDOS Internal error
@@ -263,8 +262,11 @@ gemdrive_start:
     tst.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_ENABLED * 4))
     beq .exit_graciouslly ; If the GEMDRIVE is not enabled
 
+; Disable the MegaSTE cache and 16Mhz
+    jsr set_8mhz_megaste
+
 ; A little delay to let the rp2040 breathe
-    wait_sec
+;	wait_sec
 
 ; Get the hardware version 
     bsr detect_hw
@@ -330,7 +332,7 @@ test_msg:
 
 ; Get the cookie jar from d0.l as parameter
 save_vectors:
-    cmp.l #COOKIE_JAR_MEGASTE, d0    ; Check if the computer is a MegaSTE
+    cmp.l #COOKIE_JAR_MEGASTE, (GEMDRVEMUL_SHARED_VARIABLES + SHARED_VARIABLE_HARDWARE_TYPE)    ; Check if the computer is a MegaSTE
     beq.s .save_vectors_megaste      ; If it is a MegaSTE, use the trap with speed and cache change
     move.l #gemdrive_trap,-(sp)      ; Otherwise, use the standard entry point
     bra.s .save_vectors_continue
