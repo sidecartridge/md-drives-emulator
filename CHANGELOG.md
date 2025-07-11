@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.5alpha (2025-07-10) - Alpha release
+
+This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
+
+### Changes
+- **Faster ROM emulation startup**: The code to initialize the ROM emulation has been moved before reading the local configuration parameters. This change allows the system to start up faster, and it avoids the annoying "bombs" that could occur when the ROM emulation was not ready before accessing the ROM code.
+- **Display a text during the boot**: A text is displayed during the boot process to indicate that the system is starting up. This change improves the user experience by providing feedback during the boot process.
+- **Faster write to the command buffer**: The code to write to the command buffer has been optimized, improving the performance of the system when sending commands.
+- **Optimized microSD card configuration**: After testing different configurations, the microSD card configuration has been optimized to improve performance and reliability. This change enhances the overall user experience when accessing files on the microSD card.
+- **Disabled USB mass storage after boot**: The USB mass storage feature has been disabled after the boot process. This change prevents potential conflicts and improves system stability. The USB mass storage only works during the setup menu. 
+
+### New features
+No new features so far.
+
+### Fixes
+Everything is a massive and ongoing fix...
+
+---
+
 ## v1.0.4alpha (2025-06-17) - Alpha release
 
 This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
