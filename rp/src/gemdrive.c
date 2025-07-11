@@ -1639,6 +1639,16 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
                                     GEMDOS_EINTRN);
           } else {
             addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount);
+
+            // Initialize the file offset
+            FileDescriptors *file = getFileByFD(fdescriptors, fdCount);
+            if (file != NULL) {
+              file->offset = 0;  // Initialize the offset to 0
+              DPRINTF("File offset initialized to 0 for fd: %d\n", fdCount);
+            } else {
+              DPRINTF("ERROR: Could not find file descriptor %d\n", fdCount);
+            }
+
             DPRINTF("File opened with file descriptor: %d\n", fdCount);
             // Return the file descriptor
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
@@ -1711,6 +1721,15 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           errorCode = GEMDOS_EINTRN;
         } else {
           addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter);
+
+          // Initialize the file offset
+          FileDescriptors *file = getFileByFD(fdescriptors, fdCounter);
+          if (file != NULL) {
+            file->offset = 0;  // Initialize the offset to 0
+            DPRINTF("File offset initialized to 0 for fd: %d\n", fdCounter);
+          } else {
+            DPRINTF("ERROR: Could not find file descriptor %d\n", fdCounter);
+          }
 
           // MISSING ATTRIBUTE MODIFICATION
           char fattrSTStr[7] = "";
@@ -2123,8 +2142,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("Reading 0x%x bytes at offset 0x%x\n", toRead, offset);
 
       // Zero-fill the shared buffer region
-      memset((void *)(memorySharedAddress + GEMDRIVE_READ_BUFF), 0,
-             DEFAULT_FOPEN_READ_BUFFER_SIZE);
+      // memset((void *)(memorySharedAddress + GEMDRIVE_READ_BUFF), 0,
+      //        DEFAULT_FOPEN_READ_BUFFER_SIZE);
       UINT bytesRead = 0;
       res = f_read(&file->fobject,
                    (void *)(memorySharedAddress + GEMDRIVE_READ_BUFF), toRead,
@@ -2187,21 +2206,6 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           // Transform buffer's words from little endian to big endian
           // inline
           uint16_t *target = payloadPtr;
-          // Calculate the checksum of the buffer
-          // Use a 16 bit checksum to minimize the number of loops
-          uint16_t *target16 = (uint16_t *)target;
-          UINT words_to_write = buff_size / 2;
-          uint16_t chk = 0;
-          // Suma las palabras completas
-          for (UINT i = 0; i < words_to_write; i++) {
-            chk += target16[i];
-          }
-          // If the buffer is odd, add the last byte to the checksum
-          if ((buff_size % 2) > 0) {
-            uint8_t *byte_tail = (uint8_t *)&target16[words_to_write];
-            chk += (byte_tail[1] << 8);
-          }
-          DPRINTF("Checksum for %u bytes: x%04x\n", buff_size, chk);
           // Change the endianness of the bytes read
           CHANGE_ENDIANESS_BLOCK16(target, (buff_size + 1) & ~1);
           // Write the bytes
@@ -2214,8 +2218,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
                                     GEMDOS_EINTRN);
           } else {
-            WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_CHK,
-                                    (uint32_t)chk);
+            // Update the offset of the file
+            file->offset += buff_size;
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
                                     bytes_write);
           }
