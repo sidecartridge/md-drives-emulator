@@ -130,6 +130,19 @@ void sdcard_setSpiSpeedSettings() {
   if (spiSpeed != NULL) {
     baudRate = atoi(spiSpeed->value);
   }
+
+  // Limit the max baud rate to 24 MHz
+  if (baudRate > SDCARD_MAX_KHZ) {
+    DPRINTF("Baud rate too high. Setting to max %d KHz\n", SDCARD_MAX_KHZ);
+    baudRate = SDCARD_MAX_KHZ;
+  }
+
+  // Limit the min baud rate to 1 MHz
+  if (baudRate < SDCARD_MIN_KHZ) {
+    DPRINTF("Baud rate too low. Setting to min %d KHz\n", SDCARD_MIN_KHZ);
+    baudRate = SDCARD_MIN_KHZ;
+  }
+
   sdcard_changeSpiSpeed(baudRate);
 }
 
