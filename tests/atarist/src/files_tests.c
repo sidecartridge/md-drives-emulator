@@ -242,6 +242,61 @@ void test_append_mode() {
   Fdelete("APPEND.TXT");
 }
 
+void test_tiny_files() {
+  int handle = Fcreate("TINY.TXT", 0);
+  Fwrite(handle, 1, "A");
+  Fclose(handle);
+
+  handle = Fopen("TINY.TXT", 0);
+  char buffer[1] = {0};
+  long read = Fread(handle, 1, buffer);
+  Fclose(handle);
+
+  print("Read tiny file content: '%s', should be 'A'\n", buffer);
+  assert_result("Read tiny file", read == 1 && buffer[0] == 'A', 1);
+
+  handle = Fcreate("TINY.TXT", 0);  // recreate
+  Fwrite(handle, 2, "BC");
+  Fclose(handle);
+
+  handle = Fopen("TINY.TXT", 0);
+  char buffer2[2] = {0};
+  read = Fread(handle, 2, buffer2);
+  Fclose(handle);
+
+  print("Read recreated tiny file content: '%s', should be 'BC'\n", buffer2);
+  assert_result("Read recreated tiny file",
+                read == 2 && strcmp(buffer2, "BC") == 0, 1);
+
+  handle = Fcreate("TINY.TXT", 0);  // recreate again
+  Fwrite(handle, 3, "DEF");
+  Fclose(handle);
+
+  handle = Fopen("TINY.TXT", 0);
+  char buffer3[3] = {0};
+  read = Fread(handle, 3, buffer3);
+  Fclose(handle);
+
+  print("Read recreated tiny file content: '%s', should be 'DEF'\n", buffer3);
+  assert_result("Read recreated tiny file again",
+                read == 3 && strcmp(buffer3, "DEF") == 0, 1);
+
+  handle = Fcreate("TINY.TXT", 0);  // recreate again
+  Fwrite(handle, 4, "GHIJ");
+  Fclose(handle);
+
+  handle = Fopen("TINY.TXT", 0);
+  char buffer4[4] = {0};
+  read = Fread(handle, 4, buffer4);
+  Fclose(handle);
+
+  print("Read recreated tiny file content: '%s', should be 'GHIJ'\n", buffer4);
+  assert_result("Read recreated tiny file again",
+                read == 4 && strcmp(buffer4, "GHIJ") == 0, 1);
+
+  Fdelete("TINY.TXT");
+}
+
 void test_overwrite_file() {
   int handle = Fcreate("OVER.TXT", 0);
   Fwrite(handle, 6, "OLD123");
@@ -256,7 +311,9 @@ void test_overwrite_file() {
   Fread(handle, 3, buffer);
   Fclose(handle);
 
-  assert_result("Overwrite existing file", strcmp(buffer, "NEW") == 0, 1);
+  print("Content of OVER.TXT: '%s', should be 'NEW'\n", buffer);
+  assert_result("Overwrite existing file", written == 3, 1);
+  assert_result("Read after overwrite", strcmp(buffer, "NEW") == 0, 1);
   Fdelete("OVER.TXT");
 }
 
@@ -407,6 +464,8 @@ void test_delete_while_open() {
 int run_files_tests(int presskey) {
   print("=== GEMDOS Files Test Suite ===\n\r");
 
+  test_tiny_files();
+  if (presskey) press_key("");
   test_delete_while_open();
   if (presskey) press_key("");
   test_concurrent_handles();
