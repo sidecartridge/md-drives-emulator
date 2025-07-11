@@ -311,7 +311,7 @@ static void showTitle() {
       "\x1B"
       "E"
       "\x1Bp"
-      "Drives Emulator - " RELEASE_VERSION "\n\x1Bq");
+      "Multi-drive Emulator - " RELEASE_VERSION "\n\x1Bq");
 }
 
 static void __not_in_flash_func(menu)(void) {
@@ -487,11 +487,11 @@ static void __not_in_flash_func(menu)(void) {
   } else {
     term_printString("No\n");
   }
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 2, 0);
   term_printString("[E]xit desktop    [X] Return to Booster");
 
-  vt52Cursor(TERM_SCREEN_SIZE_Y, 0);
-  term_printString("\nSelect an option: ");
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
+  term_printString("Select an option: ");
 }
 
 static void __not_in_flash_func(showCounter)(int cdown) {
@@ -1598,31 +1598,11 @@ void __not_in_flash_func(emul_start)() {
   // protocol between the two devices in the tprotocol.h file.
   //
 
-  // 1. Check if the host device must be initialized to perform the
-  // emulation
-  //    of the device, or start in setup/configuration mode
-  SettingsConfigEntry *appMode =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_MODE);
-  int appModeValue = APP_MODE_SETUP;  // Setup menu
-  if (appMode == NULL) {
-    DPRINTF(
-        "APP_MODE_SETUP not found in the configuration. Using default "
-        "value\n");
-  } else {
-    appModeValue = atoi(appMode->value);
-    DPRINTF("Start emulation in mode: %i\n", appModeValue);
-  }
-
-  // 2. Initialiaze the normal operation of the app, unless the
+  // 1. Initialiaze the normal operation of the app, unless the
   // configuration option says to start the config app Or a SELECT button is
   // (or was) pressed to start the configuration section of the app
 
-  // In this example, the flow will always start the configuration app first
-  // The ROM Emulator app for example will check here if the start directly
-  // in emulation mode is needed or not
-
-  // 3. If we are here, it means the app is not in emulation mode, but in
-  // setup/configuration mode
+  // 2. Launch the ROM emulation with the remote computer driver code
 
   // As a rule of thumb, the remote device (the computer) driver code must
   // be copied to the RAM of the host device where the emulation will take
@@ -1642,6 +1622,21 @@ void __not_in_flash_func(emul_start)() {
   init_romemul(NULL, term_dma_irq_handler_lookup, false);
 
   // After this point, the remote computer can execute the code
+
+  // 3. Check if the host device must be initialized to perform the
+  // emulation
+  //    of the device, or start in setup/configuration mode
+  SettingsConfigEntry *appMode =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_MODE);
+  int appModeValue = APP_MODE_SETUP;  // Setup menu
+  if (appMode == NULL) {
+    DPRINTF(
+        "APP_MODE_SETUP not found in the configuration. Using default "
+        "value\n");
+  } else {
+    appModeValue = atoi(appMode->value);
+    DPRINTF("Start emulation in mode: %i\n", appModeValue);
+  }
 
   // 4. During the setup/configuration mode, the driver code must interact
   // with the user to configure the device. To simplify the process, the
@@ -1837,9 +1832,6 @@ void __not_in_flash_func(emul_start)() {
   // the device.
   init(NULL);
 
-  // Init the usb device
-  usb_mass_init();
-
 // Blink on
 #ifdef BLINK_H
   blink_on();
@@ -1852,6 +1844,8 @@ void __not_in_flash_func(emul_start)() {
   // For testing purposes, this app only shows commands to manage the
   // settings
   DPRINTF("Start the app loop here\n");
+  bool usbInitialized = false;         // USB not initialized yet
+  bool usbMassStorageMounted = false;  // USB mass storage not mounted
   absolute_time_t wifiScanTime = make_timeout_time_ms(
       WIFI_SCAN_TIME_MS);  // 3 seconds minimum for network scanning
 
@@ -1868,19 +1862,13 @@ void __not_in_flash_func(emul_start)() {
     // #endif
     // if the USB is connected and the VBUS is high
     // if (usb_mass_get_mounted()) {
-    if (usbMassStorageReady != usb_mass_get_mounted()) {
-      usbMassStorageReadyPrevious = usbMassStorageReady;
-      usbMassStorageReady = usb_mass_get_mounted();
-      menu();
-    }
-    if (usbMassStorageReady) {
-      haltCountdown = true;
-    }
-    tud_task();  // tinyusb device task
-    usb_cdc_task();
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
+
+        // if (usbMassStorageMounted) {
+        //   tud_task();  // tinyusb device task
+        // }
 
         // Call all the "drives" loops
         chandler_loop();
@@ -1896,6 +1884,17 @@ void __not_in_flash_func(emul_start)() {
         // The app is running in initialization mode
         // Let's deinit the terminal emulator
         deinit();
+
+        // // Disable the USB if nothing is mounted
+        // if (!usbMassStorageMounted) {
+        //   // Disconnect the USB mass storage
+        //   DPRINTF("Disconnecting the USB mass storage...\n");
+        //   tud_disconnect();
+        // }
+
+        // Force disconnect the USB mass storage
+        DPRINTF("Forcing disconnect the USB mass storage...\n");
+        tud_disconnect();
 
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
@@ -1961,6 +1960,26 @@ void __not_in_flash_func(emul_start)() {
       default: {
         // Check remote commands
         term_loop();
+
+        if (!usbInitialized) {
+          // Init the usb device
+          usb_mass_init();
+          usbInitialized = true;
+          DPRINTF("USB mass storage initialized\n");
+        } else {
+          usbMassStorageMounted = usb_mass_get_mounted();
+          // Show on screen the change in the status of the USB mass storage
+          if (usbMassStorageReady != usbMassStorageMounted) {
+            usbMassStorageReadyPrevious = usbMassStorageReady;
+            usbMassStorageReady = usbMassStorageMounted;
+            menu();
+          }
+          if (usbMassStorageReady) {
+            haltCountdown = true;
+          }
+
+          tud_task();  // tinyusb device task
+        }
 
         if (!haltCountdown) {
           // Check if at least one second (1,000,000 µs) has passed since
