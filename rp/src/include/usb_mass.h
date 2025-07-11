@@ -32,6 +32,9 @@
 #undef TUD_OPT_HIGH_SPEED
 #define TUD_OPT_HIGH_SPEED false
 
+#undef CFG_TUSB_DEBUG
+#define CFG_TUSB_DEBUG 0
+
 // Init USB Mass storage device
 bool usb_mass_init(void);
 bool usb_mass_start(void);

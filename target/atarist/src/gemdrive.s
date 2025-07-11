@@ -10,7 +10,7 @@
 RANDOM_SEED             equ $1284FBCD  ; Random seed for the random number generator. Should be provided by the pico in the future
 DELAY_NOPS              equ 0          ; Number of nops to wait each test of the random number generator
 BUFFER_READ_SIZE        equ 4096       ; Number of bytes to read from the Sidecart in each read call
-BUFFER_WRITE_SIZE       equ 2048       ; Number of bytes to write to the Sidecart in each write call
+BUFFER_WRITE_SIZE       equ 1024       ; Number of bytes to write to the Sidecart in each write call
 BASEPAGE_OFFSET_DTA     equ 32         ; Offset of the DTA in the basepage
 FWRITE_RETRIES          equ 3          ; Number of retries to write the data to the Sidecart per each Sidecart call
 EMULATED_DRIVE          equ 2          ; Emulated drive number: C = 2, D = 3, E = 4, F = 5, G = 6, H = 7, I = 8, J = 9, K = 10, L = 11, M = 12
@@ -40,7 +40,8 @@ ROM_EXCHG_BUFFER_ADDR   equ (ROM4_START_ADDR + $8200)       ; ROM4 buffer addres
 RANDOM_TOKEN_ADDR:      equ (ROM_EXCHG_BUFFER_ADDR)
 RANDOM_TOKEN_SEED_ADDR  equ (RANDOM_TOKEN_ADDR + 4)         ; RANDOM_TOKEN_ADDR + 0 bytes
 RANDOM_TOKEN_POST_WAIT  equ $1                              ; Wait this cycles after the random number generator is ready
-COMMAND_TIMEOUT         equ $00000FFF ; Timeout for the command
+COMMAND_TIMEOUT         equ $000000FFF ; Timeout for the simple command
+COMMAND_WRITE_TIMEOUT   equ $0000018FF ; Timeout for the command with large payload
 
 ROMCMD_START_ADDR:      equ (ROM3_START_ADDR)				; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    	equ ($ABCD) 			  	     	; Magic number header to identify a command
@@ -163,6 +164,9 @@ DSKBUFP_SWAP_ADDR       equ $200                            ; Address of the tem
 USE_DSKBUF              equ 0                               ; Use the DSKBUF pointer to store the address of the buffer to read the data from the Sidecart. 0 = Stack, 1 = disk buffer
 
 GEMDOS_EINTRN           equ -65 ; GEMDOS Internal error
+GEMDOS_EIO              equ -90 ; GEMDOS I/O error
+GEMDOS_EIO_WRITE        equ -92 ; GEMDOS I/O write error
+GEMDOS_EIO_READ         equ -93 ; GEMDOS I/O read error
 
 
 ; Macros
@@ -716,7 +720,7 @@ _notlong:
 .fread_loop_continue
     tst.w d0                             ; Check if there is an error
     beq.s .fread_command_ok              ; If not, we can continue
-    moveq.l #GEMDOS_EINTRN, d0           ; Error code. GEMDOS_EINTRN is the error code for the internal error
+    moveq.l #GEMDOS_EIO_READ, d0         ; Error code. GEMDOS_EIO_READ is the error code for the I/O error
     bra .fread_exit                      ; Exit the loop
 
 .fread_command_ok:
@@ -726,9 +730,13 @@ _notlong:
     bmi .fread_exit                      ; Exit the loop
     tst.l d0                             ; Check if the number of bytes read is 0
     beq .fread_exit_ok                   ; If 0, we are done
+
+    move.l _dskbufp, a5                  ; Address of the buffer to read the data from the Sidecart
+    movem.l d6-d7, DSKBUFP_TMP_ADDR(a5)  ; Save the registers
+
     lea GEMDRVEMUL_READ_BUFFER, a5       ; Address of the buffer to copy the data from the Sidecart
     move.l a4, d7                        ; Test if the dest address is odd or even
-;    btst #0, d7                          ; Check if the address is odd
+    btst #0, d7                          ; Check if the address is odd
     beq.s .fread_loop_copy_even          ; If even go to copy longword 
 .fread_copy_odd:
     move.l d0, d7                        ; Number of bytes to copy to the buffer
@@ -736,12 +744,12 @@ _notlong:
 .fread_loop_copy:
     move.b (a5)+, (a4)+                  ; Copy the byte
     dbf d7, .fread_loop_copy             ; Loop until we copy all the bytes
-    bra .fread_copy_exit               ; No copy anymore
+    bra .fread_copy_exit                 ; No copy anymore
 
 .fread_loop_copy_even:
     move.l d0, d7                        ; Number of bytes to copy to the buffer
     lsr.l #1, d7                         ; Divide the number of bytes by 2
-    btst #1, d7                          ; Check if can copy longwords
+    btst #0, d7                          ; Check if can copy longwords
     beq.s .fread_loop_copy_lword_even    ; If so, copy longwords
     subq.l #1, d7                        ; We need to copy one byte less because dbf counts 0
 .fread_loop_copy_word:
@@ -753,20 +761,18 @@ _notlong:
     bra.s .fread_copy_exit               ; No copy anymore
 
 .fread_loop_copy_lword_even:
-    move.l d0, d7                        ; Number of bytes to copy to the buffer
-    lsr.l #2, d7                         ; Divide the number of words by 4
+    lsr.l #1, d7                         ; Divide the number of words by 2 again
     tst.l d7                             ; Check if we have to copy the last bytes
     beq.s .fread_loop_copy_tail_bytes    ; if zero, only copy the last bytes
-    subq.l #1, d7                        ; We need to copy one byte less because dbf counts 0
+    subq.l #1, d7                        ; We need to copy one longword less because dbf counts 0
 
     cmp.l #8, d7
     blt.s .fread_loop_copy_lword
     
-    move.l d1, -(sp)                     ; Save the register D1
-    move.l d7, d1                        ; Use D1 as loop counter for the unrolled amount
-    lsr.l #3, d1                         ; Divide the number of words by 8
+    move.l d7, d6                        ; Use d6 as loop counter for the unrolled amount
+    lsr.l #3, d6                         ; Divide the number of words by 8
     and.l #$7, d7                        ; remaining amount of words in d7
-    subq.l #1, d1                        ; We need to copy one byte less because dbf counts 0
+    subq.l #1, d6                        ; We need to copy one byte less because dbf counts 0
 .fread_loop_copy_lword_unroll_by8:      ; 8x unrolled loop
     move.l (a5)+, (a4)+                  ; Copy longword
     move.l (a5)+, (a4)+                  ; Copy longword
@@ -776,8 +782,7 @@ _notlong:
     move.l (a5)+, (a4)+                  ; Copy longword
     move.l (a5)+, (a4)+                  ; Copy longword
     move.l (a5)+, (a4)+                  ; Copy longword
-    dbf d1, .fread_loop_copy_lword_unroll_by8
-    move.l (sp)+,d1                      ; Restore the register D1
+    dbf d6, .fread_loop_copy_lword_unroll_by8
     
     cmp.l #4, d7
     blt.s .fread_loop_copy_lword
@@ -802,12 +807,15 @@ _notlong:
 
 
 .fread_copy_exit:
+    move.l _dskbufp, a5                  ; Address of the buffer to read the data from the Sidecart
+    movem.l DSKBUFP_TMP_ADDR(a5), d6-d7  ; Save the registers
+
     add.l d0, d6                         ; Add the number of bytes read to the counter
     cmp.l #BUFFER_READ_SIZE, d0          ; Check if the number of bytes read is not equal than the buffer size
     bne.s .fread_exit_ok                 ; if not equal, it's smaller than the buffer size. We are done
 
     sub.l d0, d5                         ; Subtract the number of bytes read from the total number of bytes to read
-    bpl .fread_loop                    ; If there are more bytes to read, continue
+    bgt .fread_loop                      ; If there are more bytes to read, continue
 
 .fread_exit_ok:
     move.l d6, d0                        ; Return the number of bytes read
@@ -828,98 +836,43 @@ _notlong:
     return_rte
 
 .Fwrite_core:
-    movem.l d0-d7/a0-a6, -(sp)
-    move.l a4, d5
-    send_sync CMD_DEBUG, 12
-    movem.l (sp)+,d0-d7/a0-a6
     tst.l d4                             ; Check if the number of bytes to write is 0
-    bne.s .fwrite_exit_not_empty         ; If not 0, we have bytes to write
+    bne.s .fwrite_not_empty              ; If not 0, we have bytes to write
 .fwrite_exit_empty:                      ; If 0, we are done
     moveq.l #0, d0                       ; Return 0 bytes written
     rts
-.fwrite_exit_not_empty:
-    move.l d4, d5                        ; Save the number of bytes to write in d5
+.fwrite_not_empty:
     clr.l  d6                            ; d6 is the bytes write counter
 .fwrite_loop:
-    move.w #FWRITE_RETRIES, d7           ; Number of retries to write the data to the Sidecart    
-.fwrite_loop_retry:
-    tst.w d7                             ; Check if the number of retries is 0
-    bne.s .fwrite_loop_retry_start       ; If not 0, simply retry to send the data
-    moveq.l #GEMDOS_EINTRN, d0           ; Error code. GEMDOS_EINTRN is the error code for the internal error
-    bra .fwrite_exit                     ; Exit the loop
+    move.l d4, d5                        ; Save the number of bytes to write in d5
 .fwrite_loop_retry_start:                ; Start the loop to retry to send the data
-    move.l _dskbufp, a5                  ; Address of the buffer to read the data from the Sidecart
-    movem.l d3-d7/a4, DSKBUFP_TMP_ADDR(a5) ; Save the registers
     cmp.l #BUFFER_WRITE_SIZE, d5         ; Check if the number of bytes to write is greater than the buffer size
-    bge.s .fwrite_loop_full_buffer       ; If so, use the full buffer
+    ble.s .fwrite_loop_custom_buffer     ; If so, use the full buffer
+    move.l #BUFFER_WRITE_SIZE, d5        ; If not, use the full buffer size
 .fwrite_loop_custom_buffer:              ; Use the custom buffer
-    move.w #CMD_RETRIES_COUNT, d6        ; Set the number of retries
+    move.w #CMD_RETRIES_COUNT, d7        ; Set the number of retries
 .fwrite_custom_buffer_retry:
-    movem.l d1-d6/a4, -(sp)                 ; Save the registers
+    movem.l d1-d7/a4, -(sp)                 ; Save the registers
     move.w #CMD_WRITE_BUFF_CALL, d0         ; Command code
     move.l d5 ,d6                           ; Number of bytes to send
     bsr send_sync_write_command_to_sidecart ; Send the command to the Multi-device
-    movem.l (sp)+, d1-d6/a4                 ; Restore the registers
+    movem.l (sp)+, d1-d7/a4                 ; Restore the registers
     tst.w d0                                ; Check the result of the command
-    beq.s .fwrite_loop_anybuffer_ok         ; If the command was ok, exit
-    dbf d6, .fwrite_custom_buffer_retry     ; If the command failed, retry
+    beq.s .fwrite_command_ok                ; If the command was ok, exit
+    dbf d7, .fwrite_custom_buffer_retry     ; If the command failed, retry
+    moveq.l #GEMDOS_EIO_WRITE, d0           ; Error code. GEMDOS_EIO_WRITE is the error code for the I/O error
+    rts                                     ; Exit the loop with the error code 
 
-.fwrite_loop_full_buffer:
-    send_write_sync CMD_WRITE_BUFF_CALL, BUFFER_WRITE_SIZE       ; Send the command to the Sidecart. handle.w, padding.w, bytes_to_read.l, pending_bytes_to_read.l
-
-.fwrite_loop_anybuffer_ok:
-;    movem.l d0-d7/a0-a6, -(sp)
-;    move.l d7, d3
-;    move.l GEMDRVEMUL_WRITE_CHK, d4
-;    send_sync CMD_DEBUG, 8
-;    movem.l (sp)+,d0-d7/a0-a6
-
-    move.l d7, d1                          ; CHECKSUM value
-    move.l _dskbufp, a5                    ; Address of the buffer to read the data from the Sidecart
-    movem.l DSKBUFP_TMP_ADDR(a5), d3-d7/a4 ; Restore the registers
-    tst.w d0                             ; Check if there is an error
-    beq.s .fwrite_command_ok             ; If not, we can continue
-    moveq.l #GEMDOS_EINTRN, d0           ; Error code. GEMDOS_EINTRN is the error code for the internal error
-    bra .fwrite_exit                     ; Exit the loop
-
-; Calculate the CHK value of the buffer to write
 .fwrite_command_ok:
-    subq.w #1, d7                        ; Subtract 1 to the number of retries
     move.l GEMDRVEMUL_WRITE_BYTES, d2    ; The number of bytes to check the CHK
-    tst.l d2                             ; Check if the number of bytes to check the CHK is 0
-    beq.s .fwrite_check_crc_exit         ; If 0, bypass the test
-    cmp.l GEMDRVEMUL_WRITE_CHK, d1       ; Check if the CHK value is the same
-    bne .fwrite_loop_retry             ; If not, retry to send the data until the number of retries is 0
-
-.fwrite_check_crc_exit:
-    add.l d2, a4
-    move.l _dskbufp, a5                    ; Address of the buffer to read the data from the Sidecart
-    movem.l d3-d7/a4, DSKBUFP_TMP_ADDR(a5) ; Save the registers
-
-    ; Send the command to the Sidecart. Bytes to move forward the offset in d4.l. handle.w in d3.w
-    move.l GEMDRVEMUL_WRITE_BYTES, d4    ; The number of bytes to move forward the offset
-    send_sync CMD_WRITE_BUFF_CHECK, 8
-    move.l _dskbufp, a5                    ; Address of the buffer to read the data from the Sidecart
-    movem.l DSKBUFP_TMP_ADDR(a5), d3-d7/a4 ; Restore the registers
-    move.l GEMDRVEMUL_WRITE_BYTES, d0    ; The number of bytes actually write to the Sidecart or the error code
-    ext.l d0                             ; Extend the sign of the value
-    ; If d0 is negative, there is an error
-    bmi.s .fwrite_exit                   ; Exit the loop
-    tst.l d0                             ; Check if the number of bytes written is 0
-    beq.s .fwrite_exit_ok                ; If 0, we are done
-
-    add.l d0, d6                         ; Add the number of bytes written to the counter
-;    cmp.w #BUFFER_WRITE_SIZE, d0         ; Check if the number of bytes written is not equal than the buffer size
-;    bne.s .fwrite_exit_ok                ; if not equal, it's smaller than the buffer size. We are done
-
-    sub.l d0, d5                         ; Subtract the number of bytes written from the total number of bytes to write
+    add.l d2, a4                         ; Add the number of bytes to write to the address of the buffer
+    add.l d2, d6                         ; Add the number of bytes written to the counter
+    sub.l d2, d4                         ; Subtract the number of bytes written from the total number of bytes to write
     beq.s .fwrite_exit_ok                ; If 0, we are done
     bpl .fwrite_loop                     ; If there are more bytes to write, continue
 
 .fwrite_exit_ok:
     move.l d6, d0                        ; Return the number of bytes written
-
-.fwrite_exit:
     rts
 
 

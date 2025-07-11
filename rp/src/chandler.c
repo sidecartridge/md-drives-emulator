@@ -91,8 +91,11 @@ static inline void __not_in_flash_func(handle_protocol_command)(
     lastProtocolValid = true;
   } else {
     // If a protocol is already in progress, ignore the new one
-    DPRINTF("PROTOCOL %04x ALREADY IN PROGRESS. IGNORING THE NEW COMMAND.\n",
-            lastProtocol.command_id);
+    DPRINTF(
+        "PROTOCOL %04x(%04x) ALREADY IN PROGRESS. IGNORING THE NEW COMMAND: "
+        "%04x(%04x)\n",
+        lastProtocol.command_id, lastProtocol.final_checksum,
+        protocol->command_id, protocol->final_checksum);
   }
 };
 
@@ -109,6 +112,8 @@ static inline void __not_in_flash_func(handle_protocol_checksum_error)(
 void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void) {
   // Read the rom3 signal and if so then process the command
 
+  dma_hw->ints1 = 1U << 2;
+
   // Read once to avoid redundant hardware access
   uint32_t addr = dma_hw->ch[2].al3_read_addr_trig;
 
@@ -122,8 +127,6 @@ void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void) {
     tprotocol_parse(addr_lsb, handle_protocol_command,
                     handle_protocol_checksum_error);
   }
-
-  dma_hw->ints1 = 1U << 2;
 }
 
 // Invoke this function to process the commands from the active loop in the

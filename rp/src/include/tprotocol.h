@@ -98,8 +98,8 @@ typedef struct __attribute__((packed, aligned(4))) {
   uint16_t bytes_read;  // To keep track of how many bytes of the payload we've
                         // read so far.
   uint16_t final_checksum;  // Accumulate a 16-bit sum of all data read
-  unsigned char
-      payload[MAX_PROTOCOL_PAYLOAD_SIZE];  // Pointer to the payload data
+  uint16_t
+      payload[MAX_PROTOCOL_PAYLOAD_SIZE / 2];  // Pointer to the payload data
 } TransmissionProtocol;
 
 // Function to handle the commands received
@@ -115,83 +115,6 @@ static TPParseStep nextTPstep = HEADER_DETECTION;
 
 // Placeholder structure for parsed data (declared in tprotocol.h)
 static TransmissionProtocol transmission = {0};
-
-// --------------------------------------
-// Inline assembly example for storing a 16-bit payload value (ARM).
-// Adjust or remove if not on ARM or if alignment concerns exist.
-// --------------------------------------
-static inline __attribute__((always_inline)) void __not_in_flash_func(
-    store_payload_16_asm)(uint16_t value, uint8_t *dest) {
-#if defined(__arm__) || defined(__ARM_ARCH)
-  asm volatile("strh %0, [%1]" : : "r"(value), "r"(dest) : "memory");
-#else
-  *((uint16_t *)dest) = value;
-#endif
-}
-
-// --------------------------------------
-// Step: Detect Header
-// --------------------------------------
-static inline __attribute__((always_inline)) void __not_in_flash_func(
-    detect_header)(uint16_t data) {
-  if (data == PROTOCOL_HEADER) {
-    // Move to command read
-    nextTPstep = COMMAND_READ;
-    // Reset the checksum each time we detect a new header
-    // (since we start sum from the command ID forward)
-    transmission.final_checksum = 0;
-  }
-}
-
-// --------------------------------------
-// Step: Read Command
-// --------------------------------------
-static inline __attribute__((always_inline)) void __not_in_flash_func(
-    read_command)(uint16_t data) {
-  transmission.command_id = data;
-  // Accumulate command ID into final_checksum
-  transmission.final_checksum += data;
-
-  nextTPstep = PAYLOAD_SIZE_READ;
-}
-
-// --------------------------------------
-// Step: Read Payload Size
-// --------------------------------------
-static inline __attribute__((always_inline)) void __not_in_flash_func(
-    read_payload_size)(uint16_t data) {
-  if (data > 0) {
-    transmission.payload_size = data;
-    nextTPstep = PAYLOAD_READ_START;
-  } else {
-    // Zero payload => skip to end
-    nextTPstep = PAYLOAD_READ_END;
-  }
-  // Accumulate payload size into final_checksum
-  transmission.final_checksum += data;
-
-  // Reset for reading payload
-  transmission.bytes_read = 0;
-}
-
-// --------------------------------------
-// Step: Read Payload (16-bit words)
-// --------------------------------------
-static inline __attribute__((always_inline)) void __not_in_flash_func(
-    read_payload)(uint16_t data) {
-  // Store the 16-bit chunk into the payload array
-  store_payload_16_asm(data, &transmission.payload[transmission.bytes_read]);
-
-  // Accumulate the data into final_checksum
-  transmission.final_checksum += data;
-
-  transmission.bytes_read += 2;
-  if (transmission.bytes_read >= transmission.payload_size) {
-    nextTPstep = PAYLOAD_READ_END;
-  } else {
-    nextTPstep = PAYLOAD_READ_INPROGRESS;
-  }
-}
 
 // This function is called once we finish reading the command + payload
 static inline __attribute__((always_inline)) void __not_in_flash_func(
@@ -214,8 +137,8 @@ static inline __attribute__((always_inline)) void __not_in_flash_func(
   memset(&transmission, 0, sizeof(TransmissionProtocol));
 #endif
 
-  last_header_found = 0;
-  nextTPstep = HEADER_DETECTION;
+  // last_header_found = 0;
+  // nextTPstep = HEADER_DETECTION;
 }
 
 /**
@@ -244,25 +167,54 @@ static inline void __not_in_flash_func(tprotocol_parse)(
 
   switch (nextTPstep) {
     case HEADER_DETECTION:
-      detect_header(data);
+      if (data == PROTOCOL_HEADER) {
+        // Move to command read
+        nextTPstep = COMMAND_READ;
+      }
       last_header_found = new_header_found;
       break;
 
     case COMMAND_READ:
-      read_command(data);
+      transmission.command_id = data;
+      nextTPstep = PAYLOAD_SIZE_READ;
       break;
 
     case PAYLOAD_SIZE_READ:
-      read_payload_size(data);
-      break;
-
+      transmission.payload_size = data;
     case PAYLOAD_READ_START:
+      transmission.bytes_read = 0;
+      nextTPstep = PAYLOAD_READ_INPROGRESS;
+      if (data == 0) {
+        nextTPstep = PAYLOAD_READ_END;
+      }
+      break;
     case PAYLOAD_READ_INPROGRESS:
-      if (transmission.bytes_read < transmission.payload_size) {
-        read_payload(data);
+      // Store the 16-bit chunk into the payload array
+      asm("strh %0, [%1]"
+          :
+          : "r"(data), "r"(&transmission.payload[(transmission.bytes_read / 2)])
+          : "memory");
+      // *((uint16_t *)(&transmission.payload[transmission.bytes_read])) =
+      // data;
+      transmission.bytes_read += 2;
+      if (transmission.bytes_read >= transmission.payload_size) {
+        nextTPstep = PAYLOAD_READ_END;
       }
       break;
     case PAYLOAD_READ_END:
+      // Calculate the checksum now
+      transmission.final_checksum =
+          transmission.command_id + transmission.payload_size;
+      uint16_t *payload_ptr = transmission.payload;
+      transmission.final_checksum =
+          transmission.command_id + transmission.payload_size;
+      for (uint16_t i = 0; i < transmission.payload_size / 2; i++) {
+        transmission.final_checksum += *(payload_ptr++);
+      }
+
+      last_header_found = 0;
+      nextTPstep = HEADER_DETECTION;
+
       // "data" is the checksum
       if (data == transmission.final_checksum) {
         // Checksum matches
@@ -271,6 +223,7 @@ static inline void __not_in_flash_func(tprotocol_parse)(
         // Checksum mismatch. Notify the caller
         protocolChecksumErrorCallback(&transmission);
       }
+      break;
     default:
       // Invalid state, reset to header detection
       nextTPstep = HEADER_DETECTION;

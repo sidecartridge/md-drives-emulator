@@ -49,6 +49,9 @@ int main() {
   // and can introduce delays in the execution of the code. This can cause
   // problems when the code is time-sensitive.
 #if defined(_DEBUG) && (_DEBUG != 0)
+  // Re init uart now that clk_peri has changed
+  setup_default_uart();
+
   // Initialize chosen serial port
   stdio_init_all();
   setvbuf(stdout, NULL, _IOLBF,

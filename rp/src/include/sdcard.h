@@ -12,10 +12,13 @@
 #include "constants.h"
 #include "debug.h"
 #include "gconfig.h"
+#include "hardware/clocks.h"
 #include "sd_card.h"
 #include "sdcard.h"
 
 #define SDCARD_KILOBAUD 1000
+#define SDCARD_MAX_KHZ 24000
+#define SDCARD_MIN_KHZ 1000
 
 #define NUM_BYTES_PER_SECTOR 512
 #define SDCARD_MEGABYTE 1048576
