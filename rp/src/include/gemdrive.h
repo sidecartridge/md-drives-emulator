@@ -35,7 +35,7 @@
 #define GEMDRIVE_PARAMETERS_MAX_SIZE 20  // Max size of the parameters for debug
 
 #define DEFAULT_FOPEN_READ_BUFFER_SIZE 4096
-#define DEFAULT_FWRITE_BUFFER_SIZE 2048
+#define DEFAULT_FWRITE_BUFFER_SIZE 1024
 #define FIRST_FILE_DESCRIPTOR 16384
 #define PRG_STRUCT_SIZE \
   28  // Size of the GEMDOS structure in the executable header file (PRG)
