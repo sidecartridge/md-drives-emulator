@@ -53,7 +53,8 @@ _conterm			equ $484	; Conterm device number
 RANDOM_TOKEN_ADDR:        equ (ROM4_ADDR + $F000) 	      ; Random token address at $FAF000
 RANDOM_TOKEN_SEED_ADDR    equ (RANDOM_TOKEN_ADDR + 4) 	  ; RANDOM_TOKEN_ADDR + 4 bytes
 RANDOM_TOKEN_POST_WAIT    equ $1                          ; Wait this cycles after the random number generator is ready
-COMMAND_TIMEOUT           equ $0000FFF 				      ; Timeout for the command
+COMMAND_TIMEOUT        	  equ $00000FFF ; Timeout for the simple command
+COMMAND_WRITE_TIMEOUT     equ $00001FFF ; Timeout for the command with large payload
 
 SHARED_VARIABLES:     	  equ (RANDOM_TOKEN_ADDR + (16 * 4)); random token + 16*4 bytes to the shared variables area
 
@@ -171,6 +172,12 @@ first:
     even
 
 pre_auto:
+; Wait for one second to allow the system to initialize
+	print start_msg
+	wait_sec
+	wait_sec
+	wait_sec
+
 ; Disable the MegaSTE cache and 16Mhz
     jsr set_8mhz_megaste
 
@@ -308,6 +315,8 @@ rom_function:
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file
     include "inc/sidecart_functions.s"
+
+start_msg: dc.b "Starting Multi-drive emulator...",$d,$a,0
 
 end_pre_auto:
 	even
