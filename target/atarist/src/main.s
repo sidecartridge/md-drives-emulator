@@ -26,6 +26,7 @@
 ROM4_ADDR			equ $FA0000
 FRAMEBUFFER_ADDR	equ $FA8000
 FRAMEBUFFER_SIZE 	equ 8000	; 8Kbytes of a 320x200 monochrome screen
+SCREEN_SIZE			equ (-4096)	; Use the memory before the screen memory to store the copied code
 COLS_HIGH			equ 20		; 16 bit columns in the ST
 ROWS_HIGH			equ 200		; 200 rows in the ST
 BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
@@ -183,6 +184,22 @@ pre_auto:
 
 ; Get the screen memory address to display
 	get_screen_base
+	move.l d0, a2
+
+	lea SCREEN_SIZE(a2), a2		; Move to the end of the screen memory
+	move.l a2, a3				; Save the screen memory address in A3
+	; Copy the code out of the ROM to avoid unstable behavior
+    move.l #end_rom_code - start_rom_code, d6
+    lea start_rom_code, a1    ; a1 points to the start of the code in ROM
+    lsr.w #2, d6
+    subq #1, d6
+.copy_rom_code:
+    move.l (a1)+, (a2)+
+    dbf d6, .copy_rom_code
+	jmp (a3)
+
+start_rom_code:
+; We assume the screen memory address is in D0 after the get_screen_base call
 	move.l d0, a6				; Save the screen memory address in A6
 
 ; Enable bconin to return shift key status
@@ -203,7 +220,6 @@ pre_auto:
 	get_rez
 	cmp.w #2, d0				; Check if the resolution is 640x400 (high resolution)
 	beq .print_loop_high		; If it is, print the message in high resolution
-
 
 .print_loop_low:
 	vsync_wait
@@ -274,21 +290,6 @@ pre_auto:
 	bra .print_loop_high		; Continue printing the message
 	
 .reset:
-	; Copy the reset code out of the ROM because it is going to dissapear!
-    move.l #.end_reset_code_in_stack - .start_reset_code_in_stack, d6
-    lea -(.end_reset_code_in_stack - .start_reset_code_in_stack)(sp), sp
-    move.l sp, a2
-    move.l sp, a3
-    lea .start_reset_code_in_stack, a1    ; a1 points to the start of the code in ROM
-    lsr.w #2, d6
-    subq #1, d6
-.copy_reset_code:
-    move.l (a1)+, (a2)+
-    dbf d6, .copy_reset_code
-	jmp (a3)
-
-	even
-.start_reset_code_in_stack:
     move.l #PRE_RESET_WAIT, d6
 .wait_me:
     subq.l #1, d6           ; Decrement the outer loop
@@ -318,6 +319,7 @@ rom_function:
 
 start_msg: dc.b "Starting Multi-drive emulator...",$d,$a,0
 
+end_rom_code:
 end_pre_auto:
 	even
 	dc.l 0

@@ -488,7 +488,11 @@ static void __not_in_flash_func(menu)(void) {
     term_printString("No\n");
   }
   vt52Cursor(TERM_SCREEN_SIZE_Y - 2, 0);
-  term_printString("[E]xit desktop    [X] Return to Booster");
+  if (!usbMassStorageReady) {
+    term_printString("[E]xit desktop    [X] Return to Booster");
+  } else {
+    term_printString("[X] Return to Booster");
+  }
 
   vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
   term_printString("Select an option: ");
@@ -536,12 +540,14 @@ void cmdClear(const char *arg) {
 }
 
 void cmdExit(const char *arg) {
-  showTitle();
-  term_printString("\n\n");
-  term_printString("Exiting terminal...\n");
-  // Send continue to desktop command
-  haltCountdown = true;
-  appStatus = APP_MODE_NTP_INIT;
+  if (!usbMassStorageReady) {
+    showTitle();
+    term_printString("\n\n");
+    term_printString("Exiting terminal...\n");
+    // Send continue to desktop command
+    haltCountdown = true;
+    appStatus = APP_MODE_NTP_INIT;
+  }
 }
 
 void cmdBooster(const char *arg) {
@@ -1860,15 +1866,13 @@ void __not_in_flash_func(emul_start)() {
     //     sleep_ms(SLEEP_LOOP_MS);
     //     DPRINTF("Polling...\n");
     // #endif
-    // if the USB is connected and the VBUS is high
-    // if (usb_mass_get_mounted()) {
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
 
-        // if (usbMassStorageMounted) {
-        //   tud_task();  // tinyusb device task
-        // }
+        if (usbMassStorageMounted) {
+          tud_task();  // tinyusb device task
+        }
 
         // Call all the "drives" loops
         chandler_loop();
@@ -1878,6 +1882,7 @@ void __not_in_flash_func(emul_start)() {
           // SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_NOP);
           gemLaunched = true;
         }
+
         break;
       }
       case APP_EMULATION_INIT: {
@@ -1886,15 +1891,15 @@ void __not_in_flash_func(emul_start)() {
         deinit();
 
         // // Disable the USB if nothing is mounted
-        // if (!usbMassStorageMounted) {
-        //   // Disconnect the USB mass storage
-        //   DPRINTF("Disconnecting the USB mass storage...\n");
-        //   tud_disconnect();
-        // }
+        if (!usbMassStorageMounted) {
+          // Disconnect the USB mass storage
+          DPRINTF("Disconnecting the USB mass storage...\n");
+          tud_disconnect();
+        }
 
         // Force disconnect the USB mass storage
-        DPRINTF("Forcing disconnect the USB mass storage...\n");
-        tud_disconnect();
+        // DPRINTF("Forcing disconnect the USB mass storage...\n");
+        // tud_disconnect();
 
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
@@ -1956,17 +1961,18 @@ void __not_in_flash_func(emul_start)() {
         display_refresh();
         break;
       }
-      case APP_MODE_SETUP:
-      default: {
-        // Check remote commands
-        term_loop();
-
-        if (!usbInitialized) {
-          // Init the usb device
+      case APP_MODE_SETUP: {
+        if (cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) && (!usbInitialized)) {
+          DPRINTF("USB VBUS is high, starting USB mass storage...\n");
           usb_mass_init();
+
           usbInitialized = true;
           DPRINTF("USB mass storage initialized\n");
-        } else {
+        }
+        if (usbInitialized) {
+          // tinyusb device task
+          tud_task();
+
           usbMassStorageMounted = usb_mass_get_mounted();
           // Show on screen the change in the status of the USB mass storage
           if (usbMassStorageReady != usbMassStorageMounted) {
@@ -1977,9 +1983,10 @@ void __not_in_flash_func(emul_start)() {
           if (usbMassStorageReady) {
             haltCountdown = true;
           }
-
-          tud_task();  // tinyusb device task
         }
+
+        // Check remote commands
+        term_loop();
 
         if (!haltCountdown) {
           // Check if at least one second (1,000,000 µs) has passed since
@@ -1997,6 +2004,10 @@ void __not_in_flash_func(emul_start)() {
             }
           }
         }
+        break;
+      }
+      default: {
+        DPRINTF("Unknown app status: %d\n", appStatus);
       }
     }
   }

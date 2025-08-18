@@ -22,10 +22,10 @@
 #endif
 
 #define MEM_ALIGNMENT 4
-#define MEM_SIZE 4096
+#define MEM_SIZE 1024
 
-#define MEM_SANITY_CHECK 1
-#define MEM_OVERFLOW_CHECK 1
+#define MEM_SANITY_CHECK 0
+#define MEM_OVERFLOW_CHECK 0
 
 #define MEMP_NUM_PBUF 4
 #define MEMP_NUM_TCP_PCB 10
