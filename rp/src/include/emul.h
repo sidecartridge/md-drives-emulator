@@ -20,7 +20,6 @@
 #include "ff.h"
 #include "floppy.h"
 #include "gemdrive.h"
-#include "httpc/httpc.h"
 #include "memfunc.h"
 #include "network.h"
 #include "pico/stdlib.h"
