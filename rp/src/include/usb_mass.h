@@ -30,7 +30,7 @@
 #define USBDRIVE_MASS_STORE true
 
 #undef TUD_OPT_HIGH_SPEED
-#define TUD_OPT_HIGH_SPEED false
+#define TUD_OPT_HIGH_SPEED true
 
 #undef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG 0
