@@ -1870,10 +1870,6 @@ void __not_in_flash_func(emul_start)() {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
 
-        if (usbMassStorageMounted) {
-          tud_task();  // tinyusb device task
-        }
-
         // Call all the "drives" loops
         chandler_loop();
         if (!gemLaunched) {
@@ -1904,6 +1900,7 @@ void __not_in_flash_func(emul_start)() {
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
         DPRINTF("Changing the command handler\n");
+
         dma_setResponseCB(
             chandler_dma_irq_handler_lookup);  // Set the chanlder handler
         chandler_init();                       // Initialize the command handler
