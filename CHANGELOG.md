@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.6beta (2025-08-18) - Beta release
+This is the first beta release. It includes all the new features and improvements, and it should not include any more new features. The code is still in development and may contain bugs, but it is more stable than previous alpha releases and ready to use for all users.
+
+### Changes
+- **Setup terminal not in ROM**: The terminal setup code has been moved out of the ROM and into the main RAM. This change allows for the USB mass storage feature to be used safely during the setup process.
+
+### New features
+No new features have been added in this release.
+
+### Fixes
+- Better error detection during USB mass storage initialization.
+
+---
+
 ## v1.0.5alpha (2025-07-10) - Alpha release
 
 This is a rolling alpha release. Except new features, bugs and issues. No tracking yet of bugs and issues since there is no public release yet. This is a development version.
