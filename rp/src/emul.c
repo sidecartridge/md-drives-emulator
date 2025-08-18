@@ -488,7 +488,11 @@ static void __not_in_flash_func(menu)(void) {
     term_printString("No\n");
   }
   vt52Cursor(TERM_SCREEN_SIZE_Y - 2, 0);
-  term_printString("[E]xit desktop    [X] Return to Booster");
+  if (!usbMassStorageReady) {
+    term_printString("[E]xit desktop    [X] Return to Booster");
+  } else {
+    term_printString("[X] Return to Booster");
+  }
 
   vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
   term_printString("Select an option: ");
@@ -536,12 +540,14 @@ void cmdClear(const char *arg) {
 }
 
 void cmdExit(const char *arg) {
-  showTitle();
-  term_printString("\n\n");
-  term_printString("Exiting terminal...\n");
-  // Send continue to desktop command
-  haltCountdown = true;
-  appStatus = APP_MODE_NTP_INIT;
+  if (!usbMassStorageReady) {
+    showTitle();
+    term_printString("\n\n");
+    term_printString("Exiting terminal...\n");
+    // Send continue to desktop command
+    haltCountdown = true;
+    appStatus = APP_MODE_NTP_INIT;
+  }
 }
 
 void cmdBooster(const char *arg) {

@@ -4,7 +4,9 @@
 This is the first beta release. It includes all the new features and improvements, and it should not include any more new features. The code is still in development and may contain bugs, but it is more stable than previous alpha releases and ready to use for all users.
 
 ### Changes
-- **Setup terminal not in ROM**: The terminal setup code has been moved out of the ROM and into the main RAM. This change allows for the USB mass storage feature to be used safely during the setup process.
+- **Setup menu not in ROM**: The setup menu code has been moved out of the ROM and into the main RAM. This change allows for the USB mass storage feature to be used safely during the setup process.
+- **USB mass storage only during setup menu**: The USB mass storage feature is now only active during the setup menu. This change prevents potential conflicts and improves system stability.
+- **Forbid start emulation if USB mass storage is mounted**: Emulation cannot be started if the USB mass storage is mounted. This change prevents potential data corruption and ensures a stable emulation environment. Now, the `E'xit command to start the emulation disappears if the USB mass storage is mounted. It is re-enabled when the USB mass storage is unmounted.
 
 ### New features
 No new features have been added in this release.
