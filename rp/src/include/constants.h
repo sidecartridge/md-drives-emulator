@@ -50,6 +50,18 @@
 #define ROM_SIZE_WORDS (ROM_SIZE_BYTES / 2)      // 32KWords
 #define ROM_SIZE_LONGWORDS (ROM_SIZE_BYTES / 4)  // 16KLongWords
 
+// It has a performance penalty, but can be safer
+#define DISABLE_XIP_CACHE 0  // Disable the XIP cache to avoid problems sync
+
+// It should shove the CPU out of the way when doing DMA transfers
+// to avoid bus contention. Only needed if you are pushing things
+#define PRIORITY_DMA 1  // Give priority to the DMA over the CPU
+
+// The FLASH clock divider by default is 4, but we can play with it. Careful
+// tuning may be required.
+#undef PICO_FLASH_SPI_CLKDIV
+#define PICO_FLASH_SPI_CLKDIV 4
+
 // Frequency constants.
 #define SAMPLE_DIV_FREQ (1.f)         // Sample frequency division factor.
 #define RP2040_CLOCK_FREQ_KHZ 225000  // Clock frequency in KHz (225MHz).

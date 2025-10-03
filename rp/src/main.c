@@ -69,6 +69,8 @@ int main() {
   DPRINTF("Voltage: %s\n", currentVoltage);
   DPRINTF("FLASH SPI CLKDIV: %i\n", PICO_FLASH_SPI_CLKDIV);
   DPRINTF("PICO_FLASH_SIZE_BYTES: %i\n", PICO_FLASH_SIZE_BYTES);
+  DPRINTF("Enable XIP cache: %s\n", DISABLE_XIP_CACHE ? "NO" : "YES");
+  DPRINTF("DMA priority over CPU: %s\n", PRIORITY_DMA ? "YES" : "NO");
 
   // Show information about the flash memory layout
   unsigned int flashLength = (unsigned int)&_booster_app_flash_start -
