@@ -260,7 +260,8 @@ void test_tiny_files() {
   Fclose(handle);
 
   handle = Fopen("TINY.TXT", 0);
-  char buffer2[2] = {0};
+  char buffer2[16] = {0};
+  memset(buffer2, 0, sizeof(buffer2));
   read = Fread(handle, 2, buffer2);
   Fclose(handle);
 
@@ -273,7 +274,8 @@ void test_tiny_files() {
   Fclose(handle);
 
   handle = Fopen("TINY.TXT", 0);
-  char buffer3[3] = {0};
+  char buffer3[16] = {0};
+  memset(buffer3, 0, sizeof(buffer3));
   read = Fread(handle, 3, buffer3);
   Fclose(handle);
 
@@ -286,7 +288,8 @@ void test_tiny_files() {
   Fclose(handle);
 
   handle = Fopen("TINY.TXT", 0);
-  char buffer4[4] = {0};
+  char buffer4[16] = {0};
+  memset(buffer4, 0, sizeof(buffer4));
   read = Fread(handle, 4, buffer4);
   Fclose(handle);
 
