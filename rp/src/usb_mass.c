@@ -14,14 +14,14 @@ static DWORD sz_sect = 0;
 static bool ejected = false;
 static bool mounted = false;
 
-bool __not_in_flash_func(usb_mass_get_mounted)(void) { return mounted; }
+bool usb_mass_get_mounted(void) { return mounted; }
 
-bool __not_in_flash_func(usb_mass_init)() {
+bool usb_mass_init() {
   DPRINTF("TUD_OPT_HIGH_SPEED: %s\n", TUD_OPT_HIGH_SPEED ? "true" : "false");
   return usb_mass_start();
 }
 
-bool __not_in_flash_func(usb_mass_start)(void) {
+bool usb_mass_start(void) {
   // Init USB
   DPRINTF("Init USB\n");
   ejected = false;
@@ -32,21 +32,7 @@ bool __not_in_flash_func(usb_mass_start)(void) {
 #ifdef BLINK_H
   blink_on();
 #endif
-  // Loop while the USB is connected and the VBUS is high
-  // Exit when the VBUS is low and reset the device
-  //   while (cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN)) {
-  //     tud_task();  // tinyusb device task
-  //     cdc_task();
-  //   }
-  // On RP2040 (hardware-specific example)
-  //   tud_disconnect();
 
-  // irq_set_enabled(USBCTRL_IRQ, false);
-  // // Reset the USB controller
-  // reset_block(RESETS_RESET_USBCTRL_BITS);
-  // // Deassert the reset to re-enable the USB controller
-  // unreset_block_wait(RESETS_RESET_USBCTRL_BITS);
-  //   return (cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN));
   return true;
 }
 
@@ -55,13 +41,13 @@ bool __not_in_flash_func(usb_mass_start)(void) {
 //--------------------------------------------------------------------+
 
 // Invoked when device is mounted
-void __not_in_flash_func(tud_mount_cb)(void) {
+void tud_mount_cb(void) {
   DPRINTF("Device mounted\n");
   mounted = true;
 }
 
 // Invoked when device is unmounted
-void __not_in_flash_func(tud_umount_cb)(void) {
+void tud_umount_cb(void) {
   DPRINTF("Device unmounted\n");
   mounted = false;
 }
@@ -69,7 +55,7 @@ void __not_in_flash_func(tud_umount_cb)(void) {
 // Invoked when usb bus is suspended
 // remote_wakeup_en : if host allow us  to perform remote wakeup
 // Within 7ms, device must draw an average of current less than 2.5 mA from bus
-void __not_in_flash_func(tud_suspend_cb)(bool remote_wakeup_en) {
+void tud_suspend_cb(bool remote_wakeup_en) {
   (void)remote_wakeup_en;
   DPRINTF("Device suspended\n");
   mounted = false;
@@ -77,7 +63,7 @@ void __not_in_flash_func(tud_suspend_cb)(bool remote_wakeup_en) {
 }
 
 // Invoked when usb bus is resumed
-void __not_in_flash_func(tud_resume_cb)(void) {
+void tud_resume_cb(void) {
   DPRINTF("Device resumed\n");
   mounted = true;
   //  blink_interval_ms = BLINK_MOUNTED;
@@ -86,9 +72,8 @@ void __not_in_flash_func(tud_resume_cb)(void) {
 // Invoked when received SCSI_CMD_INQUIRY
 // Application fill vendor id, product id and revision with string up to 8, 16,
 // 4 characters respectively
-void __not_in_flash_func(tud_msc_inquiry_cb)(uint8_t lun, uint8_t vendor_id[8],
-                                             uint8_t product_id[16],
-                                             uint8_t product_rev[4]) {
+void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8],
+                        uint8_t product_id[16], uint8_t product_rev[4]) {
   (void)lun;
 
   const char vid[] = "SidecarT";
@@ -104,7 +89,7 @@ void __not_in_flash_func(tud_msc_inquiry_cb)(uint8_t lun, uint8_t vendor_id[8],
 
 // Invoked when received Test Unit Ready command.
 // return true allowing host to read/write this LUN e.g SD card inserted
-bool __not_in_flash_func(tud_msc_test_unit_ready_cb)(uint8_t lun) {
+bool tud_msc_test_unit_ready_cb(uint8_t lun) {
   (void)lun;
 
   // RAM disk is ready until ejected
@@ -175,9 +160,8 @@ bool __not_in_flash_func(tud_msc_start_stop_cb)(uint8_t lun,
 
 // Callback invoked when received READ10 command.
 // Copy disk's data to buffer (up to bufsize) and return number of copied bytes.
-int32_t __not_in_flash_func(tud_msc_read10_cb)(uint8_t lun, uint32_t lba,
-                                               uint32_t offset, void *buffer,
-                                               uint32_t bufsize) {
+int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
+                          void *buffer, uint32_t bufsize) {
   (void)lun;
 
   if (offset != 0) return -1;
@@ -193,15 +177,13 @@ int32_t __not_in_flash_func(tud_msc_read10_cb)(uint8_t lun, uint32_t lba,
   return (int32_t)bufsize;
 }
 
-bool __not_in_flash_func(tud_msc_is_writable_cb)(uint8_t lun) {
+bool tud_msc_is_writable_cb(uint8_t lun) {
   (void)lun;
   return !USBDRIVE_READ_ONLY;
 }
 
-int32_t __not_in_flash_func(tud_msc_write10_cb)(uint8_t lun, uint32_t lba,
-                                                uint32_t offset,
-                                                uint8_t *buffer,
-                                                uint32_t bufsize) {
+int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
+                           uint8_t *buffer, uint32_t bufsize) {
   (void)lun;
 
   if (offset != 0) return -1;
@@ -221,9 +203,8 @@ int32_t __not_in_flash_func(tud_msc_write10_cb)(uint8_t lun, uint32_t lba,
 // Callback invoked when received an SCSI command not in built-in list below
 // - READ_CAPACITY10, READ_FORMAT_CAPACITY, INQUIRY, MODE_SENSE6, REQUEST_SENSE
 // - READ10 and WRITE10 has their own callbacks
-int32_t __not_in_flash_func(tud_msc_scsi_cb)(uint8_t lun,
-                                             uint8_t const scsi_cmd[16],
-                                             void *buffer, uint16_t bufsize) {
+int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer,
+                        uint16_t bufsize) {
   // read10 & write10 has their own callback and MUST not be handled here
 
   DPRINTF("SCSI Cmd %02X\n", scsi_cmd[0]);
