@@ -40,7 +40,7 @@
 // display memory. This is useful to reduce the memory usage.
 // When not using the framebuffer, the endianess swap must be done in the remote
 // computer.
-#define DISPLAY_BYPASS_FRAMEBUFFER 0
+#define DISPLAY_BYPASS_FRAMEBUFFER 1
 
 // #define DISPLAY_COMMAND_ADDRESS (ROM_IN_RAM_ADDRESS + 0x10000 + 8000) //
 // increment 64K bytes to get the second 64K block + 8000 bytes to get the 8K
