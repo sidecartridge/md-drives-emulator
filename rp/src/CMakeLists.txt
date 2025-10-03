@@ -76,9 +76,6 @@ add_subdirectory(settings)
 # Add u8g2 library
 add_subdirectory(u8g2)
 
-# Add HTTP client library
-add_subdirectory(httpc)
-
 # Tell CMake where to find other source code
 add_subdirectory($ENV{FATFS_SDK_PATH}/src build)
   
@@ -120,10 +117,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${LINK_LIBRARIES}        # External or additional libraries passed as variables
     hardware_flash           # Flash memory access
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library   
-    pico_rand                # hardware-backed RNG
     pico_stdlib              # Core functionality
     pico_multicore           # Multicore support
-    httpc                    # HTTP client
     settings                 # Custom settings library
     tinyusb_device           # USB mount
     u8g2                     # for display
@@ -194,7 +189,7 @@ if (NOT _DEBUG)
 endif()
 
 if (${_DEBUG}  STREQUAL "1")
-    add_compile_definitions(USE_PRINTF USE_DBG_PRINTF)
+    add_compile_definitions(USE_PRINTF USE_DBG_PRINTF_)
 endif()
 
 # Debug outputs
