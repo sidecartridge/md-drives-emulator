@@ -50,7 +50,7 @@ enable this option. */
 
 #define FF_USE_STRFUNC 1
 #define FF_PRINT_LLI 1
-#define FF_PRINT_FLOAT 1
+#define FF_PRINT_FLOAT 0
 #define FF_STRF_ENCODE 3
 /* FF_USE_STRFUNC switches string functions, f_gets(), f_putc(), f_puts() and
 /  f_printf().
@@ -207,7 +207,11 @@ function needs to implement /  GET_SECTOR_SIZE command. */
 / System Configurations
 /---------------------------------------------------------------------------*/
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+#define FF_FS_TINY 1
+#else
 #define FF_FS_TINY 0
+#endif
 /* This option switches tiny buffer configuration. (0:Normal or 1:Tiny)
 /  At the tiny configuration, size of file object (FIL) is shrinked FF_MAX_SS
 bytes. /  Instead of private sector buffer eliminated from the file object,
