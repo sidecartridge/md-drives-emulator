@@ -85,8 +85,7 @@ CMD_FRENAME_CALL        equ ($56 + APP_GEMDRVEMUL)           ; Command code to s
 CMD_FDATETIME_CALL      equ ($57 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Fdatetime() command executed
 
 CMD_MALLOC_CALL         equ ($48 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the malloc() command executed
-CMD_PEXEC_CALL          equ ($4B + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed part 1
-CMD_PEXEC2_CALL         equ ($4C + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed part 2
+CMD_PEXEC_CALL          equ ($4B + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed
 
 ; This commands are not direct GEMDOS calls, but they are used to send data to the Sidecart
 CMD_READ_BUFF_CALL      equ ($81 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the read the buffer
@@ -152,6 +151,13 @@ GEMDRVEMUL_EXEC_PD          equ (GEMDRVEMUL_PEXEC_ENVSTR + 4)       ; exec PD + 
 
 GEMDRVEMUL_SHARED_VARIABLES equ (RANDOM_TOKEN_SEED_ADDR + 4)        ; RANDOM_TOKEN_SEED_ADDR + 4 bytes
 
+_hdv_init               equ $46A                            ; Address of the HDV_INIT structure
+_hdv_bpb                equ $472                            ; Address of the HDV_BPB structure
+_hdv_rw                 equ $476                            ; Address of the HDV_RW structure
+_hdv_boot               equ $47a                            ; Address of the HDV_BOOT structure
+_hdv_mediach            equ $47e                            ; Address of the HDV_MEDIACH structure
+_cmdload                equ $482                            ; Try to load the program COMMAND.PRG if the value is non zero
+_bootdev                equ $446                            ; This value indicates the boot device of the system
 _nflops                 equ $4a6                            ; This value indicates the number of floppy drives currently connected to the system
 _drvbits                equ $4c2                            ; Each of 32 bits in this longword represents a drive connected to the system. Bit #0 is A, Bit #1 is B and so on.
 _dskbufp                equ $4c6                            ; Address of the disk buffer pointer    
@@ -167,6 +173,8 @@ GEMDOS_EINTRN           equ -65 ; GEMDOS Internal error
 GEMDOS_EIO              equ -90 ; GEMDOS I/O error
 GEMDOS_EIO_WRITE        equ -92 ; GEMDOS I/O write error
 GEMDOS_EIO_READ         equ -93 ; GEMDOS I/O read error
+
+DTA_SIZE                equ     44
 
 
 ; Macros
@@ -228,9 +236,10 @@ reentry_gem_unlock  macro
 detect_emulated_drive   macro
                         reentry_gem_lock
                         gemdos Dgetdrv, 2                    ; Call Dgetdrv() and get the drive number
-                        move.l d0, -(sp)                     ; Save the return value with the drive number
+                        move.w d0, -(sp)                     ; Save the return value with the drive number
                         reentry_gem_unlock              
-                        move.l (sp)+, d0                     ; Restore the drive number
+                        move.w (sp)+, d0                     ; Restore the drive number
+                        and.l #$FFFF, d0                     ; Mask the upper word of the drive number
                         cmp.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0            ; Check if the drive is the emulated one
                         bne .exec_old_handler
                         endm
@@ -239,7 +248,7 @@ detect_emulated_drive   macro
 ; Pass the address of the file specification string in a4
 detect_emulated_drive_letter   macro
                         cmp.b #':', 1(a4)                    ; Check if the second character of the file specification string is the colon
-                        bne.s .\@detect_emulated_drive_continue; If not, exec_old_handler the code. Otherwise continue with the code
+                        bne.s .\@detect_emulated_drive_continue; If not, try to detect the current drive
                         move.b (a4), d0                      ; Get the first letter of the file specification string
                         cmp.b (GEMDRVEMUL_SHARED_VARIABLES + 3 + (SHARED_VARIABLE_DRIVE_LETTER * 4)), d0 ; Check if the first letter is the emulated drive
                         bne .exec_old_handler                ; If not, exec_old_handler the code. Otherwise continue with the code
@@ -285,34 +294,6 @@ gemdrive_start:
 
 ; Save the vectors in the RP2040 memory
     bsr save_vectors
-    tst.w d0
-    beq .exit_graciouslly
-    pchar "X"
-    
-    bra .exit_graciouslly
-
-    pchar "S"
-.testloop:
-    move.l RANDOM_TOKEN_SEED_ADDR, d0
-    move.l d0, -(sp)
-
-    reentry_gem_unlock
-
-    move.l (sp)+, d2
-    tst.w d0
-    beq.s .testloop
-
-    crlf
-    move.l d2, d0
-    move.l #7, d1
-    print_hex
-    pchar ":"
-    move.l RANDOM_TOKEN_ADDR, d0
-    move.l #7, d1
-    print_hex
-    pchar "x"
-    bra .testloop
-
 
 .exit_graciouslly:
     rts
@@ -324,15 +305,39 @@ create_virtual_hard_disk:
     move.w #1,_nflops.w                  ; Simulate that floppy A is attached
 .create_virtual_hard_disk:
     move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0    ; Get the drive number
-    move.w d0, -(sp)                     ; Emulated drive in the parameter of Dsetdrv()
     moveq.l #1, d1
     lsl.l d0, d1                         ; Calculate the bit number of the drive
     or.l d1, _drvbits.w                  ; Set the drive bit
+
+    move.w d0, _bootdev.w                ; Set the boot device to the emulated drive if needed
+
+;    move.l #hdv_default, _hdv_mediach.w ; Set the media change handler to a default handler
+;    move.l #hdv_default, _hdv_rw.w      ; Set the read/write handler to a default handler
+;    move.l #hdv_default, _hdv_bpb.w     ; Set the BPB handler to a default handler
+;    move.l #hdv_default, _hdv_init.w    ; Set the init handler to a default handler
+;    move.l #hdv_default, _hdv_boot.w    ; Set the boot handler to a default handler
+;    clr.l _hdv_init.w
+;    clr.l _hdv_bpb.w
+;    clr.l _hdv_rw.w
+;    clr.l _hdv_boot.w
+;    clr.l _hdv_mediach.w
+;    clr.w _cmdload.w                     ; Disable the automatic loading of COMMAND.P RG
+
+    move.w d0, -(sp)                     ; Emulated drive in the parameter of Dsetdrv()
     gemdos Dsetdrv, 4                    ; Call Dsetdrv() and set the emulated drive
+
+    pea default_path
+    gemdos Dsetpath, 6                   ; Set the default path to "\"
     rts
 
-test_msg:
-    dc.b "\nPress a key to continue...\n"
+default_path:
+    dc.b "\"
+    dc.b 0
+    even
+
+hdv_default:
+    rts
+
 
 ; Get the cookie jar from d0.l as parameter
 save_vectors:
@@ -416,16 +421,12 @@ _notlong:
 
     move.w 6(a0),d3                      ; get GEMDOS opcode number
 
-
-
 ;    cmp.w #$0e, d3                       ; Check if it's a Dsetdrv() call
-;    beq.s .Dsetdrv
+;    beq .Dsetdrv
 ;    cmp.w #$19, d3                       ; Check if it's a Dgetdrv() call
-;    beq.s .Dgetdrv
-;    cmp.w #$1a, d3                       ; Check if it's a Fsetdta() call
-;    beq .Fsetdta
-
-;    bra .show_vector_calls
+;    beq .Dgetdrv
+    cmp.w #$1a, d3                       ; Check if it's a Fsetdta() call
+    beq .Fsetdta
 
     cmp.w #Dfree, d3                     ; Check if it's a Dfree() call
     beq .Dfree
@@ -464,8 +465,8 @@ _notlong:
     cmp.w #Fseek, d3                     ; Check if it's a Fseek() call
     beq .Fseek
 
-.show_vector_calls:
-    ; Trace the not implemented GEMDOS call
+;.show_vector_calls:
+;    ; Trace the not implemented GEMDOS call
 ;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
 
 .exec_old_handler:
@@ -474,9 +475,16 @@ _notlong:
     move.l old_handler,-(sp)            ; Fake a return
     rts                                 ; to old code.
 
+
 ; Start of the GEMDOS calls
+
+; Set the current DTA
 .Fsetdta:
     move.l 8(a0),d3                      ; get address of DTA and save in the payload
+
+    detect_emulated_drive                ; Check if the drive is the emulated one. If not, exec_old_handler the code. 
+                                         ; Otherwise continue with the code
+
     send_sync CMD_FSETDTA_CALL, 4        ; Send the command to the Sidecart. 4 bytes of payload
     bra .exec_old_handler
 
@@ -888,31 +896,14 @@ _notlong:
     cmp.b (GEMDRVEMUL_SHARED_VARIABLES + 3 + (SHARED_VARIABLE_DRIVE_LETTER * 4)), d0   ; Check if the first letter of the file specification string is the hard disk drive letter
     beq.s .fs_first_emulated             ; If so, execute specific fsfirst emulated code
     bra .exec_old_handler              ; Now it's safe to execute the old handler
-; We need to clean the DTA to avoid issues with previous DTAs used in the emulated code
-;    reentry_gem_lock
-;    gemdos Fgetdta, 2                    ; Call Fgetdta() and get the address of the DTA
-;    move.l d0, -(sp)                     ; Save the return value with the address of the DTA
-;    reentry_gem_unlock
-;    move.l (sp)+, d3                     ; Restore the DTA value
-
-;    move.l _sysbase, a6
-;    move.l 40(a6), a6
-;    move.l 0(a6), d3                     ; Pointer to the BASEPAGE structure of the process
-;    add.l #BASEPAGE_OFFSET_DTA, d3       ; Address of the DTA in the BASEPAGE structure
-
-;    send_sync CMD_DTA_RELEASE_CALL, 4    ; Send the command to the Sidecart. 4 bytes of payload
 
 .fs_first_check_drive:
     detect_emulated_drive                ; If not, exec_old_handler the code. Otherwise continue with the code
 
-;    bra .exec_old_handler                ; Now it's safe to execute the old handler
-
 .fs_first_emulated:
     reentry_gem_lock
-
     gemdos Fgetdta, 2                    ; Call Fgetdta() and get the address of the DTA
     move.l d0, -(sp)                     ; Save the return value with the address of the DTA
-
     reentry_gem_unlock
 
     move.l (sp), d3                            ; Restore the DTA value
@@ -924,37 +915,61 @@ _notlong:
 
     ; Test if there is a file found
     move.w GEMDRVEMUL_DTA_F_FOUND, d0           ; Get the value of the file found
-    ext.l d0                                    ; Extend the sign of the value
+    tst.w d0                                    ; If the value is 0, there is a file found (E_OK)
+    bne.s .empty_fsdta_struct                   ; If not, exit with the error code
+
     ; A file found, restore the DTA from the Sidecart
     lea GEMDRVEMUL_DTA_TRANSFER, a4             ; Address of the buffer to receive the DTA
-    move.l #43, d2                              ; Number of bytes to read
+    moveq #(DTA_SIZE - 1), d2                    ; Number of bytes to copy minus 1
 .populate_fsdta_struct_loop:
     move.b (a4)+, (a5)+                         ; Copy the DTA
     dbf d2, .populate_fsdta_struct_loop         ; Loop until we copy all the bytes
-;    tst.w d0                                    ; If the value is 0, there is a file found (E_OK)
-;    bne.s .empty_fsdta_struct                   ; If not, exit with the error code
+
+    ; We need to exit with the emulated drive as current drive
+    reentry_gem_lock
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
+    move.w d0, -(sp)                            ; Save the drive number in the stack
+    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
+    reentry_gem_unlock
+
+    moveq.l #0, d0                               ; Error code. 0 is E_OK
     return_rte
 
-;.empty_fsdta_struct:
-;    move.l d0, -(sp)                            ; Save the return value of the operation with the DTA
-;    send_sync CMD_DTA_RELEASE_CALL, 4           ; Send the command to the Sidecart. 4 bytes of payload
-;    move.l (sp)+, d0                            ; Restore the return value with the address of the DTA
-;    move.l #$ffffffd1, d0                       ; Error code. -47 is the error code for the no more files found
-;    return_rte
+.empty_fsdta_struct:
+    move.l d0, -(sp)                            ; Save the error code in the stack
+    move.l a5, d3                               ; Restore the DTA value
+
+    moveq #(DTA_SIZE - 1), d2                   ; Number of bytes to copy minus 1
+.clean_fsdta_struct_loop:
+    clr.b (a5)+                                 ; Clean the DTA
+    dbf d2, .clean_fsdta_struct_loop            ; Loop until we clean all the bytes
+
+    send_sync CMD_DTA_RELEASE_CALL, 4           ; Send the command to the Sidecart. 4 bytes of payload
+
+    ; We need to exit with the emulated drive as current drive
+    reentry_gem_lock
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
+    move.w d0, -(sp)                            ; Save the drive number in the stack
+    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
+    reentry_gem_unlock
+
+    move.l (sp)+, d0                            ; Restore the error code
+    return_rte
 
 .Fsnext:
+;    detect_emulated_drive                ; If not, exec_old_handler the code. Otherwise continue with the code
+
     reentry_gem_lock
     gemdos Fgetdta, 2                     ; Call Fgetdta() and get the address of the DTA
     move.l d0, -(sp)                      ; Save the return value with the address of the DTA
     reentry_gem_unlock
 
-    move.l (sp), d3                       ; Check if the DTA exists in the rp2040 memory
-    send_sync CMD_DTA_EXIST_CALL, 4       ; Send the command to the Sidecart. 4 bytes of payload
-    move.l GEMDRVEMUL_DTA_EXIST, d0       ; Restore the DTA value
-    tst.l d0                              ; Check if the DTA exists
-    beq.s .Fsnext_bypass                  ; If not, exec_old_handler the code
+    move.l (sp), a0                       ; Restore the DTA value into a0
+    move.l 12(a0), d0                     ; Get the drive number from the DTA
+    cmp.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)),d0 ; Check if the drive is the emulated one
+    bne .Fsnext_bypass                  ; If not, exec_old_handler the code
 
-    move.l d0, d3                         ; Restore the DTA value
+    move.l (sp), d3                       ; Restore the DTA value
     send_sync CMD_FSNEXT_CALL, 4          ; Send the command to the Sidecart.
 
     bra .populate_fsdta_struct
@@ -965,26 +980,23 @@ _notlong:
     bra .exec_old_handler
 
 .Pexec:
-    move.l a0, d4                         ; Otherwise continue with the code
-    move.w 8(a0), d3                      ; get the Pexec mode
-    move.l 10(a0), a4                     ; get the address of the file name string
-    move.l a4, d5
+    move.l a0, d3                         ; Address of the buffer with the parameters
+    move.l a0, a4                         ; Address of the buffer with the parameters
 
     detect_emulated_drive_letter          ; If not, exec_old_handler the code. Otherwise continue with the code
 
-    send_sync CMD_PEXEC_CALL, 12          ; Send the command to the Sidecart. 12 bytes of buffer to send
 
-    move.l GEMDRVEMUL_PEXEC_STACK_ADDR, a0
-    move.l 14(a0), d3                     ; get the address of the command line string
-    move.l 18(a0), d4                     ; get the address of the environment string
-    send_sync CMD_PEXEC2_CALL, 8          ; Send the command to the Sidecart. 8 bytes of buffer to send    
+    send_write_sync CMD_PEXEC_CALL, 32    ; Send the command to the Sidecart. 32 bytes of buffer to send
+
 
     cmp.w #PE_LOAD_GO, GEMDRVEMUL_PEXEC_MODE    ; Check if the mode is PE_LOAD_GO
     beq.s .pexec_load_go                        ; If yes, continue with the code
+
     cmp.w #PE_LOAD, GEMDRVEMUL_PEXEC_MODE       ; Check if the mode is PE_LOAD
     bne .exec_old_handler                       ; if not, exec_old_handler the code
 
 .pexec_load_go:
+    move.l GEMDRVEMUL_PEXEC_FNAME, a4
     clr.w d3                              ; open mode read only 
     send_write_sync CMD_FOPEN_CALL, 256
     move.l GEMDRVEMUL_FOPEN_HANDLE, d0    ; Error code obtained from the Sidecart
@@ -993,22 +1005,8 @@ _notlong:
 
 .pexec_load_header:
 
-    move.w d0,d3                            ; get the file handle
-    move.l #PRG_STRUCT_SIZE,d4           ; get number of bytes to read
-
-;    ifeq USE_DSKBUF
-;        move.l _dskbufp, a4                  ; Address of the buffer to read the data from the Sidecart
-;        lea DSKBUFP_SWAP_ADDR(a4), a4        ; This is the swap area
-;        bsr .Fread_core                      ; Read the data from the Sidecart
-;        move.l _dskbufp, a4                  ; Address of the buffer to read the data from the Sidecart
-;        lea DSKBUFP_SWAP_ADDR(a4), a4        ; This is the swap area
-;    else    
-;        sub.l #PRG_STRUCT_SIZE,sp            ; reserve space for the header of the file
-;        move.l sp,a4                         ; get address of buffer to read into
-;        move.l a4, -(sp)                     ; Save the address of the buffer to read
-;        bsr .Fread_core                      ; Read the data from the Sidecart
-;        move.l (sp)+, a4                     ; Restore the address of the buffer to read
-;    endif
+    move.w d0,d3                              ; get the file handle
+    move.l #PRG_STRUCT_SIZE,d4                ; get number of bytes to read
 
     move.l _dskbufp, a4                  ; Address of the buffer to read the data from the Sidecart
     lea DSKBUFP_SWAP_ADDR(a4), a4        ; This is the swap area
@@ -1023,49 +1021,11 @@ _notlong:
 ; Send all the structure read from the header of the file
     send_write_sync CMD_SAVE_EXEC_HEADER, $1c   ; Send the command to the Sidecart
 
-;    ifeq USE_DSKBUF
-;        nop
-;    else    
-;        add.l #PRG_STRUCT_SIZE,sp            ; restore the stack pointer
-;    endif
-
-; Save in the SidecarTridge the basepage of the current process for later use
-; Get the values from _sysbase
-;    move.l _sysbase, a4
-;    move.l 40(a4), a4
-;    move.l 0(a4), a4
-;    send_write_sync CMD_SAVE_BASEPAGE, 256 ; Send the command to the Sidecart. 256 bytes of buffer to send
-
-; Shrink the memory of the current process, if necessary
-; Get the values from _sysbase
-;    reentry_gem_lock
-;    move.l _sysbase, a4
-;    move.l 40(a4), a4
-;    clr.l -(sp)                          ; NULL address of the environment string
-;    move.l 0(a4), -(sp)                  ; Pointer to the BASEPAGE structure of the process
-;    clr.w -(sp)                          ; NULL address of the command line string
-;    gemdos Mshrink, 12                   ; Call Mshrink() and create the basepage    
-;    reentry_gem_unlock    
-;    ext.l d0                             ; Extend the sign of the value
-    ; If d0 is negative, there is an error
-;    bmi .pexec_exit                    ; If there is an error, exit
-
-; Reserve memory for the process
-;    reentry_gem_lock
-;    lea GEMDRVEMUL_EXEC_HEADER, a5        ; Address of the buffer to receive the header
-;    move.l 2(a5), -(sp)                   ; Get the text size.
-;    gemdos Malloc, 6                      ; Call Mshrink() and create the basepage    
-;    reentry_gem_unlock    
-;    ext.l d0                             ; Extend the sign of the value
-;    ; If d0 is negative, there is an error
-;    bmi .pexec_exit                    ; If there is an error, exit
-
 ; Now we have to do a reentry call to the GEMDOS Pexec in mode PE_CREATE_BASEPAGE
 ; to create the basepage of the new process
     reentry_gem_lock
-    move.l GEMDRVEMUL_PEXEC_STACK_ADDR, a0
-    pea 18(a0)                            ; get the address of the environment string
-    pea 14(a0)                            ; get the address of the command line string
+    move.l GEMDRVEMUL_PEXEC_ENVSTR, -(sp) ; push the environment string
+    move.l GEMDRVEMUL_PEXEC_CMDLINE, -(sp); push the command line string
     clr.l -(sp)                           ; unused
     move.w #PE_CREATE_BASEPAGE, -(sp)     ; create basepage mode
     gemdos Pexec, 16                      ; Call Pexec() and create the basepage
@@ -1150,7 +1110,7 @@ _notlong:
     move.l GEMDRVEMUL_EXEC_PD, a4        ; load the pointer to the basepage of the new process of the file
     move.l 24(a4), a5                    ; Get the address of the start of the bss segment
     move.l 28(a4), d5                    ; Get the size of the bss segment
-    bsr .fill_zero                     ; Zero the memory
+    bsr .fill_zero                       ; Zero the memory
 
 .pexec_pexec_go:
 ; New we continue to the Pexec() call modifying the parameters to PE_GO and the address of the basepage
