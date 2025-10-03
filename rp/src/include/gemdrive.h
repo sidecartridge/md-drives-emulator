@@ -250,9 +250,7 @@
   (APP_GEMDRVEMUL << 8 | 0x57)  // Show the Fdatetime call
 
 #define GEMDRVEMUL_PEXEC_CALL \
-  (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call part 1
-#define GEMDRVEMUL_PEXEC2_CALL \
-  (APP_GEMDRVEMUL << 8 | 0x4c)  // Show the Pexec call part 2
+  (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
 #define GEMDRVEMUL_MALLOC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x48)  // Show the Malloc call
 

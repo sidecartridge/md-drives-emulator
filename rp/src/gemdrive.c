@@ -185,68 +185,6 @@ static FileDescriptors *fdescriptors =
 static PD *pexec_pd = NULL;
 static ExecHeader *pexec_exec_header = NULL;
 
-#define FIND_RECURS 4 /* Maximum number of wildcard terms */
-
-static DWORD __not_in_flash_func(get_achar)(const TCHAR **ptr) {
-  DWORD chr;
-
-  chr = (BYTE) * (*ptr)++;                         /* Get a byte */
-  if (((chr) >= 'a' && (chr) <= 'z')) chr -= 0x20; /* To upper ASCII char */
-  if (chr >= 0x80) chr = chr & 0x7F;               /* Use lower 7 bits */
-  return chr;
-}
-
-/* 0:mismatched, 1:matched */
-static int __not_in_flash_func(pattern_match)(
-    const TCHAR *pat, /* Matching pattern */
-    const TCHAR *nam, /* String to be tested */
-    UINT skip,        /* Number of pre-skip chars (number of ?s,
-                         b8:infinite (* specified)) */
-    UINT recur        /* Recursion count */
-) {
-  const TCHAR *pptr;
-  const TCHAR *nptr;
-  DWORD pchr, nchr;
-  UINT sk;
-
-  while ((skip & 0xFF) != 0) {      /* Pre-skip name chars */
-    if (!get_achar(&nam)) return 0; /* Branch mismatched if less name chars */
-    skip--;
-  }
-  if (*pat == 0 && skip) return 1; /* Matched? (short circuit) */
-
-  do {
-    pptr = pat;
-    nptr = nam; /* Top of pattern and name to match */
-    for (;;) {
-      if (*pptr == '\?' || *pptr == '*') { /* Wildcard term? */
-        if (recur == 0) return 0;          /* Too many wildcard terms? */
-        sk = 0;
-        do { /* Analyze the wildcard term */
-          if (*pptr++ == '\?') {
-            sk++;
-          } else {
-            sk |= 0x100;
-          }
-        } while (*pptr == '\?' || *pptr == '*');
-        if (pattern_match(pptr, nptr, sk, recur - 1))
-          return 1; /* Test new branch (recursive call) */
-        nchr = *nptr;
-        break; /* Branch mismatched */
-      }
-      pchr = get_achar(&pptr); /* Get a pattern char */
-      nchr = get_achar(&nptr); /* Get a name char */
-      if (pchr != nchr) break; /* Branch mismatched? */
-      if (pchr == 0)
-        return 1; /* Branch matched? (matched at end of both strings) */
-    }
-    get_achar(&nam); /* nam++ */
-  } while (skip &&
-           nchr); /* Retry until end of name if infinite search is specified */
-
-  return 0;
-}
-
 static bool isTrue(const char *value) {
   if ((value == NULL) || (value[0] == '\0')) {
     return false;
@@ -260,17 +198,38 @@ static bool isTrue(const char *value) {
 
 // Erase the values in the DTA transfer area
 static void __not_in_flash_func(nullifyDTA)(uint32_t mem) {
-  memset((void *)(mem + GEMDRIVE_DTA_TRANSFER), 0, DTA_SIZE_ON_ST);
+  // defensive overflow guard
+  const uint32_t off = GEMDRIVE_DTA_TRANSFER;
+  const uint32_t size = DTA_SIZE_ON_ST;
+
+  if (mem > UINT32_MAX - off || mem + off > UINT32_MAX - size) {
+    // out-of-range; nothing to do or add an assertion
+    DPRINTF("nullifyDTA: out-of-range memory address\n");
+    return;
+  }
+
+  // do pointer arithmetic via uintptr_t, then cast to (void*)
+  uintptr_t base = (uintptr_t)mem + (uintptr_t)off;
+  memset((void *)base, 0, size);
 }
 
 // Helpers: allocate/release from pool
 static DTANode *dta_node_alloc(void) {
-  if (!dtaFreeList) return NULL;
   DTANode *n = dtaFreeList;
-  dtaFreeList = n->next;
+  if (n) {
+    dtaFreeList = n->next;
+  }
+
+  if (!n) return NULL;
+
+  // scrub the node so callers don't see stale pointers/keys
+  memset(n, 0, sizeof *n);
   return n;
 }
+
 static void dta_node_free(DTANode *n) {
+  if (!n) return;
+
   // free allocated copies
   if (n->dj) {
     free(n->dj);
@@ -280,92 +239,122 @@ static void dta_node_free(DTANode *n) {
     free(n->pat);
     n->pat = NULL;
   }
+  memset(n, 0, sizeof *n);
+
   // return node to free list
   n->next = dtaFreeList;
   dtaFreeList = n;
 }
 
-// Hash function
-static unsigned int __not_in_flash_func(hash)(uint32_t x) {
+// Build-time safety checks
+_Static_assert((DTA_HASH_TABLE_SIZE & (DTA_HASH_TABLE_SIZE - 1)) == 0,
+               "DTA_HASH_TABLE_SIZE must be a power of two");
+_Static_assert(DTA_HASH_TABLE_SIZE >= 2, "DTA_HASH_TABLE_SIZE too small");
+
+// Strong mixer (Murmur3 fmix32 style), then mask to table size
+static inline size_t __not_in_flash_func(hash)(uint32_t x) {
   x ^= x >> 16;
-  x *= 0x7FEB352D;
-  x ^= x >> 15;
-  return x & (DTA_HASH_TABLE_SIZE - 1);
+  x *= UINT32_C(0x85EBCA6B);
+  x ^= x >> 13;
+  x *= UINT32_C(0xC2B2AE35);
+  x ^= x >> 16;
+  return (size_t)(x & (DTA_HASH_TABLE_SIZE - 1));
 }
 
 // Insert function (allocates DTA copy)
 static int __not_in_flash_func(insertDTA)(uint32_t key) {
-  unsigned idx = hash(key);
+  const unsigned idx = hash(key);  // hash() already masks to table size
+
+  DPRINTF("insertDTA for key %08" PRIX32 " at idx %u\n", key, idx);
+
+  // If bucket already occupied, signal collision / existing entry
+  if (dtaTbl[idx] != NULL) {
+    DPRINTF("insertDTA: bucket %u already occupied with key %08" PRIX32
+            " -> returning -2\n",
+            idx, dtaTbl[idx]->key);
+    return -2;  // collision / existing
+  }
+
   DTANode *n = dta_node_alloc();
   if (!n) return -1;
 
+  memset(n, 0, sizeof *n);
   n->key = key;
   n->attribs = 0xFFFFFFFF;
-
-  // TODO: Replace this stub with actual data fetch
-  DTA data_src = {"filename", 0, 0, 0, 0, 0, 0, 0, 0, "filename"};
-  n->data = data_src;
-
-  // DIR is allocated by caller; just store pointers
-  // Ensure dta_node_free will not free them
+  memset(&n->data, 0, sizeof n->data);
   n->dj = NULL;
-
-  n->pat = NULL;          // no pattern yet
-  n->next = dtaTbl[idx];  // separate chaining
+  n->pat = NULL;
+  n->next = NULL;
   dtaTbl[idx] = n;
 
-  DPRINTF("Insert DTA key: %08X at idx %u\n", n->key, idx);
+  DPRINTF("Insert DTA key: %08" PRIX32 " at idx %u\n", n->key, idx);
   return 0;
 }
 
 // Lookup function
 static DTANode *__not_in_flash_func(lookupDTA)(uint32_t key) {
-  unsigned idx = hash(key);
-  DTANode *p = dtaTbl[idx];
-  while (p) {
-    if (p->key == key) {
-      // restore pattern into DIR if needed
-      if (p->dj) p->dj->pat = p->pat;
-      if (p->dj) {
-        DPRINTF(
-            "Retrieved DTA key: %x, filinfo_fname: %s, dir_obj: %x, pattern: "
-            "%s\n",
-            p->key, p->fname, (void *)p->dj, p->dj->pat);
-      } else {
-        DPRINTF("Retrieved DTA key: %x. Empty DTA\n", p->key);
+  const unsigned idx = hash(key);  // ensure hash() applies modulo
+
+  for (DTANode *p = dtaTbl[idx]; p; p = p->next) {
+    if (p->key != key) continue;
+
+    if (p->dj) {
+      if (p->dj->pat != p->pat) {
+        p->dj->pat = p->pat;  // restore pattern into DIR
       }
-      return p;
+
+      const char *fname = p->fname ? p->fname : "(null)";
+      const char *pat = p->dj->pat ? p->dj->pat : "(null)";
+
+      DPRINTF("Retrieved DTA key: %08" PRIX32
+              ", filinfo_fname: %s, dir_obj: %p, pattern: %s\n",
+              p->key, fname, (void *)p->dj, pat);
+    } else {
+      DPRINTF("Retrieved DTA key: %08" PRIX32 ". Empty DTA\n", p->key);
     }
-    p = p->next;
+
+    // DPRINTF("Lookup DTA key: %08" PRIX32 " at idx %u\n", p->key, idx);
+    return p;
   }
-  DPRINTF("DTA key: %x not found\n", key);
+
+  DPRINTF("DTA key: %08" PRIX32 " not found\n", key);
   return NULL;
 }
 
 // Release (remove) function
 static void __not_in_flash_func(releaseDTA)(uint32_t key) {
-  unsigned idx = hash(key);
+  const unsigned idx = hash(key);  // hash() should already mask to table size
   DTANode *p = dtaTbl[idx], *prev = NULL;
+
   while (p) {
     if (p->key == key) {
+      // unlink
       if (prev)
         prev->next = p->next;
       else
         dtaTbl[idx] = p->next;
+
+      // safe, consistent logging
       if (p->dj) {
-        DPRINTF(
-            "Retrieved DTA key: %x, filinfo_fname: %s, dir_obj: %x, pattern: "
-            "%s\n",
-            p->key, p->fname, (void *)p->dj, p->dj->pat);
+        const char *fname = p->fname ? p->fname : "(null)";
+        const char *pat = p->dj->pat ? p->dj->pat : "(null)";
+        DPRINTF("Releasing DTA key: %08" PRIX32
+                ", filinfo_fname: %s, dir_obj: %p, pattern: %s\n",
+                p->key, fname, (void *)p->dj, pat);
       } else {
-        DPRINTF("Retrieved DTA key: %x. Empty DTA\n");
+        DPRINTF("Releasing DTA key: %08" PRIX32 " (no DIR)\n", p->key);
       }
+
+      DPRINTF("Release DTA key: %08" PRIX32 " at idx %u\n", p->key, idx);
+
       dta_node_free(p);
       return;
     }
     prev = p;
     p = p->next;
   }
+
+  DPRINTF("releaseDTA: key %08" PRIX32 " not found in idx %u\n", key, idx);
 }
 
 // Count the number of elements
@@ -471,78 +460,55 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
   DTANode *dataNode = lookupDTA(dta_address);
   DTA *data = dataNode != NULL ? &dataNode->data : NULL;
   if (data != NULL) {
-    *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) = 0;
     if (fno) {
-      strcpy(data->d_name, fno->altname);
-      strcpy(data->d_fname, fno->altname);
-      data->d_offset_drive = 0;
-      data->d_curbyt = 0;
-      data->d_curcl = 0;
-      data->d_attr = sdcard_attribsFAT2ST(fno->fattrib);
+      memcpy(data->d_fname, fno->altname, 13);
+      data->d_fname[13] = '\0';  // Ensure null-termination
+      data->d_offset_drive = driveNum;
       data->d_attrib = sdcard_attribsFAT2ST(fno->fattrib);
       data->d_time = fno->ftime;
       data->d_date = fno->fdate;
       data->d_length = (uint32_t)fno->fsize;
-      // Ignore the reserved field
 
-      // Transfer the DTA to the Atari ST
-      // Copy the DTA to the shared memory
-      for (uint8_t i = 0; i < 12; i += 1) {
-        *((volatile uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                               i)) = (uint8_t)data->d_name[i];
-      }
-      CHANGE_ENDIANESS_BLOCK16(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30,
-                               14);
-      *((volatile uint32_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                              12)) = data->d_offset_drive;
-      *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                              16)) = data->d_curbyt;
-      *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                              18)) = data->d_curcl;
-      *((volatile uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20)) =
-          data->d_attr;
-      *((volatile uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 21)) =
+      WRITE_AND_SWAP_LONGWORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 12,
+                              data->d_offset_drive);
+      *((uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20)) =
           data->d_attrib;
-      CHANGE_ENDIANESS_BLOCK16(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20,
-                               2);
-      *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                              22)) = data->d_time;
-      *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                              24)) = data->d_date;
-      // Assuming memory_address_dta is a byte-addressable pointer (e.g.,
-      // uint8_t*)
-      uint32_t value = ((data->d_length << 16) & 0xFFFF0000) |
-                       ((data->d_length >> 16) & 0xFFFF);
-      uint16_t *address =
-          (uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 26);
-      address[1] = (value >> 16) & 0xFFFF;  // Most significant 16 bits
-      address[0] = value & 0xFFFF;          // Least significant 16 bits
-      for (uint8_t i = 0; i < 14; i += 1) {
-        *((volatile uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30 +
-                               i)) = (uint8_t)data->d_fname[i];
-      }
+
+      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 22)) =
+          data->d_time;
+      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 24)) =
+          data->d_date;
+
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 28,
+                 data->d_length & 0xFFFF);  // Least significant 16 bits
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 26,
+                 (data->d_length >> 16) & 0xFFFF);  // Most significant 16 bits
+
+      memcpy((void *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30),
+             (const void *)data->d_fname, 14);
       CHANGE_ENDIANESS_BLOCK16(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30,
                                14);
       char attribsStr[7] = "";
       sdcard_getAttribsSTStr(
-          attribsStr, *((volatile uint8_t *)(memory_address_dta +
-                                             GEMDRIVE_DTA_TRANSFER + 21)));
+          attribsStr,
+          *((uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20)));
       DPRINTF(
           "Populate DTA. addr: %x - attrib: %s - time: %d - date: %d - length: "
           "%x - filename: %s\n",
           dta_address, attribsStr,
-          *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                                  22)),
-          *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER +
-                                  24)),
-          ((uint32_t)address[0] << 16) | address[1],
+          *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 22)),
+          *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 24)),
+          (uint32_t)(READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 26)
+                     << 16) |
+              (READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 28)),
           (char *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30));
+      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) = GEMDOS_EOK;
     } else {
       // If no more files found, return ENMFIL for Fsnext
       // If no files found, return EFILNF for Fsfirst
       DPRINTF("DTA at %x showing error code: %x\n", dta_address,
               gemdos_err_code);
-      *((volatile int16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) =
+      *((int16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) =
           (int16_t)gemdos_err_code;
       // release the memory allocated for the hash table
       releaseDTA(dta_address);
@@ -557,8 +523,7 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
   } else {
     // No DTA structure found, return error
     DPRINTF("DTA not found at %x\n", dta_address);
-    *((volatile uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) =
-        0xFFFF;
+    *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) = 0xFFFF;
   }
 }
 
@@ -1247,19 +1212,23 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     }
     case GEMDRVEMUL_FSETDTA_CALL: {
       uint32_t ndta = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d3 register
-      DTANode *currentDTANode = lookupDTA(ndta);
-      if (currentDTANode) {
-        // We don't release the DTA if it already exists. Wait for FsFirst
-        // to do it
-        DPRINTF("DTA at %x already exists.\n", ndta);
-      } else {
-        DPRINTF("Setting DTA: %x\n", ndta);
-        int err = insertDTA(ndta);
-        if (err == 0) {
-          DPRINTF("Added ndta: %x.\n", ndta);
-        } else {
-          DPRINTF("Error adding ndta: %x.\n", ndta);
-        }
+      DPRINTF("Setting DTA: %x\n", ndta);
+      int err = insertDTA(ndta);
+      switch (err) {
+        case 0:
+          DPRINTF("FSETDTA Added ndta: %x.\n", ndta);
+          break;
+        case -1:
+          DPRINTF("FSETDTA Error: DTA table full. Cannot add DTA at %x.\n",
+                  ndta);
+          break;
+        case -2:
+          DPRINTF("FSETDTA Error: DTA at %x already exists. Cannot add.\n",
+                  ndta);
+          break;
+        default:
+          DPRINTF("FSETDTA Error: Unknown error adding DTA at %x.\n", ndta);
+          break;
       }
       break;
     }
@@ -1292,6 +1261,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       uint32_t fspecSTBufAddr =
           TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // Skip d6 register
+
       char pattern[GEMDRIVE_MAX_FOLDER_LENGTH] = {0};
       char internalPath[GEMDRIVE_FATFS_MAX_FOLDER_LENGTH] = {0};
       {
@@ -1340,20 +1310,27 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       // Remove all the trailing spaces in the pattern
       remove_trailing_spaces(pattern);
 
-      DTANode *currentDTANode = lookupDTA(ndta);
-
-      if (currentDTANode) {
-        DPRINTF("DTA at %x already exists.\n", ndta);
-      } else {
-        DPRINTF("Setting DTA: %x\n", ndta);
-        int err = insertDTA(ndta);
-        if (err == 0) {
-          DPRINTF("Added ndta: %x.\n", ndta);
+      releaseDTA(ndta);  // Just in case, release the DTA if it exists
+      DTANode *currentDTANode = NULL;
+      DPRINTF("Setting DTA: %x\n", ndta);
+      int err = insertDTA(ndta);
+      switch (err) {
+        case 0:
+          DPRINTF("FSFIRST Added ndta: %x.\n", ndta);
           currentDTANode = lookupDTA(ndta);
           DPRINTF("DTA at %x added.\n", ndta);
-        } else {
-          DPRINTF("Error adding ndta: %x. NOT POPULATING.\n", ndta);
-        }
+          break;
+        case -1:
+          DPRINTF("FSFIRST Error: DTA table full. Cannot add DTA at %x.\n",
+                  ndta);
+          break;
+        case -2:
+          DPRINTF("FSFIRST Error: DTA at %x already exists. Cannot add.\n",
+                  ndta);
+          break;
+        default:
+          DPRINTF("FSFIRST Error: Unknown error adding DTA at %x.\n", ndta);
+          break;
       }
 
       if (!(attribs & FS_ST_LABEL)) {
@@ -1388,40 +1365,17 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("Fsfirst Full internal path: %s, filename pattern: %s[%d]\n",
               internalPath, pattern, strlen(pattern));
 
-      FRESULT fr = f_opendir(currentDTANode->dj, internalPath);
-      char rawFname[2] = "._";
-      while (fr == FR_OK && ((rawFname[0] == '.') ||
-                             (rawFname[0] == '.' && rawFname[1] == '_'))) {
-        //          fr = f_findnext(currentDTANode->dj,
-        //          currentDTANode->fno);
-        for (;;) {
-          fr = f_readdir(currentDTANode->dj, &fno); /* Get a directory item */
-          if (fr != FR_OK || !fno.fname[0]) {
-            DPRINTF("Nothing returned from f_readdir: %d\n", fr);
-            break;
-          }
-          // DPRINTF("f_readdir: '%s.'", fno.fname);
-          if (pattern_match(currentDTANode->pat, fno.fname, 0, FIND_RECURS)) {
-            // DPRINTFRAW("MATCH: %s\n", fno.fname);
-            break;
-          } else {
-            // DPRINTFRAW("NOT MATCH: %s\n", fno.fname);
-          }
-        }
-
-        DPRINTF("Fsfirst fr: %d and filename: %s\n", fr, fno.fname);
-        if (fno.fname[0]) {
-          if (attribs & sdcard_attribsFAT2ST(fno.fattrib)) {
-            if (fr == FR_OK) {
-              rawFname[0] = fno.fname[0];
-              rawFname[1] = fno.fname[1];
-            }
-          }
-        } else {
-          rawFname[0] = 'x';  // Force exit, no more elements
-          rawFname[1] = 'x';  // Force exit, no more elements
-        }
+      // FRESULT fr = f_opendir(currentDTANode->dj, internalPath);
+      FRESULT fr = f_findfirst(currentDTANode->dj, &fno, internalPath,
+                               currentDTANode->pat);
+      while (fr == FR_OK && fno.fname[0] != '\0' &&
+             (!(attribs & sdcard_attribsFAT2ST(fno.fattrib)) ||
+              ((fno.fname[0] == '.') ||
+               (fno.fname[0] == '.' && fno.fname[1] == '_')))) {
+        fr = f_findnext(currentDTANode->dj, &fno);
       }
+
+      DPRINTF("Fsfirst fr: %d and filename: %s\n", fr, fno.fname);
 
       if (fr == FR_OK && fno.fname[0]) {
         if (fno.altname[0] == 0) {
@@ -1438,13 +1392,15 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         sdcard_upperFname(filteredFilename, upperFilename);
         sdcard_shortenFname(upperFilename, shortenFname);
 
-        strcpy(fno.altname, shortenFname);
+        memcpy(fno.altname, shortenFname, 13);
 
         // Filter out elements that do not match the attributes
         if (attribsConvST & attribs) {
           DPRINTF("Found: %s, attr: %s\n", fno.altname, attribsStr);
           populateDTA(memorySharedAddress, ndta, GEMDOS_EFILNF, &fno);
           DPRINTF("DTA at %x populated with: %s\n", ndta, fno.altname);
+          DPRINTF("currentDTANode dj pat: %s\n", currentDTANode->dj->pat);
+          DPRINTF("currentDTANode dj: %x\n", currentDTANode->dj);
         } else {
           DPRINTF("Skipped: %s, attr: %s\n", fno.altname, attribsStr);
           int16_t errorCode = GEMDOS_EFILNF;
@@ -1484,6 +1440,15 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       DTANode *dtaNode = lookupDTA(ndta);
 
       bool ndtaExists = dtaNode ? true : false;
+
+      DPRINTF("DTA exists: %s\n", ndtaExists ? "TRUE" : "FALSE");
+      DPRINTF("DTA node: %x\n", dtaNode);
+      if (dtaNode) {
+        DPRINTF("DTA node pat: %s\n", dtaNode->pat);
+        DPRINTF("DTA node attribs: %x\n", dtaNode->attribs);
+        DPRINTF("DTA node dj: %x\n", dtaNode->dj);
+      }
+
       if (dtaNode != NULL && dtaNode->dj != NULL && ndtaExists) {
         uint32_t attribs = dtaNode->attribs;
         if (!(attribs & FS_ST_LABEL)) {
@@ -1492,44 +1457,22 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
 
         // We need to filter out the elements that does not make sense in
         // the FsFat environment And in the Atari ST environment
-        char rawFilaname[2] = "._";
         fr = FR_OK;
         FILINFO fno = {0};
-        while (fr == FR_OK &&
-               ((rawFilaname[0] == '.') ||
-                (rawFilaname[0] == '.' && rawFilaname[1] == '_'))) {
-          // fr = f_findnext(dtaNode->dj, dtaNode->fno);
-          for (;;) {
-            fr = f_readdir(dtaNode->dj, &fno); /* Get a directory item */
-            if (fr != FR_OK || !fno.fname[0]) {
-              DPRINTF("Nothing returned from f_readdir: %d\n", fr);
-              break;
-            }
-            // DPRINTF("f_readdir: '%s.'", fno.fname);
-            if (pattern_match(dtaNode->pat, fno.fname, 0, FIND_RECURS)) {
-              // DPRINTFRAW("MATCH: %s\n", fno.fname);
-              break;
-            } else {
-              // DPRINTFRAW("NOT MATCH: %s\n", fno.fname);
-            }
-          }
 
-          if (fr != FR_OK) {
-            DPRINTF("ERROR: Could not find next file (%d)\r\n", fr);
-          }
-          DPRINTF("Fsnext fr: %d and filename: %s\n", fr, fno.fname);
-          if (fno.fname[0]) {
-            if (attribs & sdcard_attribsFAT2ST(fno.fattrib)) {
-              if (fr == FR_OK) {
-                rawFilaname[0] = fno.fname[0];
-                rawFilaname[1] = fno.fname[1];
-              }
-            }
-          } else {
-            rawFilaname[0] = 'X';  // Force exit, no more elements
-            rawFilaname[1] = 'X';  // Force exit, no more elements
-          }
+        fr = f_findnext(dtaNode->dj, &fno);
+        while (fr == FR_OK && fno.fname[0] != '\0' &&
+               (!(attribs & sdcard_attribsFAT2ST(fno.fattrib)) ||
+                ((fno.fname[0] == '.') ||
+                 (fno.fname[0] == '.' && fno.fname[1] == '_')))) {
+          fr = f_findnext(dtaNode->dj, &fno);
         }
+
+        if (fr != FR_OK) {
+          DPRINTF("ERROR: Could not find next file (%d)\r\n", fr);
+        }
+        DPRINTF("Fsnext ndta: %x, fr: %d and filename: %s\n", ndta, fr,
+                fno.fname);
         if (fr == FR_OK && fno.fname[0]) {
           if (fno.altname[0] == 0) {
             // Copy the fname to altname. It's already a 8.3 file format
@@ -1542,7 +1485,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           sdcard_filterFname(fno.altname, filteredFilename);
           sdcard_upperFname(filteredFilename, upperFilename);
           sdcard_shortenFname(upperFilename, shortenFilename);
-          strcpy(fno.altname, shortenFilename);
+          memcpy(fno.altname, shortenFilename, 13);
 
           uint8_t attribs = fno.fattrib;
           uint8_t attribsConvST = sdcard_attribsFAT2ST(attribs);
@@ -2253,32 +2196,51 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       break;
     }
     case GEMDRVEMUL_PEXEC_CALL: {
-      uint16_t pexec_mode = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
-      uint32_t pexec_stack_addr =
-          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d4 register
+      // We need to read the a0 from the parameters list. The only one.
+      uint32_t pexec_stack_addr = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // a0
+
+      uint16_t *payloadPtrBuff =
+          payloadPtr + 6;  // Move the pointer to
+                           // the start of the buffer (6 words)
+
+      payloadPtrBuff =
+          payloadPtrBuff + 4;  // Move the pointer to the position of the
+                               // parameters in the buffer (4 words)
+      uint16_t pexec_mode =
+          TPROTO_GET_PAYLOAD_PARAM16(payloadPtrBuff);  // 8(a0)
+
+      payloadPtrBuff++;
+
       uint32_t pexec_fname =
-          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5 register
-      DPRINTF("Pexec mode: %x\n", pexec_mode);
-      DPRINTF("Pexec stack addr: %x\n", pexec_stack_addr);
-      DPRINTF("Pexec fname: %x\n", pexec_fname);
+          SWAP_LONGWORD(TPROTO_GET_PAYLOAD_PARAM32(payloadPtrBuff));  // 10(a0)
+
+      payloadPtrBuff += 2;
+
+      uint32_t pexec_cmdline =
+          SWAP_LONGWORD(TPROTO_GET_PAYLOAD_PARAM32(payloadPtrBuff));  // 14(a0)
+
+      payloadPtrBuff += 2;
+
+      uint32_t pexec_envstr =
+          SWAP_LONGWORD(TPROTO_GET_PAYLOAD_PARAM32(payloadPtrBuff));  // 18(a0)
+      DPRINTF("Pexec call:\n");
+      DPRINTF("+- mode: %x\n", pexec_mode);
+      DPRINTF("+- stack addr: %x\n", pexec_stack_addr);
+      DPRINTF("+- fname: %x\n", pexec_fname);
+      DPRINTF("+- cmdline: %x\n", pexec_cmdline);
+      DPRINTF("+- envstr: %x\n", pexec_envstr);
+      DPRINTF("+------------------------------------\n");
+
       WRITE_WORD(memorySharedAddress, GEMDRIVE_PEXEC_MODE, pexec_mode);
       WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_PEXEC_STACK_ADDR,
                               pexec_stack_addr);
       WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_PEXEC_FNAME,
                               pexec_fname);
-      break;
-    }
-    case GEMDRVEMUL_PEXEC2_CALL: {
-      uint32_t pexec_cmdline =
-          TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d6 register
-      uint32_t pexec_envstr =
-          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d7 register
-      DPRINTF("Pexec cmdline: %x\n", pexec_cmdline);
-      DPRINTF("Pexec envstr: %x\n", pexec_envstr);
       WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_PEXEC_CMDLINE,
                               pexec_cmdline);
       WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_PEXEC_ENVSTR,
                               pexec_envstr);
+
       break;
     }
     case GEMDRVEMUL_SAVE_BASEPAGE: {
@@ -2310,6 +2272,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("pexec_pd->p_uftsize: %x\n", SWAP_LONGWORD(pexec_pd->p_uftsize));
       DPRINTF("pexec_pd->p_uft: %x\n", SWAP_LONGWORD(pexec_pd->p_uft));
       DPRINTF("pexec_pd->p_cmdlin: %x\n", SWAP_LONGWORD(pexec_pd->p_cmdlin));
+
       break;
     }
     case GEMDRVEMUL_SAVE_EXEC_HEADER: {
