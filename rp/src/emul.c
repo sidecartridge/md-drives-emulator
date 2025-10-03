@@ -1870,10 +1870,6 @@ void __not_in_flash_func(emul_start)() {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
 
-        if (usbMassStorageMounted) {
-          tud_task();  // tinyusb device task
-        }
-
         // Call all the "drives" loops
         chandler_loop();
         if (!gemLaunched) {
@@ -1904,6 +1900,7 @@ void __not_in_flash_func(emul_start)() {
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
         DPRINTF("Changing the command handler\n");
+
         dma_setResponseCB(
             chandler_dma_irq_handler_lookup);  // Set the chanlder handler
         chandler_init();                       // Initialize the command handler
@@ -1924,6 +1921,16 @@ void __not_in_flash_func(emul_start)() {
 
         // Check remote commands
         appStatus = APP_EMULATION_RUNTIME;
+
+#if defined(DISABLE_XIP_CACHE) && (DISABLE_XIP_CACHE == 1)
+        // Disable the XIP cache to avoid problems with the GEMDRIVE
+        // Flush the cache (wait until done)
+        xip_ctrl_hw->flush = 1;
+        while (!(xip_ctrl_hw->stat & XIP_STAT_FLUSH_RDY)) { /* spin */
+        }
+        // Disable cache (no tag lookups; all XIP goes straight to flash)
+        xip_ctrl_hw->ctrl &= ~XIP_CTRL_EN_BITS;
+#endif
         DPRINTF("GEMDRIVE initialized\n");
         break;
       }
