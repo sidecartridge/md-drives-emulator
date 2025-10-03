@@ -55,7 +55,7 @@
 
 // It should shove the CPU out of the way when doing DMA transfers
 // to avoid bus contention. Only needed if you are pushing things
-#define PRIORITY_DMA 1  // Give priority to the DMA over the CPU
+#define PRIORITY_DMA 0  // Give priority to the DMA over the CPU
 
 // The FLASH clock divider by default is 4, but we can play with it. Careful
 // tuning may be required.
