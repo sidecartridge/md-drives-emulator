@@ -42,24 +42,23 @@ static datetime_t *getRtcTime() { return &rtcTime; }
 static NTP_TIME *getNetTime() { return &netTime; }
 
 static void hostFoundCB(const char *name, const ip_addr_t *ipaddr, void *arg) {
-  if (name == NULL) {
+  if (!name) {
     DPRINTF("NTP host name is NULL\n");
     return;
   }
 
-  NTP_TIME *ntime = (NTP_TIME *)(arg);
-  if (ntime == NULL) {
+  NTP_TIME *ntime = (NTP_TIME *)arg;
+  if (!ntime) {
     DPRINTF("NTP_TIME argument is NULL\n");
-    ntime->ntp_error = true;
     return;
   }
 
-  if (ipaddr != NULL && !ntime->ntp_server_found) {
+  if (ipaddr && !ntime->ntp_server_found) {
     ntime->ntp_server_found = true;
     ntime->ntp_ipaddr = *ipaddr;
     DPRINTF("NTP Host found: %s\n", name);
     DPRINTF("NTP Server IP: %s\n", ipaddr_ntoa(&ntime->ntp_ipaddr));
-  } else if (ipaddr == NULL) {
+  } else if (!ipaddr) {
     DPRINTF("IP address for NTP Host '%s' not found.\n", name);
     ntime->ntp_error = true;
   }
@@ -80,7 +79,7 @@ static void ntpRecvCB(void *arg, struct udp_pcb *pcb, struct pbuf *p,
   }
 
   // Ensure we are getting the response from the server we expect
-  if (!ip_addr_cmp(&netTime.ntp_ipaddr, addr) || port != NTP_DEFAULT_PORT) {
+  if (!ip_addr_cmp(&netTime.ntp_ipaddr, addr) || port != ntpServerPort) {
     DPRINTF("Received response from unexpected server or port\n");
     pbuf_free(p);
     return;
@@ -134,6 +133,9 @@ static void ntpRecvCB(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
   // Free the packet buffer
   pbuf_free(p);
+  udp_recv(pcb, NULL, NULL);
+  udp_remove(pcb);
+  netTime.ntp_pcb = NULL;
 }
 
 static bool isTrue(const char *value) {
@@ -168,6 +170,12 @@ static void ntp_init() {
 static void set_internal_rtc() {
   // Begin LwIP operation
   cyw43_arch_lwip_begin();
+
+  if (!netTime.ntp_pcb) {
+    DPRINTF("NTP PCB not initialized\n");
+    cyw43_arch_lwip_end();
+    return;
+  }
 
   // Allocate a pbuf for the NTP request.
   struct pbuf *pb = pbuf_alloc(PBUF_TRANSPORT, NTP_MSG_LEN, PBUF_RAM);
@@ -315,10 +323,20 @@ int rtc_queryNTPTime() {
     DPRINTF("RP2040 RTC set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
             rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour, rtcTime.min,
             rtcTime.sec);
+    if (netTime.ntp_pcb) {
+      udp_recv(netTime.ntp_pcb, NULL, NULL);
+      udp_remove(netTime.ntp_pcb);
+      netTime.ntp_pcb = NULL;
+    }
     return 0;  // Success
 
   } else {
     DPRINTF("Timeout waiting for NTP server\n");
+  }
+  if (netTime.ntp_pcb) {
+    udp_recv(netTime.ntp_pcb, NULL, NULL);
+    udp_remove(netTime.ntp_pcb);
+    netTime.ntp_pcb = NULL;
   }
   return -1;  // Failure
 }

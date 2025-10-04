@@ -17,6 +17,13 @@ static int run() {
   print("Atari ST GEMDRIVE Test Suite\r\n");
   print("Running tests...\r\n");
 
+  // Show the current drive
+  print("Current drive: %c:\r\n", 'A' + Dgetdrv());
+  char path[66];     /* GEMDOS path buffer; 64 + drive & NUL is safe */
+  Dgetpath(path, 0); /* fills e.g. "\FOLDER\SUBLEVEL" */
+
+  print("Current path: %s\r\n\r\n", path);
+
   run_files_tests(FALSE);
   run_folder_tests(FALSE);
   run_folder_listing_tests(FALSE);
@@ -27,7 +34,8 @@ static int run() {
   close_log();
 #endif
 
-  press_key("All tests completed.\r\n");
+  // press_key("All tests completed.\r\n");
+  print("All tests completed.\r\n");
 }
 
 //================================================================
@@ -38,4 +46,6 @@ int main(int argc, char *argv[]) {
   Supexec(&run);
 
   Pterm(0);
+  return EXIT_SUCCESS;
 }
+//================================================================

@@ -250,9 +250,7 @@
   (APP_GEMDRVEMUL << 8 | 0x57)  // Show the Fdatetime call
 
 #define GEMDRVEMUL_PEXEC_CALL \
-  (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call part 1
-#define GEMDRVEMUL_PEXEC2_CALL \
-  (APP_GEMDRVEMUL << 8 | 0x4c)  // Show the Pexec call part 2
+  (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
 #define GEMDRVEMUL_MALLOC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x48)  // Show the Malloc call
 
@@ -358,6 +356,15 @@ typedef struct __attribute__((aligned(4))) DTANode {
   TCHAR *pat; /* Pointer to name matching pattern. Hack for dir_findfirst(). */
   struct DTANode *next;
 } DTANode;
+
+/*
+ * Ownership contract for DTANode resources:
+ * - DTANode is the sole owner of 'dj' (DIR*) and 'pat' (allocated pattern).
+ * - Callers must NOT free 'dj' or 'pat'. To release a DTA, call releaseDTA()
+ *   (or cleanDTAHashTable()) which will perform the full teardown.
+ * - If a caller stops using 'dj' or 'pat' temporarily, it may set the fields
+ *   to NULL but must not free them. Teardown is centralized in dta_node_free().
+ */
 
 typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
