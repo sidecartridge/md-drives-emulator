@@ -178,6 +178,8 @@ pre_auto:
 	wait_sec
 	wait_sec
 	wait_sec
+	wait_sec
+	wait_sec
 
 ; Disable the MegaSTE cache and 16Mhz
     jsr set_8mhz_megaste
