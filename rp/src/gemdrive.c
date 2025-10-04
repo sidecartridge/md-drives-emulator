@@ -8,6 +8,8 @@
 
 #include "gemdrive.h"
 
+#include <stdlib.h>
+
 // The GEMDOS calls
 const char *GEMDOS_CALLS[93] = {
     "Pterm0",    // 0x00
@@ -172,10 +174,8 @@ static uint32_t driveNum = 0;
 static char dpathStr[GEMDRIVE_MAX_FOLDER_LENGTH] = {0};
 
 // Save Fsetdta variables
-// Pre-allocated node pool and free-list head
-static DTANode dtaPool[DTA_POOL_SIZE];
-static DTANode *dtaFreeList;
-static DTANode *dtaTbl[DTA_HASH_TABLE_SIZE];
+// Single linked list of DTAs (no hash table, no static pool)
+static DTANode *dtaHead = NULL;
 
 // Structures to store the file descriptors
 static FileDescriptors *fdescriptors =
@@ -215,14 +215,8 @@ static void __not_in_flash_func(nullifyDTA)(uint32_t mem) {
 
 // Helpers: allocate/release from pool
 static DTANode *dta_node_alloc(void) {
-  DTANode *n = dtaFreeList;
-  if (n) {
-    dtaFreeList = n->next;
-  }
-
+  DTANode *n = (DTANode *)malloc(sizeof(DTANode));
   if (!n) return NULL;
-
-  // scrub the node so callers don't see stale pointers/keys
   memset(n, 0, sizeof *n);
   return n;
 }
@@ -230,8 +224,13 @@ static DTANode *dta_node_alloc(void) {
 static void dta_node_free(DTANode *n) {
   if (!n) return;
 
-  // free allocated copies
+  // DTANode owns 'dj' and 'pat'. Ensure DIR is closed and dj->pat is detached
+  // before freeing to avoid dangling pointers and FS state leaks.
   if (n->dj) {
+    // Detach DIR's internal pattern pointer first
+    n->dj->pat = NULL;
+    // Close directory if it was opened; ignore errors on cleanup
+    (void)f_closedir(n->dj);
     free(n->dj);
     n->dj = NULL;
   }
@@ -239,159 +238,79 @@ static void dta_node_free(DTANode *n) {
     free(n->pat);
     n->pat = NULL;
   }
-  memset(n, 0, sizeof *n);
-
-  // return node to free list
-  n->next = dtaFreeList;
-  dtaFreeList = n;
+  free(n);
 }
 
-// Build-time safety checks
-_Static_assert((DTA_HASH_TABLE_SIZE & (DTA_HASH_TABLE_SIZE - 1)) == 0,
-               "DTA_HASH_TABLE_SIZE must be a power of two");
-_Static_assert(DTA_HASH_TABLE_SIZE >= 2, "DTA_HASH_TABLE_SIZE too small");
+// Hash no longer used; keep stub for potential diagnostics
+static inline size_t __not_in_flash_func(hash)(uint32_t x) { return x; }
 
-// Strong mixer (Murmur3 fmix32 style), then mask to table size
-static inline size_t __not_in_flash_func(hash)(uint32_t x) {
-  x ^= x >> 16;
-  x *= UINT32_C(0x85EBCA6B);
-  x ^= x >> 13;
-  x *= UINT32_C(0xC2B2AE35);
-  x ^= x >> 16;
-  return (size_t)(x & (DTA_HASH_TABLE_SIZE - 1));
-}
-
-// Insert function (allocates DTA copy)
+// Insert function (allocates DTA node and prepends to list). Returns -2 on
+// duplicate key
 static int __not_in_flash_func(insertDTA)(uint32_t key) {
-  const unsigned idx = hash(key);  // hash() already masks to table size
-
-  DPRINTF("insertDTA for key %08" PRIX32 " at idx %u\n", key, idx);
-
-  // If bucket already occupied, signal collision / existing entry
-  if (dtaTbl[idx] != NULL) {
-    DPRINTF("insertDTA: bucket %u already occupied with key %08" PRIX32
-            " -> returning -2\n",
-            idx, dtaTbl[idx]->key);
-    return -2;  // collision / existing
+  for (DTANode *p = dtaHead; p; p = p->next) {
+    if (p->key == key) return -2;  // already exists
   }
-
   DTANode *n = dta_node_alloc();
   if (!n) return -1;
-
-  memset(n, 0, sizeof *n);
   n->key = key;
   n->attribs = 0xFFFFFFFF;
   memset(&n->data, 0, sizeof n->data);
   n->dj = NULL;
   n->pat = NULL;
-  n->next = NULL;
-  dtaTbl[idx] = n;
-
-  DPRINTF("Insert DTA key: %08" PRIX32 " at idx %u\n", n->key, idx);
+  n->next = dtaHead;
+  dtaHead = n;
   return 0;
 }
 
 // Lookup function
 static DTANode *__not_in_flash_func(lookupDTA)(uint32_t key) {
-  const unsigned idx = hash(key);  // ensure hash() applies modulo
-
-  for (DTANode *p = dtaTbl[idx]; p; p = p->next) {
-    if (p->key != key) continue;
-
-    if (p->dj) {
-      if (p->dj->pat != p->pat) {
-        p->dj->pat = p->pat;  // restore pattern into DIR
-      }
-
-      const char *fname = p->fname ? p->fname : "(null)";
-      const char *pat = p->dj->pat ? p->dj->pat : "(null)";
-
-      DPRINTF("Retrieved DTA key: %08" PRIX32
-              ", filinfo_fname: %s, dir_obj: %p, pattern: %s\n",
-              p->key, fname, (void *)p->dj, pat);
-    } else {
-      DPRINTF("Retrieved DTA key: %08" PRIX32 ". Empty DTA\n", p->key);
+  for (DTANode *p = dtaHead; p; p = p->next) {
+    if (p->key == key) {
+      // Keep DIR's pattern pointer mirrored to node's owned 'pat'. Callers
+      // must not free 'pat'; it is released centrally by dta_node_free().
+      if (p->dj && p->dj->pat != p->pat) p->dj->pat = p->pat;
+      return p;
     }
-
-    // DPRINTF("Lookup DTA key: %08" PRIX32 " at idx %u\n", p->key, idx);
-    return p;
   }
-
-  DPRINTF("DTA key: %08" PRIX32 " not found\n", key);
   return NULL;
 }
 
 // Release (remove) function
 static void __not_in_flash_func(releaseDTA)(uint32_t key) {
-  const unsigned idx = hash(key);  // hash() should already mask to table size
-  DTANode *p = dtaTbl[idx], *prev = NULL;
-
+  DTANode *p = dtaHead, *prev = NULL;
   while (p) {
     if (p->key == key) {
-      // unlink
       if (prev)
         prev->next = p->next;
       else
-        dtaTbl[idx] = p->next;
-
-      // safe, consistent logging
-      if (p->dj) {
-        const char *fname = p->fname ? p->fname : "(null)";
-        const char *pat = p->dj->pat ? p->dj->pat : "(null)";
-        DPRINTF("Releasing DTA key: %08" PRIX32
-                ", filinfo_fname: %s, dir_obj: %p, pattern: %s\n",
-                p->key, fname, (void *)p->dj, pat);
-      } else {
-        DPRINTF("Releasing DTA key: %08" PRIX32 " (no DIR)\n", p->key);
-      }
-
-      DPRINTF("Release DTA key: %08" PRIX32 " at idx %u\n", p->key, idx);
-
+        dtaHead = p->next;
       dta_node_free(p);
       return;
     }
     prev = p;
     p = p->next;
   }
-
-  DPRINTF("releaseDTA: key %08" PRIX32 " not found in idx %u\n", key, idx);
 }
 
 // Count the number of elements
 static unsigned int __not_in_flash_func(countDTA)(void) {
   unsigned cnt = 0;
-  for (int i = 0; i < DTA_HASH_TABLE_SIZE; ++i) {
-    for (DTANode *p = dtaTbl[i]; p; p = p->next) ++cnt;
-  }
-  DPRINTF("DTA count: %d/%u\n", cnt, DTA_POOL_SIZE);
+  for (DTANode *p = dtaHead; p; p = p->next) ++cnt;
   return cnt;
 }
 
 // Initialize the hash table
-static void __not_in_flash_func(initializeDTAHashTable)() {
-  // build free list
-  dtaFreeList = &dtaPool[0];
-  for (int i = 0; i < DTA_POOL_SIZE - 1; ++i) {
-    dtaPool[i].next = &dtaPool[i + 1];
-  }
-  dtaPool[DTA_POOL_SIZE - 1].next = NULL;
-  // clear buckets
-  for (int i = 0; i < DTA_HASH_TABLE_SIZE; ++i) {
-    dtaTbl[i] = NULL;
-  }
-}
+static void __not_in_flash_func(initializeDTAHashTable)() { dtaHead = NULL; }
 
 // Clean the hash table
 static void __not_in_flash_func(cleanDTAHashTable)(void) {
-  for (int i = 0; i < DTA_HASH_TABLE_SIZE; ++i) {
-    DTANode *p = dtaTbl[i];
-    while (p) {
-      DTANode *nx = p->next;
-      dta_node_free(p);
-      p = nx;
-    }
-    dtaTbl[i] = NULL;
+  DTANode *p = dtaHead;
+  while (p) {
+    DTANode *nx = p->next;
+    dta_node_free(p);
+    p = nx;
   }
+  dtaHead = NULL;
 }
 
 static void __not_in_flash_func(searchPath2ST)(

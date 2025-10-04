@@ -357,6 +357,15 @@ typedef struct __attribute__((aligned(4))) DTANode {
   struct DTANode *next;
 } DTANode;
 
+/*
+ * Ownership contract for DTANode resources:
+ * - DTANode is the sole owner of 'dj' (DIR*) and 'pat' (allocated pattern).
+ * - Callers must NOT free 'dj' or 'pat'. To release a DTA, call releaseDTA()
+ *   (or cleanDTAHashTable()) which will perform the full teardown.
+ * - If a caller stops using 'dj' or 'pat' temporarily, it may set the fields
+ *   to NULL but must not free them. Teardown is centralized in dta_node_free().
+ */
+
 typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
   int fd;
