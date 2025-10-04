@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.6beta (2025-03-04) - Beta release
+## v1.0.6beta (2025-10-04) - Beta release
 This is the first beta release. It includes all the new features and improvements, and it should not include any more new features. The code is still in development and may contain bugs, but it is more stable than previous alpha releases and ready to use for all users.
 
 ### Changes
@@ -12,9 +12,9 @@ This is the first beta release. It includes all the new features and improvement
 No new features have been added in this release.
 
 ### Fixes
-- **AUTO folder execution**: The system now can execute the full list of files in the AUTO folder, not just the first one. This change improves the user experience by allowing multiple files to be executed automatically during startup. AUTO folder support has been tested from TOS 1.04, TOS 2.06 and EmuTOS. TOS 1.00 and TOS 1.02 can crash when accessing the AUTO folder due to a bug in these TOS versions.
+- **AUTO folder execution**: The system now can execute the full list of files in the AUTO folder, not just the first one. This change improves the user experience by allowing multiple files to be executed automatically during startup. AUTO folder support has been tested from TOS 1.04, 1.06, 1.62, 2.06 and EmuTOS. TOS 1.00 and TOS 1.02 can crash when accessing the AUTO folder due to a bug in these TOS versions.
 - **Memory leak fixes**: Several memory leaks have been identified and fixed, improving the overall stability and performance of the system.
-- **Memmory optimizations**: Various memory optimizations have been implemented, reducing the overall memory footprint and improving system efficiency.
+- **Memory optimizations**: Various memory optimizations have been implemented, reducing the overall memory footprint and improving system efficiency.
 - Better error detection during USB mass storage initialization.
 
 ---
