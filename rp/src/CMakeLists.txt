@@ -84,6 +84,7 @@ set(RP_SOURCES
     aconfig.c
     blink.c
     chandler.c
+    commemul.c
     display.c
     display_term.c
     emul.c
@@ -107,6 +108,7 @@ set(RP_SOURCES
 add_executable(${PROJECT_NAME} ${RP_SOURCES})
 
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/romemul.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/commemul.pio)
 
 # Create map/bin/hex/uf2 files
 pico_add_extra_outputs(${PROJECT_NAME})
