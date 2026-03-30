@@ -370,6 +370,7 @@ typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
   int fd;
   uint32_t offset;
+  bool seek_dirty;
   FIL fobject;
   struct FileDescriptors *next;
 } FileDescriptors;
