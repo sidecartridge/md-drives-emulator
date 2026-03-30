@@ -15,31 +15,7 @@ static int lookupDataRomDmaChannel = -1;
 // Default PIO to use
 static PIO defaultPio = pio0;
 
-// Interrupt handler for DMA completion
-// We don't use at runtime, but they are useful for debugging
-// Keep in mind that printing in an interrupt handler is not a good idea
-// because it can cause delays in the processing of the data
-void __not_in_flash_func(dma_irqHandlerLookup)(void) {
-  // Read the address to process
-  uint16_t addrLsb = dma_hw->ch[lookupDataRomDmaChannel].al3_read_addr_trig;
-
-  dma_hw->ints1 = 1U << lookupDataRomDmaChannel;
-
-  DPRINTF("DMA_LSB LOOKUP: $%x\n", addrLsb);
-}
-
-void __not_in_flash_func(dma_irqHandlerAddress)(void) {
-  uint32_t addr = dma_hw->ch[readAddrRomDmaChannel].al3_read_addr_trig;
-  uint16_t value = *((uint16_t *)addr);
-
-  // Clear the interrupt request for the channel
-  dma_hw->ints0 = 1U << readAddrRomDmaChannel;
-
-  DPRINTF("DMA ADDR: $%x, VALUE: $%x\n", addr, value);
-}
-
-static int initRomEmulator(PIO pio, IRQInterceptionCallback requestCallback,
-                           IRQInterceptionCallback responseCallback) {
+static int initRomEmulator(PIO pio) {
   // Configure DMAs
   // Claim the first available DMA channel for read_addr_rom_dma_channel
   readAddrRomDmaChannel = dma_claim_unused_channel(true);
@@ -115,54 +91,11 @@ static int initRomEmulator(PIO pio, IRQInterceptionCallback requestCallback,
                         &dma_hw->ch[lookupDataRomDmaChannel].al3_read_addr_trig,
                         &pio->rxf[smReadROM], 1, true);
 
-  // If there is a requestCallback function, then enable the DMA IRQ and set the
-  // callback Otherwise, simply don't enable the DMA IRQ Use the ROMEMUL_DMA_IRQ
-  // for the read_addr_rom_dma_channel
-  if (requestCallback != NULL) {
-    DPRINTF("Enabling DMA IRQ for read_addr_rom_dma_channel.\n");
-    dma_channel_set_irq1_enabled(readAddrRomDmaChannel, true);
-    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, requestCallback);
-    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
-  }
-  // If there is a responseCallback function, then enable the DMA IRQ and set
-  // the callback Otherwise, simply don't enable the DMA IRQ Use the
-  // ROMEMUL_DMA_IRQ for the lookup_data_rom_dma_channel
-  if (responseCallback != NULL) {
-    DPRINTF("Enabling DMA IRQ for lookup_data_rom_dma_channel.\n");
-    dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, true);
-    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, responseCallback);
-    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
-  }
-
   DPRINTF("ROM emulator initialized.\n");
   return smReadROM;
 }
-void dma_setResponseCB(IRQInterceptionCallback responseCallback) {
-  // Change the the response callback function
-  if (responseCallback != NULL) {
-    DPRINTF(
-        "Changing DMA callback function for lookup_data_rom_dma_channel.\n");
-    // Disable DMA IRQ before modifying
-    dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, false);
-    irq_set_enabled(ROMEMUL_DMA_IRQ, false);
 
-    // Remove any existing handler first
-    irq_remove_handler(ROMEMUL_DMA_IRQ,
-                       irq_get_exclusive_handler(ROMEMUL_DMA_IRQ));
-
-    // Now safely set the new one
-    irq_set_exclusive_handler(ROMEMUL_DMA_IRQ, responseCallback);
-
-    // Re-enable
-    dma_channel_set_irq1_enabled(lookupDataRomDmaChannel, true);
-    irq_set_enabled(ROMEMUL_DMA_IRQ, true);
-    DPRINTF("DMA callback function changed.\n");
-  }
-}
-
-int init_romemul(IRQInterceptionCallback requestCallback,
-                 IRQInterceptionCallback responseCallback,
-                 bool copyFlashToRAM) {
+int init_romemul(bool copyFlashToRAM) {
   // Grant high bus priority to the DMA, so it can shove the processors out
   // of the way. This should only be needed if you are pushing things up to
   // >16bits/clk here, i.e. if you need to saturate the bus completely.
@@ -186,8 +119,7 @@ int init_romemul(IRQInterceptionCallback requestCallback,
     COPY_FIRMWARE_TO_RAM(srcAddr, ROM_SIZE_WORDS * ROM_BANKS);
   }
 
-  int smReadROM =
-      initRomEmulator(defaultPio, requestCallback, responseCallback);
+  int smReadROM = initRomEmulator(defaultPio);
   if (smReadROM < 0) {
     DPRINTF("Error initializing ROM emulator. Error code: %d\n", smReadROM);
     return -1;

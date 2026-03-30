@@ -82,11 +82,7 @@ static inline void __not_in_flash_func(handle_protocol_command)(
     const TransmissionProtocol *protocol) {
   uint32_t nowUs = time_us_32();
 
-  // Sanity check: clamp payload_size to avoid overflow
-  uint16_t size = protocol->payload_size;
-  if (size > MAX_PROTOCOL_PAYLOAD_SIZE) {
-    size = MAX_PROTOCOL_PAYLOAD_SIZE;
-  }
+  uint16_t size = tprotocol_clamp_payload_size(protocol->payload_size);
 
   if (term_is_duplicate_protocol(protocol, size, nowUs)) {
     DPRINTF("Ignoring duplicate terminal protocol frame (ID=%u, Size=%u)\n",
@@ -94,16 +90,7 @@ static inline void __not_in_flash_func(handle_protocol_command)(
     return;
   }
 
-  // Copy the content of protocol to last_protocol
-  // Copy the 8-byte header directly
-  lastProtocol.command_id = protocol->command_id;
-  lastProtocol.payload_size = protocol->payload_size;
-  lastProtocol.bytes_read = protocol->bytes_read;
-  lastProtocol.final_checksum = protocol->final_checksum;
-
-  // Copy only used payload bytes
-  memcpy(lastProtocol.payload, protocol->payload, size);
-
+  tprotocol_copy_safely(&lastProtocol, protocol);
   lastProtocolAcceptedAtUs = nowUs;
   lastProtocolValid = true;
 };
@@ -119,22 +106,6 @@ static inline void __not_in_flash_func(term_consume_rom3_sample)(
   uint16_t addrLsb = (uint16_t)(sample ^ ADDRESS_HIGH_BIT);
   tprotocol_parse(addrLsb, handle_protocol_command,
                   handle_protocol_checksum_error);
-}
-
-// Interrupt handler for DMA completion
-void __not_in_flash_func(term_dma_irq_handler_lookup)(void) {
-  // Read once to avoid redundant hardware access
-  uint32_t addr = dma_hw->ch[2].al3_read_addr_trig;
-
-  // Check ROM3 signal (bit 16)
-  // We expect that the ROM3 signal is not set very often, so this should help
-  // the compilar to run faster
-  if (__builtin_expect(addr & 0x00010000, 0)) {
-    term_consume_rom3_sample((uint16_t)addr);
-  }
-
-  // Read the rom3 signal and if so then process the command
-  dma_hw->ints1 = 1U << 2;
 }
 
 static char screen[TERM_SCREEN_SIZE];

@@ -1623,11 +1623,7 @@ void __not_in_flash_func(emul_start)() {
   // Initialize the terminal emulator PIO programs
   // The communication between the remote (target) computer and the RP2040
   // is done using a command protocol over the cartridge bus
-  // term_dma_irq_handler_lookup is the implementation of the terminal
-  // emulator using the command protocol. Hence, if you want to implement
-  // your own app or microfirmware, you should implement your own command
-  // handler using this protocol.
-  init_romemul(NULL, NULL, false);
+  init_romemul(false);
   commemul_init();
 
   // After this point, the remote computer can execute the code
