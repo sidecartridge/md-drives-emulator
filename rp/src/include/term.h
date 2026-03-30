@@ -127,8 +127,6 @@ typedef enum {
 
 } term_CommandLevel;
 
-void __not_in_flash_func(term_dma_irq_handler_lookup)(void);
-
 void term_init(void);
 
 /**
