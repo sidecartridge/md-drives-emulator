@@ -16,6 +16,8 @@
 
 #define SELECT_LOOP_DELAY 10  // 10 ms
 
+#define SELECT_DEBOUNCE_MS 30  // 30 ms stable level before accepting a change
+
 #define SELECT_LONG_RESET 10000  // 10 seconds
 
 // Define a callback typdef for the reset function
