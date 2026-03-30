@@ -9,10 +9,9 @@
 #include "chandler.h"
 
 #include "commemul.h"
-#include "pico/sem.h"  // semaphore API
 
-static TransmissionProtocol lastProtocol;
-static semaphore_t command_sem;
+static TransmissionProtocol pendingProtocol;
+static bool protocolPending = false;
 
 static uint32_t incrementalCmdCount = 0;
 
@@ -28,6 +27,29 @@ static bool ledOff = false;
 static absolute_time_t lastTransitionTime;  // Time of the last state change
 static absolute_time_t now = {0};           // Current time
 
+static inline void __not_in_flash_func(chandler_clear_pending_protocol)(void) {
+  pendingProtocol.command_id = 0;
+  pendingProtocol.payload_size = 0;
+  pendingProtocol.bytes_read = 0;
+  pendingProtocol.final_checksum = 0;
+  protocolPending = false;
+}
+
+static inline bool __not_in_flash_func(chandler_protocol_matches_pending)(
+    const TransmissionProtocol *protocol, uint16_t size) {
+  if (!protocolPending) {
+    return false;
+  }
+
+  if ((pendingProtocol.command_id != protocol->command_id) ||
+      (pendingProtocol.payload_size != protocol->payload_size) ||
+      (pendingProtocol.final_checksum != protocol->final_checksum)) {
+    return false;
+  }
+
+  return memcmp(pendingProtocol.payload, protocol->payload, size) == 0;
+}
+
 void __not_in_flash_func(chandler_init)() {
   DPRINTF("Initializing Command Handler...\n");  // Print alwayse
 
@@ -35,7 +57,7 @@ void __not_in_flash_func(chandler_init)() {
   memoryRandomTokenAddress = memorySharedAddress + CHANDLER_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + CHANDLER_RANDOM_TOKEN_SEED_OFFSET;
-  sem_init(&command_sem, 0, 1);
+  chandler_clear_pending_protocol();
 }
 
 /**
@@ -73,32 +95,19 @@ void __not_in_flash_func(chandler_addCB)(CommandCallback cb) {
  */
 static inline void __not_in_flash_func(handle_protocol_command)(
     const TransmissionProtocol *protocol) {
-  // The command can be processed if there is no protocol already in
-  // progress
-  if (sem_try_acquire(&command_sem)) {
-    // Copy the content of protocol to last_protocol
-    // Sanity check: clamp payload_size to avoid overflow
-    uint16_t size = protocol->payload_size;
-    if (size > MAX_PROTOCOL_PAYLOAD_SIZE) {
-      size = MAX_PROTOCOL_PAYLOAD_SIZE;
+  uint16_t size = tprotocol_clamp_payload_size(protocol->payload_size);
+
+  if (protocolPending) {
+    if (!chandler_protocol_matches_pending(protocol, size)) {
+      DPRINTF("Ignoring protocol %04x (%u bytes) while %04x is pending\n",
+              protocol->command_id, protocol->payload_size,
+              pendingProtocol.command_id);
     }
-
-    // Copy only used payload bytes
-    memcpy(lastProtocol.payload, protocol->payload, size);
-
-    // Copy the 8-byte header directly
-    lastProtocol.command_id = protocol->command_id;
-    lastProtocol.payload_size = protocol->payload_size;
-    lastProtocol.bytes_read = protocol->bytes_read;
-    lastProtocol.final_checksum = protocol->final_checksum;
-  } else {
-    // If a protocol is already in progress, ignore the new one
-    // DPRINTF(
-    //     "PROTOCOL %04x(%04x) ALREADY IN PROGRESS. IGNORING THE NEW COMMAND: "
-    //     "%04x(%04x)\n",
-    //     lastProtocol.command_id, lastProtocol.final_checksum,
-    //     protocol->command_id, protocol->final_checksum);
+    return;
   }
+
+  tprotocol_copy_safely(&pendingProtocol, protocol);
+  protocolPending = true;
 }
 
 static inline void __not_in_flash_func(handle_protocol_checksum_error)(
@@ -118,33 +127,12 @@ static inline void __not_in_flash_func(chandler_consume_rom3_sample)(
                   handle_protocol_checksum_error);
 }
 
-// Interrupt handler for DMA completion
-void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void) {
-  // Read the rom3 signal and if so then process the command
-
-  dma_hw->ints1 = 1U << 2;
-
-  // Read once to avoid redundant hardware access
-  uint32_t addr = dma_hw->ch[2].al3_read_addr_trig;
-
-  // Check ROM3 signal (bit 16)
-  // We expect that the ROM3 signal is not set very often, so this should help
-  // the compilar to run faster
-  if (__builtin_expect(addr & 0x00010000, 0)) {
-    // Invert highest bit of low word to get 16-bit address
-    uint16_t addr_lsb = (uint16_t)(addr ^ CHANDLER_ADDRESS_HIGH_BIT);
-
-    tprotocol_parse(addr_lsb, handle_protocol_command,
-                    handle_protocol_checksum_error);
-  }
-}
-
 // Invoke this function to process the commands from the active loop in the
 // main function
 void __not_in_flash_func(chandler_loop)() {
   commemul_poll(chandler_consume_rom3_sample);
 
-  if (sem_available(&command_sem) > 0) {
+  if (!protocolPending) {
     // No command to process
     return;
   }
@@ -152,21 +140,21 @@ void __not_in_flash_func(chandler_loop)() {
   // Shared by all commands
   // Read the random token from the command and increment the payload
   // pointer to the first parameter available in the payload
-  uint32_t randomToken = TPROTO_GET_RANDOM_TOKEN(lastProtocol.payload);
-  uint16_t *payloadPtr = (uint16_t *)lastProtocol.payload;
-  uint16_t commandId = lastProtocol.command_id;
-  if ((commandId == 0) && (lastProtocol.payload_size == 0) &&
-      (lastProtocol.final_checksum == 0)) {
-    // Invalid command, release the semaphore and return
+  uint32_t randomToken = TPROTO_GET_RANDOM_TOKEN(pendingProtocol.payload);
+  uint16_t *payloadPtr = (uint16_t *)pendingProtocol.payload;
+  uint16_t commandId = pendingProtocol.command_id;
+  if ((commandId == 0) && (pendingProtocol.payload_size == 0) &&
+      (pendingProtocol.final_checksum == 0)) {
+    // Invalid command, clear the pending slot and return
     DPRINTF("Invalid command received. Ignoring.\n");
-    sem_release(&command_sem);
+    chandler_clear_pending_protocol();
     return;
   }
 
   // DPRINTF("Command ID: %4x. Size: %d. Random token: 0x%08X,
   // Checksum:0x%04X\n",
-  //         lastProtocol.command_id, lastProtocol.payload_size, randomToken,
-  //         lastProtocol.final_checksum);
+  //         pendingProtocol.command_id, pendingProtocol.payload_size,
+  //         randomToken, pendingProtocol.final_checksum);
 
   // Jump the random token
   TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);
@@ -205,7 +193,7 @@ void __not_in_flash_func(chandler_loop)() {
   // #endif
 
   for (CommandCallbackNode *cur = callbackListHead; cur; cur = cur->next) {
-    if (cur->cb) cur->cb(&lastProtocol, payloadPtr);
+    if (cur->cb) cur->cb(&pendingProtocol, payloadPtr);
   }
 #if defined(CYW43_WL_GPIO_LED_PIN)
   // If LED is on, check if it has been off for at least LED_ON_DELAY_US and
@@ -228,12 +216,5 @@ void __not_in_flash_func(chandler_loop)() {
       memoryRandomTokenAddress,
       (((uint64_t)incrementalCmdCount) << 32) | randomToken);
 
-  // Nullify the lastProtocol structure to avoid re-processing the same command
-  memset(lastProtocol.payload, 0, sizeof(lastProtocol.payload));
-  lastProtocol.command_id = 0;
-  lastProtocol.payload_size = 0;
-  lastProtocol.bytes_read = 0;
-  lastProtocol.final_checksum = 0;
-
-  sem_release(&command_sem);
+  chandler_clear_pending_protocol();
 }

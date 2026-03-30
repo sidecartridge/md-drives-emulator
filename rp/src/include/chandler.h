@@ -70,15 +70,6 @@ typedef struct CommandCallbackNode {
   struct CommandCallbackNode *next;
 } CommandCallbackNode;
 
-typedef void (*IRQInterceptionCallback)();
-
-extern int read_addr_rom_dma_channel;
-extern int lookup_data_rom_dma_channel;
-
-// Interrupt handler callback for DMA completion
-void __not_in_flash_func(chandler_dma_irq_handler_lookup_callback)(void);
-void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void);
-
 // Function Prototypes
 void chandler_init();
 void __not_in_flash_func(chandler_loop)();
