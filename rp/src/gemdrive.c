@@ -456,9 +456,24 @@ static void __not_in_flash_func(addFile)(FileDescriptors **head,
   newFDescriptor->fobject = fobject;
   newFDescriptor->fd = new_fd;
   newFDescriptor->offset = 0;
+  newFDescriptor->seek_dirty = false;
   newFDescriptor->next = *head;
   *head = newFDescriptor;
   DPRINTF("File %s added with fd %i\n", fpath, new_fd);
+}
+
+static inline FRESULT __not_in_flash_func(syncFileOffsetIfNeeded)(
+    FileDescriptors *file) {
+  if ((file == NULL) || !file->seek_dirty) {
+    return FR_OK;
+  }
+
+  FRESULT res = f_lseek(&file->fobject, file->offset);
+  if (res == FR_OK) {
+    file->seek_dirty = false;
+  }
+
+  return res;
 }
 
 static void __not_in_flash_func(printFDs)(FileDescriptors *head) {
@@ -1502,15 +1517,6 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           } else {
             addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount);
 
-            // Initialize the file offset
-            FileDescriptors *file = getFileByFD(fdescriptors, fdCount);
-            if (file != NULL) {
-              file->offset = 0;  // Initialize the offset to 0
-              DPRINTF("File offset initialized to 0 for fd: %d\n", fdCount);
-            } else {
-              DPRINTF("ERROR: Could not find file descriptor %d\n", fdCount);
-            }
-
             DPRINTF("File opened with file descriptor: %d\n", fdCount);
             // Return the file descriptor
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
@@ -1583,15 +1589,6 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           errorCode = GEMDOS_EINTRN;
         } else {
           addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter);
-
-          // Initialize the file offset
-          FileDescriptors *file = getFileByFD(fdescriptors, fdCounter);
-          if (file != NULL) {
-            file->offset = 0;  // Initialize the offset to 0
-            DPRINTF("File offset initialized to 0 for fd: %d\n", fdCounter);
-          } else {
-            DPRINTF("ERROR: Could not find file descriptor %d\n", fdCounter);
-          }
 
           // MISSING ATTRIBUTE MODIFICATION
           char fattrSTStr[7] = "";
@@ -1715,6 +1712,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       if (isValid) {
         // Clamp to valid range
         file->offset = (FSIZE_t)newOff;
+        file->seek_dirty = true;
         DPRINTF("Seek FD %u, offset %x\n", fd, (FSIZE_t)newOff);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FSEEK_STATUS,
                                 file->offset);
@@ -1987,9 +1985,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         break;
       }
 
-      // Seek to current offset before reading
       FSIZE_t offset = file->offset;
-      FRESULT res = f_lseek(&file->fobject, offset);
+      FRESULT res = syncFileOffsetIfNeeded(file);
       if (res != FR_OK) {
         DPRINTF("ERROR: f_lseek failed (%d)\n", res);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_READ_BYTES,
@@ -2022,7 +2019,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
 
         // Ensure proper endianness for ST
         CHANGE_ENDIANESS_BLOCK16(memorySharedAddress + GEMDRIVE_READ_BUFF,
-                                 toRead + (toRead & 1));
+                                 bytesRead + (bytesRead & 1));
 
         // Return actual bytes read
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_READ_BYTES,
@@ -2052,8 +2049,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       } else {
         uint32_t writebuff_offset = file->offset;
         UINT bytes_write = 0;
-        // Reposition the file pointer with FatFs
-        FRESULT ferr = f_lseek(&file->fobject, writebuff_offset);
+        FRESULT ferr = syncFileOffsetIfNeeded(file);
         if (ferr != FR_OK) {
           DPRINTF("ERROR: Could not change write offset of the file (%d)\r\n",
                   ferr);
@@ -2081,7 +2077,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
                                     GEMDOS_EINTRN);
           } else {
             // Update the offset of the file
-            file->offset += buff_size;
+            file->offset += bytes_write;
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
                                     bytes_write);
           }
@@ -2106,6 +2102,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       } else {
         // Update the offset of the file
         file->offset += writebuff_forward_bytes;
+        file->seek_dirty = true;
         uint32_t current_offset = file->offset;
         DPRINTF("New offset: x%x after writing x%x bytes\n", current_offset,
                 writebuff_forward_bytes);

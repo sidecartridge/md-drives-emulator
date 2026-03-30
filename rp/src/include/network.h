@@ -40,6 +40,7 @@
 #include <string.h>
 
 #include "hardware/clocks.h"
+#include "lwip/apps/mdns.h"
 #include "pico/stdlib.h"
 
 #define NETWORK_POLLING_INTERVAL 100  // 100 ms
@@ -236,7 +237,7 @@ char* network_wifiConnStatusStr();
  * @param connect_code Numeric authentication code.
  * @return Pointer to a string with the full authentication type description.
  */
-const char* network_getAuthTypeString(u_int16_t connect_code);
+const char* network_getAuthTypeString(uint16_t connect_code);
 
 /**
  * @brief Returns an abbreviated string for the WiFi authentication type.
@@ -246,7 +247,7 @@ const char* network_getAuthTypeString(u_int16_t connect_code);
  * @param connect_code Numeric authentication code.
  * @return Pointer to a short string representing the authentication type.
  */
-const char* network_getAuthTypeStringShort(u_int16_t connect_code);
+const char* network_getAuthTypeStringShort(uint16_t connect_code);
 
 /**
  * @brief Retrieves the current IP address assigned to the network interface.
@@ -256,6 +257,57 @@ const char* network_getAuthTypeStringShort(u_int16_t connect_code);
  * @return IP address structure.
  */
 ip_addr_t network_getCurrentIp();
+
+/**
+ * @brief Returns the CYW43 MAC address as a human-readable string.
+ *
+ * @return Pointer to a static string in the format `xx:xx:xx:xx:xx:xx`.
+ */
+const char* network_getCyw43MacStr();
+
+/**
+ * @brief Retrieves the current RSSI for the STA connection.
+ *
+ * @param rssi Output pointer for the RSSI value.
+ * @return true if a valid RSSI value was retrieved, false otherwise.
+ */
+bool network_getCurrentRssi(int32_t* rssi);
+
+/**
+ * @brief Maps an RSSI value to a user-friendly quality label.
+ *
+ * @param rssi RSSI in dBm.
+ * @return Pointer to a static label string.
+ */
+const char* network_getSignalQualityLabel(int32_t rssi);
+
+/**
+ * @brief Parses and cleans up an SSID string.
+ *
+ * @param ssid Pointer to the input null-terminated SSID string.
+ * @param outSSID Output buffer for the parsed SSID.
+ * @return true if the SSID is valid after cleaning, false otherwise.
+ */
+bool network_parseSSID(const char* ssid, char* outSSID);
+
+/**
+ * @brief Parses and cleans up a WiFi password.
+ *
+ * @param password Input password string.
+ * @param outPassword Output buffer for the cleaned password.
+ * @return true if the password is valid, false otherwise.
+ */
+bool network_parsePassword(const char* password, char* outPassword);
+
+/**
+ * @brief Returns a human-readable string for the WiFi station connection
+ * process status.
+ *
+ * @param status The WiFi station connection process status.
+ * @return A constant string describing the status.
+ */
+const char* network_WifiStaConnStatusString(
+    wifi_sta_conn_process_status_t status);
 
 #endif
 

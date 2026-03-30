@@ -102,6 +102,28 @@ typedef struct __attribute__((packed, aligned(4))) {
       payload[MAX_PROTOCOL_PAYLOAD_SIZE / 2];  // Pointer to the payload data
 } TransmissionProtocol;
 
+static inline uint16_t __not_in_flash_func(tprotocol_clamp_payload_size)(
+    uint16_t payload_size) {
+  if (payload_size > MAX_PROTOCOL_PAYLOAD_SIZE) {
+    return MAX_PROTOCOL_PAYLOAD_SIZE;
+  }
+
+  return payload_size;
+}
+
+static inline uint16_t __not_in_flash_func(tprotocol_copy_safely)(
+    TransmissionProtocol *dst, const TransmissionProtocol *src) {
+  uint16_t size = tprotocol_clamp_payload_size(src->payload_size);
+
+  dst->command_id = src->command_id;
+  dst->payload_size = src->payload_size;
+  dst->bytes_read = src->bytes_read;
+  dst->final_checksum = src->final_checksum;
+  memcpy(dst->payload, src->payload, size);
+
+  return size;
+}
+
 // Function to handle the commands received
 typedef void (*ProtocolCallback)(const TransmissionProtocol *);
 

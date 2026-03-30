@@ -10,12 +10,12 @@ git submodule update --init --recursive
 # Pin the building versions
 echo "Pinning the SDK versions..."
 cd pico-sdk
-git checkout tags/2.1.1
+git checkout tags/2.2.0
 cd ..
 
 echo "Pinning the Extras SDK versions..."
 cd pico-extras
-git checkout tags/sdk-2.1.1
+git checkout tags/sdk-2.2.0
 cd ..
 
 echo "Pinning the FatFs SDK versions..."

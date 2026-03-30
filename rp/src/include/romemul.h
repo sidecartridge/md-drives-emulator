@@ -13,7 +13,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"
@@ -23,21 +22,11 @@
 #include "memfunc.h"
 #include "pico/stdlib.h"
 
-#define ROMEMUL_BUS_BITS 17
+#define ROMEMUL_BUS_BITS 16
 
-#define ROMEMUL_DMA_IRQ (DMA_IRQ_1)  // Use DMA IRQ 1 for ROM emulator
-
-typedef void (*IRQInterceptionCallback)();
-
-// extern int read_addr_rom_dma_channel;
-// extern int lookup_data_rom_dma_channel;
+#include "../../build/romemul.pio.h"
 
 // Function Prototypes
-int init_romemul(IRQInterceptionCallback requestCallback,
-                 IRQInterceptionCallback responseCallback, bool copyFlashToRAM);
-
-void dma_irqHandlerLookup(void);
-void dma_irqHandlerAddress(void);
-void dma_setResponseCB(IRQInterceptionCallback responseCallback);
+int init_romemul(bool copyFlashToRAM);
 
 #endif  // ROMEMUL_H

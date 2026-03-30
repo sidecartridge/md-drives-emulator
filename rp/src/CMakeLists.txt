@@ -78,39 +78,46 @@ add_subdirectory(u8g2)
 
 # Tell CMake where to find other source code
 add_subdirectory($ENV{FATFS_SDK_PATH}/src build)
-  
-# Tell CMake where to find the executable source file
-add_executable(${PROJECT_NAME} 
-        main.c
+
+set(RP_SOURCES
+    main.c
+    aconfig.c
+    blink.c
+    chandler.c
+    commemul.c
+    display.c
+    display_term.c
+    emul.c
+    floppy.c
+    gconfig.c
+    gemdrive.c
+    hw_config.c
+    network.c
+    reset.c
+    romemul.c
+    rtc.c
+    sdcard.c
+    select.c
+    term.c
+    usb_descriptors.c
+    usb_mass.c
+    tusb_config.h
 )
 
-pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/romemul.pio)
+# Tell CMake where to find the executable source file
+add_executable(${PROJECT_NAME} ${RP_SOURCES})
 
-target_sources(${PROJECT_NAME} PRIVATE
-        aconfig.c
-        blink.c
-        chandler.c
-        display.c
-        display_term.c
-        emul.c
-        floppy.c
-        gconfig.c
-        gemdrive.c
-        hw_config.c
-        network.c
-        reset.c
-        romemul.c
-        rtc.c
-        sdcard.c
-        select.c
-        term.c
-        usb_descriptors.c
-        usb_mass.c
-        tusb_config.h
-        settings/settings.c)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/romemul.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/commemul.pio)
 
 # Create map/bin/hex/uf2 files
 pico_add_extra_outputs(${PROJECT_NAME})
+
+# Use the project-specific flash layout and linker script.
+pico_set_binary_type(${PROJECT_NAME} rp)
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld
+)
 
 # Link libraries required for the project
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -145,9 +152,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/..)
 
-
-# Use reduced space for ROMs
-pico_set_binary_type(${PROJECT_NAME} rp)
 
 # Fetch the values from the environment variables
 set(RELEASE_TYPE $ENV{RELEASE_TYPE})
@@ -236,14 +240,9 @@ add_definitions(-DPICO_FLASH_ASSUME_CORE0_SAFE=1)
 add_definitions(-DAPP_DOWNLOAD_HTTPS=0)
 
 # Remove unused data in release modes
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
 if(${_DEBUG} STREQUAL "0")
-    target_link_options(${PROJECT_NAME} PRIVATE
-    "-Wl,--gc-sections"
-    "-Wl,--strip-all"
-    )
-else()
-    target_link_options(${PROJECT_NAME} PRIVATE
-    "-Wl,--gc-sections")
+    target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--strip-all")
 endif()
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
@@ -281,21 +280,4 @@ if(CLANG_FORMAT_BIN)
 
 else()
     message(WARNING "clang-format not found!")
-endif()
-
-# Define your binary type
-set(PICO_BINARY_TYPE default)  # Change to e.g. no_flash if needed
-
-# Set binary type using the variable
-pico_set_binary_type(${PROJECT_NAME} ${PICO_BINARY_TYPE})
-
-# Conditionally set linker script
-if(NOT "${PICO_BINARY_TYPE}" STREQUAL "copy_to_ram")
-    set_target_properties(${PROJECT_NAME} PROPERTIES
-        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp.ld
-    )
-else()
-    set_target_properties(${PROJECT_NAME} PROPERTIES
-        PICO_TARGET_LINKER_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/memmap_rp_copy_to_ram.ld
-    )
 endif()
