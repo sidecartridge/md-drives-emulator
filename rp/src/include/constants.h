@@ -37,7 +37,7 @@
 #define WRITE_SIGNAL_PIN_COUNT 1
 
 // FLASH and RAM sections constants.
-#define ROM_BANKS 2  // Number of ROM banks to emulate
+#define ROM_BANKS 1  // Number of 64KB ROM banks to emulate
 #define FLASH_ROM_LOAD_OFFSET \
   0x0  // Offset start in FLASH reserved for ROMs. Survives a reset or
        // poweroff. If 0x0, it means that the 128KB of FLASH are used for the
