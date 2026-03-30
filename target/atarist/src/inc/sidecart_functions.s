@@ -303,7 +303,7 @@ send_sync_write_command_to_sidecart:
     endif
 
     ifne COMMAND_SYNC_USE_DSKBUF != 0   ; Copy the code for stack and disk buffer
-        move.l #COMMAND_SYNC_CODE_SIZE, d7
+        move.l #COMMAND_SYNC_WRITE_CODE_SIZE, d7
         lea _start_sync_write_code_in_stack, a1    ; a1 points to the start of the code in ROM
         lsr.w #1, d7
         subq #1, d7
