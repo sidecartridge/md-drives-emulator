@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 (2026-03-30)
+This release focuses on RP2040 memory layout cleanup, splitting ROM emulation from command capture, removing obsolete DMA-era plumbing, and tightening several hot paths and board-support subsystems.
+
+### Changes
+- **Single RP linker script**: The RP build now uses a single linker script, simplifying the memory layout and build configuration.
+- **192 KB RAM and 64 KB ROM area**: The RP memory map now reserves a smaller ROM-in-RAM window and frees more RAM for runtime features.
+- **ROM4-only ROM emulation path**: `romemul` has been simplified to focus only on ROM4, with less legacy branching and lighter code.
+- **ROM3 communication path**: A separate `commemul` path now captures command traffic from ROM3 and feeds the software protocol parser.
+- **Simpler command plumbing**: Old DMA handlers and semaphore-heavy command code were removed or simplified now that command capture no longer depends on the legacy DMA path.
+- **Performance tuning**: Several hot paths were optimized, including fast safe protocol message copies, lighter ROM emulator code, and general performance cleanup in the command path.
+- **GPIO tuning**: GPIO drive strength was adjusted to improve signal stability on the cartridge bus.
+- **SDK pin update**: The RP build scripts and pinned submodules were updated to Pico SDK / Pico Extras `2.2.0`.
+
+### New features
+- **Dedicated ROM3 command reader**: Command input can now be captured through a dedicated ROM3 communication path while ROM emulation remains on ROM4.
+- **Upgraded network stack**: `network.c` / `network.h` were upgraded from `md-browser`, bringing a safer STA path, cleaner DNS handling, optional mDNS hooks, and extra WiFi helper APIs.
+- **Improved SELECT button handling**: The SELECT button logic was updated with the newer debounce and long-press behavior used in the booster bootloader.
+
+### Fixes
+- **Memory allocation fixes**: Multiple allocation-related bugs were fixed.
+- **Forward-slash path handling**: Forward-slash normalization was re-enabled where needed.
+- **Cleanup of unused DMA code**: Old DMA handlers and related dead code that were no longer required have been removed.
+- **Stability fixes**: ROM bus handling, command ingestion, and SELECT button debouncing were cleaned up for better runtime stability.
+
+---
+
 ## v1.0.6beta (2025-10-04) - Beta release
 This is the first beta release. It includes all the new features and improvements, and it should not include any more new features. The code is still in development and may contain bugs, but it is more stable than previous alpha releases and ready to use for all users.
 
