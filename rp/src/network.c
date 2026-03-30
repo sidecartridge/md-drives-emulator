@@ -8,11 +8,50 @@ static bool wifiScanInProgress = false;
 static char wifiHostname[NETWORK_MAX_STRING_LENGTH];
 static ip_addr_t currentIp = {0};
 static uint8_t cyw43Mac[NETWORK_MAC_SIZE];
+static char cyw43MacStr[NETWORK_MAX_STRING_LENGTH];
 static wifi_sta_conn_status_t connectionStatus = DISCONNECTED;
 static char connectionStatusStr[NETWORK_MAX_STRING_LENGTH] = {0};
+#if LWIP_MDNS_RESPONDER
+static bool mdnsInitialized = false;
+static bool mdnsStaRegistered = false;
+#endif
 
 // Static variable to store the callback function
 static NetworkPollingCallback networkPollingCallback = NULL;
+
+static void network_resetConnectionState(void) {
+  memset(&currentIp, 0, sizeof(currentIp));
+  connectionStatus = DISCONNECTED;
+  snprintf(connectionStatusStr, sizeof(connectionStatusStr), "LINK DOWN");
+}
+
+static void network_resetRuntimeState(void) {
+  wifiScanInProgress = false;
+  network_resetConnectionState();
+  memset(cyw43Mac, 0, sizeof(cyw43Mac));
+  cyw43MacStr[0] = '\0';
+#if LWIP_MDNS_RESPONDER
+  mdnsInitialized = false;
+  mdnsStaRegistered = false;
+#endif
+}
+
+static void network_resetStaInterface(struct netif *nif) {
+#if LWIP_MDNS_RESPONDER
+  if (mdnsStaRegistered) {
+    cyw43_arch_lwip_begin();
+    mdns_resp_remove_netif(nif);
+    cyw43_arch_lwip_end();
+    mdnsStaRegistered = false;
+  }
+#else
+  LWIP_UNUSED_ARG(nif);
+#endif
+
+  cyw43_arch_disable_sta_mode();
+  cyw43_arch_enable_sta_mode();
+  network_resetConnectionState();
+}
 
 static const char *picoSerialStr() {
   static char buf[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
@@ -25,6 +64,21 @@ static const char *picoSerialStr() {
   }
 
   return buf;
+}
+
+static char *network_trim_ascii_spaces(char *text) {
+  while (*text == ' ' || *text == '\t') {
+    ++text;
+  }
+
+  size_t len = strlen(text);
+  while (len > 0 &&
+         (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+          text[len - 1] == '\r' || text[len - 1] == '\n')) {
+    text[--len] = '\0';
+  }
+
+  return text;
 }
 
 static uint32_t getCountryCode(char *code, char **validCountryStr) {
@@ -76,15 +130,17 @@ void network_deInit() {
     DPRINTF("Deinitializing the network\n");
     cyw43Initialized = false;
     cyw43_arch_deinit();
+    network_resetRuntimeState();
     DPRINTF("Network deinitialized\n");
   } else {
+    network_resetRuntimeState();
     DPRINTF("Network already deinitialized\n");
   }
 }
 #endif
 
 // NOLINTBEGIN(readability-magic-numbers)
-static u_int32_t getAuthPicoCode(u_int16_t connectCode) {
+static u_int32_t getAuthPicoCode(uint16_t connectCode) {
   switch (connectCode) {
     case 0:
       return CYW43_AUTH_OPEN;
@@ -105,13 +161,98 @@ static u_int32_t getAuthPicoCode(u_int16_t connectCode) {
 }
 // NOLINTEND(readability-magic-numbers)
 
+// Function to parse and clean up an SSID string
+// If the SSID is longer than MAX_SSID_LENGTH, it is truncated.
+// If the SSID does not comply with the standard, it is cleaned up.
+// Returns true if valid, false otherwise.
+bool network_parseSSID(const char *ssid, char *outSSID) {
+  if (ssid == NULL || outSSID == NULL) {
+    return false;
+  }
+
+  // IEEE 802.11 SSID rules:
+  //  - Length: 1..32 bytes (MAX_SSID_LENGTH must be <= 33)
+  //  - May not be all spaces
+  //  - Cannot have control/non-printable chars (typically 0x20..0x7E allowed)
+
+  size_t inLen = strnlen(ssid, MAX_SSID_LENGTH * 2);  // catch crazy input
+  if (inLen == 0) {
+    outSSID[0] = '\0';
+    return false;
+  }
+
+  // Clean: Copy only allowed chars up to MAX_SSID_LENGTH-1
+  size_t outLen = 0;
+  for (size_t i = 0; i < inLen && outLen < MAX_SSID_LENGTH - 1; ++i) {
+    char c = ssid[i];
+    // Only printable ASCII (0x20-0x7E), disallow control characters
+    if ((unsigned char)c >= 0x20 && (unsigned char)c <= 0x7E) {
+      outSSID[outLen++] = c;
+    }
+  }
+  outSSID[outLen] = '\0';
+
+  // Check: Not empty, not all spaces, not all filtered out
+  if (outLen == 0) return false;
+  for (size_t i = 0; i < outLen; ++i) {
+    if (outSSID[i] != ' ') return true;
+  }
+  return false;
+}
+
+// Function to parse and clean up the password string
+// of a WiFi network complying with the IEEE 802.11 standard.
+// If the password is longer than WIFI_AP_PASS_MAX_LENGTH,
+// it is truncated.
+// Returns true if valid, false otherwise.
+bool network_parsePassword(const char *password, char *outPassword) {
+  if (password == NULL || outPassword == NULL) {
+    return false;
+  }
+
+  // IEEE 802.11 password rules:
+  //  - WPA2 minimum length: 8 chars (WEP: 5/13/16/29/etc)
+  //  - WPA2 maximum length: 63 bytes
+  //  - Only printable ASCII chars (0x20-0x7E) are valid
+  //  - Not all spaces
+
+  size_t inLen =
+      strnlen(password, WIFI_AP_PASS_MAX_LENGTH * 2);  // catch crazy input
+  if (inLen == 0) {
+    outPassword[0] = '\0';
+    return false;
+  }
+
+  // Clean: Copy only allowed chars up to WIFI_AP_PASS_MAX_LENGTH-1
+  size_t outLen = 0;
+  for (size_t i = 0; i < inLen && outLen < WIFI_AP_PASS_MAX_LENGTH - 1; ++i) {
+    char c = password[i];
+    // Only printable ASCII (0x20-0x7E)
+    if ((unsigned char)c >= 0x20 && (unsigned char)c <= 0x7E) {
+      outPassword[outLen++] = c;
+    }
+  }
+  outPassword[outLen] = '\0';
+
+  // Check: Not empty, not all spaces, not all filtered out
+  if (outLen == 0) return false;
+  for (size_t i = 0; i < outLen; ++i) {
+    if (outPassword[i] != ' ') {
+      // Ensure password length is at least 8 characters
+      if (outLen >= 8) return true;
+      return false;
+    }
+  }
+  return false;
+}
+
 // Setter for the callback function
 void network_setPollingCallback(NetworkPollingCallback callback) {
   networkPollingCallback = callback;
 }
 
 // NOLINTBEGIN(readability-magic-numbers)
-const char *network_getAuthTypeString(u_int16_t connectCode) {
+const char *network_getAuthTypeString(uint16_t connectCode) {
   switch (connectCode) {
     case 0:
       return "OPEN";
@@ -133,7 +274,7 @@ const char *network_getAuthTypeString(u_int16_t connectCode) {
 // NOLINTEND(readability-magic-numbers)
 
 // NOLINTBEGIN(readability-magic-numbers)
-const char *network_getAuthTypeStringShort(u_int16_t connectCode) {
+const char *network_getAuthTypeStringShort(uint16_t connectCode) {
   switch (connectCode) {
     case 1:
     case 2:
@@ -170,9 +311,6 @@ int network_initChipOnly() {
     DPRINTF("WiFi already initialized\n");
     return 0;
   }
-  // This flag is important, because calling a cyw43 function before the
-  // initialization will cause a crash
-  cyw43Initialized = true;
   DPRINTF("CYW43 Logging level: %d\n", CYW43_VERBOSE_DEBUG);
   int res;
   DPRINTF("Initialization CYW43 chip ONLY...\n");
@@ -181,6 +319,8 @@ int network_initChipOnly() {
     DPRINTF("Failed to initialize CYW43: %d\n", res);
     return -1;
   }
+  cyw43Initialized = true;
+  network_resetRuntimeState();
   return 0;
 }
 #endif
@@ -202,17 +342,19 @@ int network_wifiInit(wifi_mode_t mode) {
     DPRINTF("WiFi already initialized\n");
     return 0;
   }
-  // This flag is important, because calling a cyw43 function before the
-  // initialization will cause a crash
-  cyw43Initialized = true;
   DPRINTF("CYW43 Logging level: %d\n", CYW43_VERBOSE_DEBUG);
   uint32_t country = CYW43_COUNTRY_WORLDWIDE;
   SettingsConfigEntry *countryEntry =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_COUNTRY);
+  const char *countryStr = "XX";
   if (countryEntry != NULL) {
-    char *valid;
-    country = getCountryCode(countryEntry->value, &valid);
-    settings_put_string(gconfig_getContext(), PARAM_WIFI_COUNTRY, valid);
+    char *validCountry = NULL;
+    country = getCountryCode(countryEntry->value, &validCountry);
+    if (validCountry != NULL) {
+      countryStr = validCountry;
+      settings_put_string(gconfig_getContext(), PARAM_WIFI_COUNTRY,
+                          validCountry);
+    }
   }
 
   int res;
@@ -222,7 +364,9 @@ int network_wifiInit(wifi_mode_t mode) {
     DPRINTF("Failed to initialize WiFi: %d\n", res);
     return -1;
   }
-  DPRINTF("Country: %s\n", countryEntry->value);
+  cyw43Initialized = true;
+  network_resetRuntimeState();
+  DPRINTF("Country: %s\n", countryStr);
 
   // Start STA or AP mode
   if (mode == WIFI_MODE_STA) {
@@ -419,20 +563,54 @@ int network_scanIsActive() {
 wifi_scan_data_t *network_getFoundNetworks() { return &wifiScanData; }
 
 static void wifiLinkCallback(struct netif *netif) {
-  DPRINTF("WiFi Link: %s\n", (netif_is_link_up(netif) ? "UP" : "DOWN"));
+  if (!netif_is_link_up(netif)) {
+    network_resetConnectionState();
+  }
 }
 
 static void networkStatusCallback(struct netif *netif) {
-  DPRINTF("WiFi Status: %s\n", (netif_is_up(netif) ? "UP" : "DOWN"));
   if (netif_is_up(netif)) {
     connectionStatus = CONNECTED_WIFI_IP;
     snprintf(connectionStatusStr, sizeof(connectionStatusStr), "LINK UP");
-    DPRINTF("IP address allocated: %s\n", ipaddr_ntoa(netif_ip_addr4(netif)));
     ip_addr_set(&currentIp, netif_ip_addr4(netif));
   } else {
-    DPRINTF("WiFi Status: DOWN\n");
+    network_resetConnectionState();
   }
 }
+
+const char *network_WifiStaConnStatusString(
+    wifi_sta_conn_process_status_t status) {
+  switch (status) {
+    case NETWORK_WIFI_STA_CONN_OK:
+      return "Connection successful";
+    case NETWORK_WIFI_STA_CONN_ERR_NOT_INITIALIZED:
+      return "WiFi not initialized ";
+    case NETWORK_WIFI_STA_CONN_ERR_INVALID_MODE:
+      return "Invalid WiFi mode    ";
+    case NETWORK_WIFI_STA_CONN_ERR_MAC_FAILED:
+      return "Failed to get MAC    ";
+    case NETWORK_WIFI_STA_CONN_ERR_NO_SSID:
+      return "No SSID provided     ";
+    case NETWORK_WIFI_STA_CONN_ERR_NO_AUTH_MODE:
+      return "No auth mode provided ";
+    case NETWORK_WIFI_STA_CONN_ERR_CONNECTION_FAILED:
+      return "Failed connecting WiFi";
+    case NETWORK_WIFI_STA_CONN_ERR_TIMEOUT:
+      return "Connection timeout    ";
+    default:
+      return "Unknown error";
+  }
+}
+
+#if LWIP_MDNS_RESPONDER
+static void srv_txt(struct mdns_service *service, void *txt_userdata) {
+  err_t res;
+  LWIP_UNUSED_ARG(txt_userdata);
+
+  res = mdns_resp_add_service_txtitem(service, "path=/", 6);
+  LWIP_ERROR("mdns add service txt failed\n", (res == ERR_OK), return);
+}
+#endif
 
 wifi_sta_conn_process_status_t network_wifiStaConnect() {
   if (!cyw43Initialized) {
@@ -446,23 +624,45 @@ wifi_sta_conn_process_status_t network_wifiStaConnect() {
 
   int res;
 
-  // Set hostname
-  char *hostname =
-      settings_find_entry(gconfig_getContext(), PARAM_HOSTNAME)->value;
-
   // Set the STA mode interface mode
   struct netif *nif = &cyw43_state.netif[CYW43_ITF_STA];
+  network_resetStaInterface(nif);
+
+  SettingsConfigEntry *hostnameEntry =
+      settings_find_entry(gconfig_getContext(), PARAM_HOSTNAME);
+  char *hostname = hostnameEntry != NULL ? hostnameEntry->value : NULL;
 
   cyw43_arch_lwip_begin();
 
   if ((hostname != NULL) && (strlen(hostname) > 0)) {
-    strncpy(wifiHostname, hostname, sizeof(wifiHostname));
+    snprintf(wifiHostname, sizeof(wifiHostname), "%s", hostname);
   } else {
     snprintf(wifiHostname, sizeof(wifiHostname), "SidecarT-%s",
              picoSerialStr());
   }
   DPRINTF("Hostname: %s\n", wifiHostname);
   netif_set_hostname(nif, wifiHostname);
+
+#if LWIP_MDNS_RESPONDER
+  // Setup mdns
+  if (!mdnsInitialized) {
+    mdns_resp_init();
+    mdnsInitialized = true;
+  }
+  err_t mdnsErr = mdns_resp_add_netif(nif, wifiHostname);
+  if (mdnsErr == ERR_OK) {
+    s8_t mdnsServiceSlot = mdns_resp_add_service(
+        nif, "sidecart_httpd", "_http", DNSSD_PROTO_TCP, 80, srv_txt, NULL);
+    if (mdnsServiceSlot >= 0) {
+      mdnsStaRegistered = true;
+    } else {
+      DPRINTF("Failed to add mDNS service: %d\n", mdnsServiceSlot);
+      mdns_resp_remove_netif(nif);
+    }
+  } else {
+    DPRINTF("Failed to add mDNS netif: %d\n", mdnsErr);
+  }
+#endif
 
   // Set callbacks
   netif_set_link_callback(nif, wifiLinkCallback);
@@ -500,36 +700,33 @@ wifi_sta_conn_process_status_t network_wifiStaConnect() {
     if (entry == NULL || entry->value == NULL) {
       DPRINTF("Error: DNS configuration is missing.\n");
     } else {
-      char *dns = entry->value;
-      char *dnsCopy = strdup(
-          dns);  // Make a copy of the string to avoid modifying the original
-      if (dnsCopy == NULL) {
-        DPRINTF("Error: Memory allocation failed.\n");
+      char dnsCopy[(NETWORK_MAX_STRING_LENGTH * 2) + 2] = {0};
+      snprintf(dnsCopy, sizeof(dnsCopy), "%s", entry->value);
+
+      char *dns1 = network_trim_ascii_spaces(dnsCopy);
+      char *dns2 = strchr(dns1, ',');
+      if (dns2 != NULL) {
+        *dns2++ = '\0';
+        dns2 = network_trim_ascii_spaces(dns2);
+      }
+
+      ip_addr_t dns1Ip;
+      ip_addr_t dns2Ip;
+      if (dns1[0] == '\0' || (dns1Ip.addr = ipaddr_addr(dns1)) == IPADDR_NONE) {
+        DPRINTF("Error: Invalid DNS1 address.\n");
       } else {
-        char *dns1 = strtok(dnsCopy, ",");
-        char *dns2 = strtok(NULL, ",");
+        dns_setserver(0, &dns1Ip);
+        DPRINTF("DNS1: %s\n", ipaddr_ntoa(&dns1Ip));
 
-        ip_addr_t dns1Ip;
-        ip_addr_t dns2Ip;
-        if (dns1 == NULL || (dns1Ip.addr = ipaddr_addr(dns1)) == IPADDR_NONE) {
-          DPRINTF("Error: Invalid DNS1 address.\n");
-          free(dnsCopy);  // Free the allocated memory
-        } else {
-          dns_setserver(0, &dns1Ip);
-          DPRINTF("DNS1: %s\n", ipaddr_ntoa(&dns1Ip));
-
-          if (dns2 != NULL) {
-            if ((dns2Ip.addr = ipaddr_addr(dns2)) == IPADDR_NONE) {
-              DPRINTF("Error: Invalid DNS2 address.\n");
-            } else {
-              dns_setserver(1, &dns2Ip);
-              DPRINTF("DNS2: %s\n", ipaddr_ntoa(&dns2Ip));
-            }
+        if (dns2 != NULL && dns2[0] != '\0') {
+          if ((dns2Ip.addr = ipaddr_addr(dns2)) == IPADDR_NONE) {
+            DPRINTF("Error: Invalid DNS2 address.\n");
+          } else {
+            dns_setserver(1, &dns2Ip);
+            DPRINTF("DNS2: %s\n", ipaddr_ntoa(&dns2Ip));
           }
         }
       }
-
-      free(dnsCopy);  // Free the copied string after use
     }
   }
   netif_set_up(nif);
@@ -544,34 +741,38 @@ wifi_sta_conn_process_status_t network_wifiStaConnect() {
 
   SettingsConfigEntry *ssid =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_SSID);
-  if (strlen(ssid->value) == 0) {
+  if (ssid == NULL || ssid->value == NULL || strlen(ssid->value) == 0) {
     DPRINTF("No SSID found in config. Can't connect\n");
     return NETWORK_WIFI_STA_CONN_ERR_NO_SSID;
   }
   SettingsConfigEntry *authMode =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_AUTH);
-  if (strlen(authMode->value) == 0) {
+  if (authMode == NULL || authMode->value == NULL ||
+      strlen(authMode->value) == 0) {
     DPRINTF("No auth mode found in config. Can't connect\n");
     return NETWORK_WIFI_STA_CONN_ERR_NO_AUTH_MODE;
   }
-  char *passwordValue = NULL;
+  char passwordValueBuf[MAX_PASSWORD_LENGTH] = {0};
+  const char *passwordValue = NULL;
   SettingsConfigEntry *password =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_PASSWORD);
-  if (strlen(password->value) > 0) {
-    passwordValue = strdup(password->value);
+  if (password != NULL && password->value != NULL &&
+      strlen(password->value) > 0) {
+    snprintf(passwordValueBuf, sizeof(passwordValueBuf), "%s", password->value);
+    passwordValue = passwordValueBuf;
   } else {
     DPRINTF(
         "No password found in config. Trying to connect without password\n");
   }
-  DPRINTF("The password is: %s\n", passwordValue);
+  DPRINTF("The password is: %s\n",
+          passwordValue != NULL ? passwordValue : "<null>");
 
   uint32_t authValue = getAuthPicoCode(atoi(authMode->value));
   int errorCode = 0;
   DPRINTF("Connecting to SSID=%s, password=%s, auth=%08x. ASYNC\n", ssid->value,
-          passwordValue, authValue);
+          passwordValue != NULL ? passwordValue : "<null>", authValue);
   errorCode =
       cyw43_arch_wifi_connect_async(ssid->value, passwordValue, authValue);
-  free(passwordValue);
   if (errorCode != 0) {
     DPRINTF("Failed to connect to WiFi: %d\n", errorCode);
     return NETWORK_WIFI_STA_CONN_ERR_CONNECTION_FAILED;
@@ -614,6 +815,7 @@ wifi_sta_conn_process_status_t network_wifiStaConnect() {
   }
   if (absolute_time_diff_us(get_absolute_time(), wifiConnConnTimeout) <= 0) {
     DPRINTF("WiFi connection timeout\n");
+    // Return the error code
     return NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
   }
 
@@ -701,3 +903,67 @@ wifi_sta_conn_status_t network_wifiConnStatus(
  * @return The current IP address as an ip_addr_t structure.
  */
 ip_addr_t network_getCurrentIp() { return currentIp; }
+
+const char *network_getCyw43MacStr() {
+  if (!cyw43Initialized) {
+    cyw43MacStr[0] = '\0';
+    return cyw43MacStr;
+  }
+
+  int res = cyw43_wifi_get_mac(&cyw43_state, CYW43_ITF_STA, cyw43Mac);
+  if (res != 0) {
+    DPRINTF("Failed to get MAC address: %d\n", res);
+    cyw43MacStr[0] = '\0';
+    return cyw43MacStr;
+  }
+
+  snprintf(cyw43MacStr, sizeof(cyw43MacStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           cyw43Mac[0], cyw43Mac[1], cyw43Mac[2], cyw43Mac[3], cyw43Mac[4],
+           cyw43Mac[5]);
+  return cyw43MacStr;
+}
+
+bool network_getCurrentRssi(int32_t *rssi) {
+  if (rssi == NULL) {
+    return false;
+  }
+
+  *rssi = 0;
+  if (!cyw43Initialized || wifiCurrentMode != WIFI_MODE_STA) {
+    return false;
+  }
+
+  int res = cyw43_wifi_get_rssi(&cyw43_state, rssi);
+  if (res != 0) {
+    DPRINTF("Failed to get RSSI: %d\n", res);
+    *rssi = 0;
+    return false;
+  }
+
+  return *rssi != 0;
+}
+
+const char *network_getSignalQualityLabel(int32_t rssi) {
+  if (rssi >= -30) {
+    return "Excellent";
+  }
+  if (rssi >= -40) {
+    return "Very good";
+  }
+  if (rssi >= -50) {
+    return "Good";
+  }
+  if (rssi >= -60) {
+    return "OK";
+  }
+  if (rssi >= -67) {
+    return "Fair";
+  }
+  if (rssi >= -70) {
+    return "Weak";
+  }
+  if (rssi >= -80) {
+    return "Very weak";
+  }
+  return "Unusable";
+}
