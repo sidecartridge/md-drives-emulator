@@ -8,6 +8,7 @@
 
 #include "chandler.h"
 
+#include "commemul.h"
 #include "pico/sem.h"  // semaphore API
 
 static TransmissionProtocol lastProtocol;
@@ -109,6 +110,14 @@ static inline void __not_in_flash_func(handle_protocol_checksum_error)(
       protocol->final_checksum, TPROTO_GET_RANDOM_TOKEN(protocol->payload));
 }
 
+static inline void __not_in_flash_func(chandler_consume_rom3_sample)(
+    uint16_t sample) {
+  uint16_t addr_lsb = (uint16_t)(sample ^ CHANDLER_ADDRESS_HIGH_BIT);
+
+  tprotocol_parse(addr_lsb, handle_protocol_command,
+                  handle_protocol_checksum_error);
+}
+
 // Interrupt handler for DMA completion
 void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void) {
   // Read the rom3 signal and if so then process the command
@@ -133,6 +142,8 @@ void __not_in_flash_func(chandler_dma_irq_handler_lookup)(void) {
 // Invoke this function to process the commands from the active loop in the
 // main function
 void __not_in_flash_func(chandler_loop)() {
+  commemul_poll(chandler_consume_rom3_sample);
+
   if (sem_available(&command_sem) > 0) {
     // No command to process
     return;

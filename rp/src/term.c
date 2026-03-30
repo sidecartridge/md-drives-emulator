@@ -8,8 +8,13 @@
 
 #include "term.h"
 
+#include "commemul.h"
+
+#define TERM_DUPLICATE_PROTOCOL_WINDOW_US 250000u
+
 static TransmissionProtocol lastProtocol;
 static bool lastProtocolValid = false;
+static uint32_t lastProtocolAcceptedAtUs = 0;
 
 static uint32_t memorySharedAddress = 0;
 static uint32_t memoryRandomTokenAddress = 0;
@@ -45,6 +50,23 @@ void term_setCommands(const Command *cmds, size_t count) {
 
 void term_setLastSingleKeyCommand(char key) { lastSingleKeyCommand = key; }
 
+static inline bool __not_in_flash_func(term_is_duplicate_protocol)(
+    const TransmissionProtocol *protocol, uint16_t size, uint32_t nowUs) {
+  if ((lastProtocolAcceptedAtUs == 0u) ||
+      ((nowUs - lastProtocolAcceptedAtUs) >
+       TERM_DUPLICATE_PROTOCOL_WINDOW_US)) {
+    return false;
+  }
+
+  if ((lastProtocol.command_id != protocol->command_id) ||
+      (lastProtocol.payload_size != protocol->payload_size) ||
+      (lastProtocol.final_checksum != protocol->final_checksum)) {
+    return false;
+  }
+
+  return memcmp(lastProtocol.payload, protocol->payload, size) == 0;
+}
+
 /**
  * @brief Callback that handles the protocol command received.
  *
@@ -58,12 +80,7 @@ void term_setLastSingleKeyCommand(char key) { lastSingleKeyCommand = key; }
  */
 static inline void __not_in_flash_func(handle_protocol_command)(
     const TransmissionProtocol *protocol) {
-  // Copy the content of protocol to last_protocol
-  // Copy the 8-byte header directly
-  lastProtocol.command_id = protocol->command_id;
-  lastProtocol.payload_size = protocol->payload_size;
-  lastProtocol.bytes_read = protocol->bytes_read;
-  lastProtocol.final_checksum = protocol->final_checksum;
+  uint32_t nowUs = time_us_32();
 
   // Sanity check: clamp payload_size to avoid overflow
   uint16_t size = protocol->payload_size;
@@ -71,9 +88,23 @@ static inline void __not_in_flash_func(handle_protocol_command)(
     size = MAX_PROTOCOL_PAYLOAD_SIZE;
   }
 
+  if (term_is_duplicate_protocol(protocol, size, nowUs)) {
+    DPRINTF("Ignoring duplicate terminal protocol frame (ID=%u, Size=%u)\n",
+            protocol->command_id, protocol->payload_size);
+    return;
+  }
+
+  // Copy the content of protocol to last_protocol
+  // Copy the 8-byte header directly
+  lastProtocol.command_id = protocol->command_id;
+  lastProtocol.payload_size = protocol->payload_size;
+  lastProtocol.bytes_read = protocol->bytes_read;
+  lastProtocol.final_checksum = protocol->final_checksum;
+
   // Copy only used payload bytes
   memcpy(lastProtocol.payload, protocol->payload, size);
 
+  lastProtocolAcceptedAtUs = nowUs;
   lastProtocolValid = true;
 };
 
@@ -81,6 +112,13 @@ static inline void __not_in_flash_func(handle_protocol_checksum_error)(
     const TransmissionProtocol *protocol) {
   DPRINTF("Checksum error detected (ID=%u, Size=%u)\n", protocol->command_id,
           protocol->payload_size);
+}
+
+static inline void __not_in_flash_func(term_consume_rom3_sample)(
+    uint16_t sample) {
+  uint16_t addrLsb = (uint16_t)(sample ^ ADDRESS_HIGH_BIT);
+  tprotocol_parse(addrLsb, handle_protocol_command,
+                  handle_protocol_checksum_error);
 }
 
 // Interrupt handler for DMA completion
@@ -92,11 +130,7 @@ void __not_in_flash_func(term_dma_irq_handler_lookup)(void) {
   // We expect that the ROM3 signal is not set very often, so this should help
   // the compilar to run faster
   if (__builtin_expect(addr & 0x00010000, 0)) {
-    // Invert highest bit of low word to get 16-bit address
-    uint16_t addr_lsb = (uint16_t)(addr ^ ADDRESS_HIGH_BIT);
-
-    tprotocol_parse(addr_lsb, handle_protocol_command,
-                    handle_protocol_checksum_error);
+    term_consume_rom3_sample((uint16_t)addr);
   }
 
   // Read the rom3 signal and if so then process the command
@@ -570,6 +604,8 @@ void term_init(void) {
 // Invoke this function to process the commands from the active loop in the
 // main function
 void __not_in_flash_func(term_loop)() {
+  commemul_poll(term_consume_rom3_sample);
+
   if (lastProtocolValid) {
     // Shared by all commands
     // Read the random token from the command and increment the payload
@@ -612,6 +648,17 @@ void __not_in_flash_func(term_loop)() {
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);
     }
 #endif
+
+    if (memoryRandomTokenAddress != 0) {
+      // Acknowledge the command as soon as it is accepted, before any
+      // potentially slow handler work runs.
+      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenAddress, randomToken);
+
+      // Seed the next command token immediately as part of the same ack path.
+      uint32_t newRandomSeedToken =
+          rand();  // Generate a new random 32-bit value
+      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenSeedAddress, newRandomSeedToken);
+    }
 
     // Handle the command
     switch (lastProtocol.command_id) {
@@ -672,15 +719,6 @@ void __not_in_flash_func(term_loop)() {
         // Unknown command
         DPRINTF("Unknown command\n");
         break;
-    }
-    if (memoryRandomTokenAddress != 0) {
-      // Set the random token in the shared memory
-      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenAddress, randomToken);
-
-      // Init the random token seed in the shared memory for the next command
-      uint32_t newRandomSeedToken =
-          rand();  // Generate a new random 32-bit value
-      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenSeedAddress, newRandomSeedToken);
     }
   }
   lastProtocolValid = false;

@@ -8,6 +8,8 @@
 
 #include "emul.h"
 
+#include "commemul.h"
+
 // inclusw in the C file to avoid multiple definitions
 #include "target_firmware.h"  // Include the target firmware binary
 
@@ -1625,7 +1627,8 @@ void __not_in_flash_func(emul_start)() {
   // emulator using the command protocol. Hence, if you want to implement
   // your own app or microfirmware, you should implement your own command
   // handler using this protocol.
-  init_romemul(NULL, term_dma_irq_handler_lookup, false);
+  init_romemul(NULL, NULL, false);
+  commemul_init();
 
   // After this point, the remote computer can execute the code
 
@@ -1899,11 +1902,7 @@ void __not_in_flash_func(emul_start)() {
 
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
-        DPRINTF("Changing the command handler\n");
-
-        dma_setResponseCB(
-            chandler_dma_irq_handler_lookup);  // Set the chanlder handler
-        chandler_init();                       // Initialize the command handler
+        chandler_init();  // Initialize the command handler
 
         // Initializing the GEMDRIVE
         DPRINTF("Initializing the GEMDRIVE...\n");
