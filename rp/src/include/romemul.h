@@ -13,7 +13,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"
@@ -23,7 +22,9 @@
 #include "memfunc.h"
 #include "pico/stdlib.h"
 
-#define ROMEMUL_BUS_BITS 17
+#define ROMEMUL_BUS_BITS 16
+
+#include "../../build/romemul.pio.h"
 
 #define ROMEMUL_DMA_IRQ (DMA_IRQ_1)  // Use DMA IRQ 1 for ROM emulator
 
