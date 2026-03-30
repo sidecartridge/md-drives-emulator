@@ -50,8 +50,8 @@ static spi_t spis[] = {  // One for each SPI.
         .spi_mode = 0,  // SPI Mode 0. Do not change. Best configuration so far.
         // .baud_rate = 12.5 * 1000 * 1000,
         .set_drive_strength = true,  // Set drive strength for GPIOs
-        .mosi_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA,
-        .sck_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA,
+        .mosi_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
+        .sck_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
         // .use_static_dma_channels = true,  // Use static DMA channels
         // .tx_dma = 10,                     // DMA channel for TX
         // .rx_dma = 11,                     // DMA channel for RX
@@ -62,7 +62,7 @@ static sd_spi_if_t spi_ifs[] = {{
     .spi = &spis[0],             // Pointer to the SPI driving this card
     .ss_gpio = -1,               // The SPI slave select GPIO for this SD card
     .set_drive_strength = true,  // Set drive strength for GPIOs
-    .ss_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA,
+    .ss_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
 }};
 
 // Hardware Configuration of the SD Card "objects"
