@@ -54,6 +54,11 @@ cmake -S rp/src -B rp/build
 - `term.c` and `chandler.c` both ingest ROM3 samples via `commemul_poll()`. Do not reintroduce the old ROM4 DMA IRQ command path unless the user explicitly wants that rollback.
 - ROM3/ROM4 work is timing-sensitive because both paths can touch shared bus control signals. If you change either PIO program, assume hardware validation is required even if the firmware builds.
 - Protocol ACK timing matters. The remote side can retransmit if shared-memory token ACK writes are delayed behind slow handlers. Treat ACK-order changes as behavior changes, not refactors.
+- The RTC/NTP WiFi flow is now on-demand. Boot no longer performs an unconditional STA init/connect path. Setup exit chooses `APP_MODE_NTP_INIT` only when `RTC_ENABLED` is true; otherwise it goes straight to `APP_EMULATION_INIT`.
+- `APP_MODE_NTP_INIT` now owns the full temporary RTC/NTP network transaction in [emul.c](/Users/diego/mister_wkspc/md-drives-emulator/rp/src/emul.c): clean `network_deInit()`, `network_wifiInit(WIFI_MODE_STA)`, STA connect retries, `rtc_queryNTPTime()`, then `network_deInit()` again.
+- Keep the Pico W LED policy as-is: `blink.c` may still call `network_initChipOnly()` for LED access. Do not assume “no WiFi at boot” means “no CYW43 chip init at boot”.
+- Because of that chip-only LED init, the deferred RTC/NTP path must start from a clean `network_deInit()` before calling `network_wifiInit(WIFI_MODE_STA)`. This is intentional and should not be removed casually.
+- The setup menu no longer shows a live network line. User-facing RTC network information now appears only during the RTC/NTP exit flow: WiFi init, connect attempts, failure messages, and the assigned IP address.
 - Floppy slot cycling for drive A persists 10 slots in flash. Slot 1 remains the original `FLOPPY_DRIVE_A`; slots 2..10 are extra settings appended at the end of the app config table for upgrade safety.
 - The setup menu entry for the multi-image floppy A list is `CTRL+A`, labeled "Configure multiple images".
 - In that submenu, plain `2..9` and `0` select slots `2..10`, while `SHIFT + 2..9` or `0` clears that slot.
@@ -77,5 +82,7 @@ cmake -S rp/src -B rp/build
 - `network.c` / `network.h` are aligned with the `md-browser` implementation as of March 2026.
 - mDNS support is optional and guarded by `LWIP_MDNS_RESPONDER`. If it is disabled in `lwipopts.h`, the mDNS code should compile out cleanly.
 - Prefer stack buffers over heap allocation in the network path unless there is a strong reason not to. The current WiFi STA path avoids `strdup()` for DNS/password parsing.
+- `lwipopts.h` is now tuned for the current RTC-only runtime use: DHCP for the IP address, DNS resolution, and UDP for NTP. TCP is disabled in the current profile.
+- Do not casually re-enable TCP/mDNS/HTTP-related lwIP features unless a new runtime feature really needs them. The current lighter profile is part of the boot-time optimization work.
 
 Keep this file updated when new repo-specific workflow rules or hardware gotchas are discovered.

@@ -12,6 +12,9 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Performance tuning**: Several hot paths were optimized, including fast safe protocol message copies, lighter ROM emulator code, and general performance cleanup in the command path.
 - **GPIO tuning**: GPIO drive strength was adjusted to improve signal stability on the cartridge bus.
 - **SDK pin update**: The RP build scripts and pinned submodules were updated to Pico SDK / Pico Extras `2.2.0`.
+- **On-demand RTC networking**: WiFi STA bring-up for RTC/NTP no longer happens on every boot. The network stack now starts only when the RTC flow is about to fetch NTP time and is deinitialized immediately afterward.
+- **RTC boot feedback**: The setup exit flow now shows WiFi/NTP progress on screen, including connection attempts, failure reasons, and the assigned IP address when available.
+- **Lean lwIP profile**: `lwipopts.h` was trimmed for the current RTC use case, focusing on DHCP, DNS, and UDP/NTP instead of carrying the previous broader TCP-oriented profile.
 
 ### New features
 - **Dedicated ROM3 command reader**: Command input can now be captured through a dedicated ROM3 communication path while ROM emulation remains on ROM4.
@@ -29,6 +32,7 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Floppy slot-swap media-change handling**: Drive A slot swaps now raise media change and clear it only after the first successful read of the new disk's root-directory start sector, which keeps TOS geometry refresh stable across image changes.
 - **Submenu modifier handling**: Single-key submenu reentry now preserves modifier information so `CTRL` and `SHIFT` actions work correctly in the multi-image floppy setup flow.
 - **Floppy activity LED timeout**: The Pico W LED no longer gets stuck on after floppy or command activity; it now emits a short activity pulse and turns off reliably when access finishes.
+- **Faster boot when RTC is disabled**: The emulator now skips the blocking WiFi connection path entirely unless RTC/NTP actually needs it.
 
 ---
 
