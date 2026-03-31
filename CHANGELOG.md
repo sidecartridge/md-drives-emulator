@@ -15,6 +15,8 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **On-demand RTC networking**: WiFi STA bring-up for RTC/NTP no longer happens on every boot. The network stack now starts only when the RTC flow is about to fetch NTP time and is deinitialized immediately afterward.
 - **RTC boot feedback**: The setup exit flow now shows WiFi/NTP progress on screen, including connection attempts, failure reasons, and the assigned IP address when available.
 - **Lean lwIP profile**: `lwipopts.h` was trimmed for the current RTC use case, focusing on DHCP, DNS, and UDP/NTP instead of carrying the previous broader TCP-oriented profile.
+- **USB Mass Storage cleanup**: The USB device now exposes only the MSC interface, dropping the unused CDC composite path and simplifying enumeration.
+- **Higher DMA priority**: DMA access priority was adjusted to favor memory access more aggressively.
 
 ### New features
 - **Dedicated ROM3 command reader**: Command input can now be captured through a dedicated ROM3 communication path while ROM emulation remains on ROM4.
@@ -28,11 +30,19 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Memory allocation fixes**: Multiple allocation-related bugs were fixed.
 - **Forward-slash path handling**: Forward-slash normalization was re-enabled where needed.
 - **Cleanup of unused DMA code**: Old DMA handlers and related dead code that were no longer required have been removed.
+- **USB Mass Storage transfers**: USB MSC read/write callbacks now handle chunked host transfers correctly, including multi-sector requests and partial-sector accesses.
+- **USB initialization checks**: The setup path now treats USB initialization as a real success/failure path instead of assuming TinyUSB always starts correctly.
+- **Card enumeration bug**: A small SD-card enumeration bug in the hardware configuration helpers was fixed.
 - **Stability fixes**: ROM bus handling, command ingestion, and SELECT button debouncing were cleaned up for better runtime stability.
 - **Floppy slot-swap media-change handling**: Drive A slot swaps now raise media change and clear it only after the first successful read of the new disk's root-directory start sector, which keeps TOS geometry refresh stable across image changes.
 - **Submenu modifier handling**: Single-key submenu reentry now preserves modifier information so `CTRL` and `SHIFT` actions work correctly in the multi-image floppy setup flow.
 - **Floppy activity LED timeout**: The Pico W LED no longer gets stuck on after floppy or command activity; it now emits a short activity pulse and turns off reliably when access finishes.
 - **Faster boot when RTC is disabled**: The emulator now skips the blocking WiFi connection path entirely unless RTC/NTP actually needs it.
+- **General dead-code cleanup**: Several unused commands, stale helpers, and other dead code paths were removed.
+
+### Removed
+- **Format Image**: The old setup-menu floppy image formatter was removed. Image formatting is now expected to be done through the File Manager microfirmware.
+- **Convert MSA to ST**: The old setup-menu MSA converter was removed. Image conversion is now expected to be done through the File Manager microfirmware.
 
 ---
 
