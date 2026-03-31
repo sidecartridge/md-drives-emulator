@@ -39,6 +39,12 @@ SVAR_XBIOS_TRAP_ENABLED:    equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 0)      ; XBI
 SVAR_BOOT_ENABLED:          equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 1)      ; Boot sector enabled
 SVAR_EMULATION_MODE:        equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 2)      ; Emulation mode
 SVAR_ENABLED:               equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 3)      ; Enabled flag
+SVAR_MEDIA_CHANGED_A:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 4)      ; Media change state A
+SVAR_MEDIA_CHANGED_B:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 5)      ; Media change state B
+
+MED_NOCHANGE:               equ 0
+MED_UNKNOWN:                equ 1
+MED_CHANGED:                equ 2
 
 ; We will need 32 bytes extra for the variables of the floppy emulator
 FLOPPYEMUL_VARIABLES_OFFSET equ (ROM_EXCHG_BUFFER_ADDR + FLOPPYEMUL_GAP_SIZE + FLOPPYEMUL_SHARED_VARIABLES_COUNT)
@@ -390,7 +396,7 @@ _bios_trap_notlong:
     cmp.w #Mediach,6(a0)                 ; is it BIOS call Mediach?
     beq.s bios_mediach                   ; if yes, go to media change
     cmp.w #Rwabs,6(a0)                   ; is it BIOS call Rwabs?
-    beq.s bios_rwabs                       ; if yes, go to rwabs
+    beq bios_rwabs                       ; if yes, go to rwabs
 
 
     move.l old_bios_handler, -(sp) ; Save the old BIOS handler
@@ -434,16 +440,14 @@ _bios_mediach_changed_A:
     ; Test Drive A
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_mediach_continue
-;    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)),d0
-    clr.l d0
+    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)),d0
     rte
 
 _bios_mediach_changed_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_mediach_continue
-;    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_B * 4)),d0
-    clr.l d0
+    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_B * 4)),d0
     rte
 
 

@@ -24,6 +24,9 @@
 #define DASH_DURATION_MS 450
 #define SYMBOL_GAP_MS 150
 #define CHARACTER_GAP_MS 700
+#define BLINK_SEQUENCE_ON_MS 200
+#define BLINK_SEQUENCE_OFF_MS 200
+#define BLINK_ACTIVITY_ON_US 25000
 
 typedef struct {
   char character;
@@ -81,5 +84,36 @@ void blink_on();
  * to turn off the blink.
  */
 void blink_toogle();
+
+/**
+ * @brief Emits a short non-blocking activity pulse on the LED.
+ *
+ * The LED is turned on immediately and will be turned off by `blink_poll()`
+ * after `BLINK_ACTIVITY_ON_US` without blocking the caller.
+ */
+void blink_activityPulse(void);
+
+/**
+ * @brief Starts a counted LED flash sequence.
+ *
+ * The LED will flash `count` short pulses without blocking the caller.
+ *
+ * @param count Number of flashes to emit.
+ */
+void blink_startCountSequence(uint8_t count);
+
+/**
+ * @brief Advances any active non-blocking blink sequence.
+ *
+ * Call this regularly from the main loop.
+ */
+void blink_poll(void);
+
+/**
+ * @brief Reports whether a non-blocking blink sequence is active.
+ *
+ * @return true if a counted flash sequence is currently running.
+ */
+bool blink_isSequenceActive(void);
 
 #endif  // BLINK_H

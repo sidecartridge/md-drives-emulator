@@ -57,9 +57,6 @@
 //        │   offset 0x0010                            │
 // 0x8214 ├────────────────────────────────────────────┤
 
-// Define delays in microseconds
-#define LED_ON_DELAY_US 25000  // LED remains on for 25ms
-
 // Callback function type
 typedef void (*CommandCallback)(TransmissionProtocol *protocol,
                                 uint16_t *payloadPtr);

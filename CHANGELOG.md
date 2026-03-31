@@ -17,12 +17,18 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Dedicated ROM3 command reader**: Command input can now be captured through a dedicated ROM3 communication path while ROM emulation remains on ROM4.
 - **Upgraded network stack**: `network.c` / `network.h` were upgraded from `md-browser`, bringing a safer STA path, cleaner DNS handling, optional mDNS hooks, and extra WiFi helper APIs.
 - **Improved SELECT button handling**: The SELECT button logic was updated with the newer debounce and long-press behavior used in the booster bootloader.
+- **Floppy A multi-image cycling**: Drive A can now persist up to 10 configured images and cycle to the next configured slot with a short SELECT press during runtime.
+- **Multi-image slot setup menu**: The setup UI now includes a dedicated `CTRL+A` menu to configure extra floppy A slots, browse images for slots `2..10`, and clear a slot directly with `SHIFT + 2..9` or `0`.
+- **Slot index LED feedback**: When cycling floppy A images, the Pico W LED now flashes the active slot number so the selected image index is visible without opening the setup menu.
 
 ### Fixes
 - **Memory allocation fixes**: Multiple allocation-related bugs were fixed.
 - **Forward-slash path handling**: Forward-slash normalization was re-enabled where needed.
 - **Cleanup of unused DMA code**: Old DMA handlers and related dead code that were no longer required have been removed.
 - **Stability fixes**: ROM bus handling, command ingestion, and SELECT button debouncing were cleaned up for better runtime stability.
+- **Floppy slot-swap media-change handling**: Drive A slot swaps now raise media change and clear it only after the first successful read of the new disk's root-directory start sector, which keeps TOS geometry refresh stable across image changes.
+- **Submenu modifier handling**: Single-key submenu reentry now preserves modifier information so `CTRL` and `SHIFT` actions work correctly in the multi-image floppy setup flow.
+- **Floppy activity LED timeout**: The Pico W LED no longer gets stuck on after floppy or command activity; it now emits a short activity pulse and turns off reliably when access finishes.
 
 ---
 

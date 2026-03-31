@@ -54,6 +54,17 @@ cmake -S rp/src -B rp/build
 - `term.c` and `chandler.c` both ingest ROM3 samples via `commemul_poll()`. Do not reintroduce the old ROM4 DMA IRQ command path unless the user explicitly wants that rollback.
 - ROM3/ROM4 work is timing-sensitive because both paths can touch shared bus control signals. If you change either PIO program, assume hardware validation is required even if the firmware builds.
 - Protocol ACK timing matters. The remote side can retransmit if shared-memory token ACK writes are delayed behind slow handlers. Treat ACK-order changes as behavior changes, not refactors.
+- Floppy slot cycling for drive A persists 10 slots in flash. Slot 1 remains the original `FLOPPY_DRIVE_A`; slots 2..10 are extra settings appended at the end of the app config table for upgrade safety.
+- The setup menu entry for the multi-image floppy A list is `CTRL+A`, labeled "Configure multiple images".
+- In that submenu, plain `2..9` and `0` select slots `2..10`, while `SHIFT + 2..9` or `0` clears that slot.
+- The terminal reentry path now passes both a shift flag and the original keyboard scan code. This matters because shifted number-row keys arrive as punctuation in ASCII, so the slot-clear path relies on scan codes, not just the shifted character.
+- Floppy media-change state is RP-owned. Atari-side `floppy.s` must only read the shared media-change flags. The current working behavior is: raise `MED_CHANGED` on a successful drive-A slot swap, and clear it on the RP side only after the first successful read of the new disk's root-directory start sector.
+- Keep Atari-side `floppy.s` read-only with respect to shared media-change state. Prior attempts to clear media-change from Atari trap code caused instability.
+- The current floppy slot-change behavior has been validated with the media-change flag clearing after the first successful read of the new root-directory start sector. Treat that timing as fragile unless hardware testing proves otherwise.
+- Short `SELECT` in runtime cycles floppy A only when at least two drive-A slots are configured. If only slot 1 exists, the short press is ignored to avoid disrupting active emulation.
+- Slot-index LED feedback uses the non-blocking counted blink sequence in `blink.c`.
+- Runtime floppy/command activity LED is separate from the slot-index sequence. It now goes through `blink_activityPulse()` plus `blink_poll()` and should behave as a short access pulse, not a steady-on indicator.
+- `chandler.c` should not drive the Pico W LED GPIO directly anymore for normal activity. Keep activity LED ownership in `blink.c`.
 
 ## 5. Formatting Rules
 - Do **not** use `PRIu32`, `PRIx32`, or related `PRI*` format macros in this repo.

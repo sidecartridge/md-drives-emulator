@@ -15,6 +15,21 @@ static MorseCode morseAlphabet[] = {
 
 static bool blinkState = false;
 static absolute_time_t blinkTime = {0};
+static bool blinkSequenceActive = false;
+static bool blinkSequenceLedOn = false;
+static uint8_t blinkSequenceRemaining = 0;
+static absolute_time_t blinkSequenceNext = {0};
+static bool blinkActivityLedOn = false;
+static absolute_time_t blinkActivityOffTime = {0};
+
+static void blink_set_hw(bool on) {
+#if defined(CYW43_WL_GPIO_LED_PIN)
+  network_initChipOnly();
+  cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, on ? 1 : 0);
+#else
+  gpio_put(PICO_DEFAULT_LED_PIN, on ? 1 : 0);
+#endif
+}
 
 void blink_morse(char chr) {
   void blink_morse_container() {
@@ -70,21 +85,11 @@ void blink_error() {
 }
 
 void blink_on() {
-#if defined(CYW43_WL_GPIO_LED_PIN)
-  network_initChipOnly();
-  cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-#else
-  gpio_put(PICO_DEFAULT_LED_PIN, 1);
-#endif
+  blink_set_hw(true);
 }
 
 void blink_off() {
-#if defined(CYW43_WL_GPIO_LED_PIN)
-  network_initChipOnly();
-  cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
-#else
-  gpio_put(PICO_DEFAULT_LED_PIN, 0);
-#endif
+  blink_set_hw(false);
 }
 
 void blink_toogle() {
@@ -99,3 +104,65 @@ void blink_toogle() {
     }
   }
 }
+
+void blink_activityPulse(void) {
+  if (blinkSequenceActive) {
+    return;
+  }
+
+  blinkActivityLedOn = true;
+  blink_on();
+  blinkActivityOffTime = make_timeout_time_us(BLINK_ACTIVITY_ON_US);
+}
+
+void blink_startCountSequence(uint8_t count) {
+  if (count == 0) {
+    return;
+  }
+
+  blinkSequenceActive = true;
+  blinkSequenceLedOn = true;
+  blinkSequenceRemaining = count;
+  blink_on();
+  blinkSequenceNext = make_timeout_time_ms(BLINK_SEQUENCE_ON_MS);
+}
+
+void blink_poll(void) {
+  if (blinkSequenceActive) {
+    if (absolute_time_diff_us(get_absolute_time(), blinkSequenceNext) >= 0) {
+      return;
+    }
+
+    if (blinkSequenceLedOn) {
+      blink_off();
+      blinkSequenceLedOn = false;
+      if (blinkSequenceRemaining > 0) {
+        blinkSequenceRemaining--;
+      }
+      if (blinkSequenceRemaining == 0) {
+        blinkSequenceActive = false;
+        return;
+      }
+      blinkSequenceNext = make_timeout_time_ms(BLINK_SEQUENCE_OFF_MS);
+      return;
+    }
+
+    blink_on();
+    blinkSequenceLedOn = true;
+    blinkSequenceNext = make_timeout_time_ms(BLINK_SEQUENCE_ON_MS);
+    return;
+  }
+
+  if (!blinkActivityLedOn) {
+    return;
+  }
+
+  if (absolute_time_diff_us(get_absolute_time(), blinkActivityOffTime) > 0) {
+    return;
+  }
+
+  blink_off();
+  blinkActivityLedOn = false;
+}
+
+bool blink_isSequenceActive(void) { return blinkSequenceActive; }
