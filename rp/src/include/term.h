@@ -140,6 +140,16 @@ typedef enum {
 void term_init(void);
 
 /**
+ * @brief Poll the terminal transport and return true once any key is pressed.
+ *
+ * This helper is intended for simple modal screens that need a lightweight
+ * "press any key to continue" behavior without installing a full command table.
+ *
+ * @return bool True once a keystroke command has been received.
+ */
+bool term_waitAnyKey(void);
+
+/**
  * @brief Prints a string to the terminal with VT52 escape sequence processing.
  *
  * This function implements a simple state machine that looks for the ESC (0x1B)
@@ -242,7 +252,6 @@ void term_setLastSingleKeyCommand(char key);
 
 // Generic commands to be used in the terminal
 // Manage application setttings
-void term_cmdSettings(const char *arg);
 void term_cmdPrint(const char *arg);
 void term_cmdSave(const char *arg);
 void term_cmdErase(const char *arg);
