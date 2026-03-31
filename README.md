@@ -12,8 +12,6 @@ To install the Drives Emulator app on your SidecarTridge Multi-device:
 4. Click **"Download"** to install the app to your SidecarTridge’s microSD card.
 5. Once installed, select the app and click **"Launch"** to activate it.
 
-> **⚠️ WARNING:** Booster Loader is currently in **alpha**. Use at your own risk.
-
 After launching, the app will automatically run every time your Atari computer is powered on.
 
 ## 🕹️ Usage
@@ -22,6 +20,15 @@ When you boot your Atari ST/STE/Mega ST/Mega STe, the app displays a **setup scr
 If no key is pressed, the emulator will start emulating the floppy and hard disk drives configured in the setup screen.
 
 This menu will pop up every time you power on your Atari computer, but not when you reset it. If you want to enter into this menu without powering off your Atari, you can press the **`SELECT`** button on your Multi-device and press the reset button on your Atari.
+
+During normal runtime, a short press on **`SELECT`** can also cycle floppy **A:** to the next configured image if you have configured multiple images for drive A.
+
+On first use, the microfirmware automatically creates the default folders it needs on the microSD card if they do not already exist:
+
+- `/hd` for GEMDrive hard disk emulation
+- `/floppies` for floppy image emulation
+
+You can change both folders later from the setup screen.
 
 ## ⚙️ Setup Screen
 
@@ -60,7 +67,7 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | Command | Description |
 |---------|-------------|
 | **[G]EMDRIVE** | Enable or disable GEMDrive emulation. |
-| **F[o]lder** | Select the folder for the GEMDrive. It allows to navigate through the microSD card's directory structure. |
+| **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
 ### Floppy Drive Emulation
@@ -72,8 +79,9 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 | Command | Description |
 |---------|-------------|
 | **[F]loppy** | Enable or disable Floppy emulation. |
-| **Fo[l]der** | Select the base folder for the Floppy images. It allows to navigate through the microSD card's directory structure. |
+| **Fo[l]der** | Select the base folder for the Floppy images. By default, the emulator uses `/floppies` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[A] Drive** | Select the .ST (Read only) or .ST.RW  (Read/Write) image file to use as the floppy disk. It  allows to navigate through the microSD card's directory structure. |
+| **[CTRL+A] Configure multiple images** | Configure up to 10 persistent images for floppy drive A. Slot 1 is the main **[A] Drive** image; slots 2..10 are optional extra images. In this submenu, press `2..9` or `0` to assign a slot, and press `SHIFT + 2..9` or `0` to clear a slot. |
 | **[B] Drive** | Select the .ST (Read only) or .ST.RW  (Read/Write) image file to use as the second floppy disk. It allows to navigate through the microSD card's directory structure. |
 | **[SHIFT+A] Drive** | Unmount the floppy disk image from the A: drive. |
 | **[SHIFT+B] Drive** | Unmount the floppy disk image from the B: drive. |
@@ -82,9 +90,26 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 | **Format [I]mage** | Format a new floppy disk image. It can format image sizes of 360KB (DS), 720KB (DD), 1.44MB (HD), and 2.88MB (ED). The image will be created in the selected folder with a given name plus the extension `.ST.RW`. It will be created empty. |
 | **[C]onvert MSA to ST** | Convert a floppy disk image from MSA format to ST format. The converted image will be created in the selected folder with the same name plus the extension `.ST`. |
 
+#### Runtime floppy A image cycling
+
+Floppy drive **A:** can keep a persistent list of up to **10 images**:
+
+- **Slot 1** is always the normal **[A] Drive** image.
+- **Slots 2..10** are configured through **[CTRL+A] Configure multiple images** in the setup menu.
+- The slot list is stored in flash and survives power cycles.
+
+When the emulator is already running:
+
+- A short press on **`SELECT`** cycles floppy **A:** to the next configured slot.
+- Empty slots are skipped automatically.
+- After the last configured slot, cycling wraps back to slot 1.
+- The Pico W LED flashes the active slot number so you can see which image was selected.
+
+If only slot 1 is configured, a short **`SELECT`** press does nothing during runtime.
+
 ### Real Time Clock Emulation
 
-Temporarily disabled.
+The Real Time Clock (RTC) emulation allows the Multi-device to emulate RTC functionality for Atari ST computers, enabling accurate timekeeping and date management. Refer to the RTC Emulator documentation in the SidecarTridge docs for the complete setup and usage details.
 
 ### Other Setup Screen Commands
 
@@ -105,21 +130,20 @@ The internal browser allows you to navigate through the microSD card's directory
 
 As a rule of thumb, **`SPACE`** will select the current item. So, if you want to choose a new folder, navigate to it, press **`ENTER`** to enter it, and then press **`SPACE`** to select it. If you want to select a file, navigate to it, and then press **`SPACE`** to select it.
 
-### 💾 Concurrent USB Mass Storage
+### 💾 USB Mass Storage
 
-The Multi-device supports **simultaneous USB mass storage access**, allowing you to read and write to the microSD card *while the emulator is running*. You can copy files to and from the card without pausing or interrupting the emulator.
+USB mass storage is currently available only while you are in the **setup menu**.
 
-For example, if you are developing an application, you can compile it on your computer, test it in an Atari ST emulator (such as Hatari or STEEM), and then simply copy the finished binary to the mounted USB drive. **GEMDRIVE** will automatically detect the new file and make it available to the Atari ST—no need to restart the emulator or the Atari itself.
+You can read and write the microSD card from your computer during setup without interrupting the setup screen.
 
-This provides a fast, seamless workflow for development and testing.
-
-It's recommened to connect the Multi-device to your computer via USB before launching the emulator. 
+It is recommended to connect the Multi-device to your computer via USB before launching the emulator.
 
 ### 🚀 Exiting to Desktop
 
 Pressing **`E`** on the setup screen will exit the emulator and return to the Atari desktop enabling the hard or floppy drives emulation. 
 
-To return to the setup screen, press **`SELECT`** on your Multi-device and reboot. Or simply power off your Atari and power it on again.
+To return to the setup screen, press **`SELECT`** on your Multi-device and reboot. Or simply power off your Atari and power it on again.  
+Note that during runtime, a short **`SELECT`** press is used for floppy A image cycling if multiple drive-A slots are configured.
 
 ### 🔁 System Reset Behavior
 
@@ -129,18 +153,33 @@ The Drives Emulator app is **resistant to system resets**. Pressing the reset bu
 
 The Drives Emulator app is designed to return to the setup screen after a power cycle. When you power off and on your Atari, the app will display the setup screen again, allowing you to configure the emulator or launch it with the last used settings.
 
+### ⚙️ Advanced Features
+
+#### Changing the speed of the microSD card
+
+The microSD card speed is controlled by the SPI bus clock between the RP2040 and the card. The supported range is from **1 MHz** to **24 MHz**. The default is **12.5 MHz**, which is a good balance between performance and stability.
+
+This is a global SidecarTridge Multi-device setting, so it is configured in the **Booster App**, not in the Drives Emulator setup screen.
+
+To change it:
+
+1. Launch the **Booster App**.
+2. Open the Booster web interface.
+3. In the **Config** tab, locate **SD card bus speed (KHz)**.
+4. Enter the desired value in KHz, for example `24000` for 24 MHz.
+5. Save the setting and relaunch the Drives Emulator app.
+
+Values below `1000` are clamped to **1 MHz**, and values above `24000` are clamped to **24 MHz**.
+
+`24 MHz` is usually safe, but if you see instability, try `12500` or `6000`.
+
 
 ## 🛠️ Setting Up the Development Environment
 
 This project is based on an early version of the [SidecarTridge Multi-device Microfirmware App Template](https://github.com/sidecartridge/md-microfirmware-template).  
 To set up your development environment, please follow the instructions provided in the [official documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/).
 
-## Missing features in ALPHA version
 
-- [ ] Support for Disk Swapping (changing floppy disk images on the fly).
-- [ ] Support for Downloading images from the internet repository.
-- [ ] Support for Read-Only GEMDRIVE (currently, it is read/write).
-- [ ] Support for Real Time Clock emulation (currently, it is disabled).
 
 
 ## 📄 License
