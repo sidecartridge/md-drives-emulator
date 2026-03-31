@@ -27,6 +27,7 @@ static void cmdReadOnly(const char *arg);
 static void cmdFloppyEnabled(const char *arg);
 static void cmdFloppiesFolder(const char *arg);
 static void cmdFloppyDriveA(const char *arg);
+static void cmdFloppyDriveASet(const char *arg);
 static void cmdFloppyDriveAEject(const char *arg);
 static void cmdFloppyDriveB(const char *arg);
 static void cmdFloppyDriveBEject(const char *arg);
@@ -53,6 +54,7 @@ static const Command commands[] = {
     {"f", cmdFloppyEnabled},
     {"l", cmdFloppiesFolder},
     {"a", cmdFloppyDriveA},
+    {"\x01", cmdFloppyDriveASet},
     {"A", cmdFloppyDriveAEject},
     {"b", cmdFloppyDriveB},
     {"B", cmdFloppyDriveBEject},
@@ -106,6 +108,7 @@ static int appStatus = APP_MODE_SETUP;
 // USB Mass Storage ready
 static bool usbMassStorageReady = false;
 static bool usbMassStorageReadyPrevious = false;
+static volatile bool pendingDriveACycle = false;
 
 // Folder search
 #define NAV_LINES_PER_PAGE 16
@@ -131,6 +134,29 @@ static DirNavigation *navState = NULL;
 
 static FloppyFormatState floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
 static FloppyImageHeader floppyImageHeader = {0};
+
+typedef enum {
+  FLOPPY_DRIVE_A_SET_IDLE = 0,
+  FLOPPY_DRIVE_A_SET_SELECT,
+  FLOPPY_DRIVE_A_SET_ASSIGN,
+} FloppyDriveASetState;
+
+static FloppyDriveASetState floppyDriveASetState = FLOPPY_DRIVE_A_SET_IDLE;
+static uint8_t floppyDriveASetTargetSlot = 1;
+
+static const char *const floppyDriveASetKeys[] = {
+    NULL,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_2,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_3,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_4,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_5,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_6,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_7,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_8,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_9,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_10,
+};
 
 static bool __not_in_flash_func(isTrue)(const char *value) {
   if ((value == NULL) || (value[0] == '\0')) {
@@ -413,6 +439,7 @@ static void __not_in_flash_func(menu)(void) {
     if (driveAValue != NULL) {
       free(driveAValue);  // Free the allocated memory for driveAValue
     }
+    term_printString("\n  [CTRL+A] Configure multiple images");
     // Display the FLOPPY drive B
     SettingsConfigEntry *floppyDriveBDrive = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_B);
@@ -624,6 +651,142 @@ static void drawPage(uint16_t top_offset) {
   term_printString(infoBuffer);
   term_printString("Use cursor keys and RETURN to navigate.\n");
   term_printString("SPACE to confirm selection. ESC to exit");
+}
+
+static enum navStatus __not_in_flash_func(navigate_directory)(
+    bool first_time, bool dirs_only, char key, EntryFilterFn filter_fn,
+    char top_folder[MAX_FILENAME_LENGTH + 1]);
+
+static uint8_t floppyDriveASetSlotFromKey(char key) {
+  if (key >= '2' && key <= '9') {
+    return (uint8_t)(key - '0');
+  }
+  if (key == '0') {
+    return 10;
+  }
+  return 0;
+}
+
+static uint8_t floppyDriveASetSlotFromScanCode(uint8_t scanCode) {
+  switch (scanCode) {
+    case TERM_KEYBOARD_SCAN_CODE_2:
+      return 2;
+    case TERM_KEYBOARD_SCAN_CODE_3:
+      return 3;
+    case TERM_KEYBOARD_SCAN_CODE_4:
+      return 4;
+    case TERM_KEYBOARD_SCAN_CODE_5:
+      return 5;
+    case TERM_KEYBOARD_SCAN_CODE_6:
+      return 6;
+    case TERM_KEYBOARD_SCAN_CODE_7:
+      return 7;
+    case TERM_KEYBOARD_SCAN_CODE_8:
+      return 8;
+    case TERM_KEYBOARD_SCAN_CODE_9:
+      return 9;
+    case TERM_KEYBOARD_SCAN_CODE_0:
+      return 10;
+    default:
+      return 0;
+  }
+}
+
+static void floppyDriveASetRenderMenu(void) {
+  showTitle();
+  term_printString("\nConfigure multiple images\n\n");
+  term_printString(
+      "Slot 1 uses the main Drive A image and cannot be edited here.\n\n");
+
+  for (uint8_t slot = 1; slot <= 10; ++slot) {
+    SettingsConfigEntry *entry =
+        settings_find_entry(aconfig_getContext(), floppyDriveASetKeys[slot]);
+    const char *value =
+        (entry != NULL && entry->value[0] != '\0') ? entry->value : "<empty>";
+    char *tail = right(value, 20);
+    const char *valueToShow = (tail != NULL) ? tail : value;
+    char line[32];
+
+    if (slot == 1) {
+      snprintf(line, sizeof(line), "  Slot 1 main: ");
+    } else {
+      snprintf(line, sizeof(line),
+               "  [%c] Slot %u: ", (slot == 10) ? '0' : (char)('0' + slot),
+               slot);
+    }
+
+    term_printString(line);
+    term_printString(valueToShow);
+    term_printString("\n");
+
+    if (tail != NULL) {
+      free(tail);
+    }
+  }
+
+  term_printString("\n[M] or SPACE for main menu\n");
+  term_printString("Press 2..9 or 0 to choose slots 2..10,\n");
+  term_printString("or SHIFT + 2..9 or 0 to unmount an image");
+  display_refresh();
+}
+
+static void floppyDriveASetReturnToMenu(void) {
+  floppyDriveASetState = FLOPPY_DRIVE_A_SET_IDLE;
+  floppyDriveASetTargetSlot = 1;
+  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
+  menu();
+}
+
+static void floppyDriveASetRenderBrowser(void) {
+  showTitle();
+  DPRINTF("Folder: %s\n", navState->folderPath);
+  TPRINTF("\nDrive A slot %u file: ", floppyDriveASetTargetSlot);
+  term_printString(navState->folderPath);
+  drawPage(NAV_LINES_PER_PAGE_OFFSET);
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
+  term_printString("SPACE=select image, M=back to slot menu");
+  display_refresh();
+}
+
+static void floppyDriveASetOpenBrowser(uint8_t slotIndex) {
+  SettingsConfigEntry *floppyDriveFolder = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
+
+  floppyDriveASetTargetSlot = slotIndex;
+  floppyDriveASetState = FLOPPY_DRIVE_A_SET_ASSIGN;
+  term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
+
+  if (floppyDriveFolder != NULL && floppyDriveFolder->value[0] != '\0') {
+    strncpy(navState->folderPath, floppyDriveFolder->value,
+            sizeof(navState->folderPath));
+  } else {
+    strncpy(navState->folderPath, "/", sizeof(navState->folderPath));
+  }
+  navState->folderPath[sizeof(navState->folderPath) - 1] = '\0';
+
+  enum navStatus status = navigate_directory(true, false, '\0', floppiesFilter,
+                                             navState->folderPath);
+  if (status == NAV_DIR_FIRST_TIME_OK || status == NAV_DIR_NEXT_TIME_OK) {
+    floppyDriveASetRenderBrowser();
+  } else {
+    floppyDriveASetState = FLOPPY_DRIVE_A_SET_SELECT;
+    floppyDriveASetRenderMenu();
+  }
+}
+
+static void handleSelectShortPress(void) {
+  if (appStatus == APP_EMULATION_RUNTIME) {
+    if (floppy_canCycleDriveA()) {
+      pendingDriveACycle = true;
+    } else {
+      DPRINTF(
+          "Short SELECT ignored in runtime: no extra floppy A slots "
+          "configured.\n");
+    }
+    return;
+  }
+
+  reset_device();
 }
 
 static enum navStatus __not_in_flash_func(navigate_directory)(
@@ -1025,6 +1188,94 @@ static void selectFloppyDrive(const char *arg, bool driveA) {
 void cmdFloppyDriveA(const char *arg) {
   // Mount the floppy drive A
   selectFloppyDrive(arg, true);
+}
+
+void cmdFloppyDriveASet(const char *arg) {
+  SettingsConfigEntry *floppyDrive = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
+  if (floppyDrive == NULL || !isTrue(floppyDrive->value)) {
+    return;
+  }
+
+  haltCountdown = true;
+
+  if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
+    floppyDriveASetState = FLOPPY_DRIVE_A_SET_SELECT;
+    floppyDriveASetTargetSlot = 1;
+    term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
+    floppyDriveASetRenderMenu();
+    return;
+  }
+
+  char key = (arg != NULL) ? arg[0] : '\0';
+  bool shiftKey = (arg != NULL) && (arg[1] == 'S');
+  uint8_t scanCode = (arg != NULL) ? (uint8_t)arg[2] : 0;
+
+  switch (floppyDriveASetState) {
+    case FLOPPY_DRIVE_A_SET_SELECT: {
+      if (key == ' ' || key == 'm' || key == 'M') {
+        floppyDriveASetReturnToMenu();
+        return;
+      }
+
+      uint8_t slotIndex = floppyDriveASetSlotFromKey(key);
+      if (slotIndex == 0 && shiftKey) {
+        slotIndex = floppyDriveASetSlotFromScanCode(scanCode);
+      }
+      if (slotIndex < 2 || slotIndex > 10) {
+        floppyDriveASetRenderMenu();
+        return;
+      }
+
+      if (shiftKey) {
+        settings_put_string(aconfig_getContext(),
+                            floppyDriveASetKeys[slotIndex], "");
+        settings_save(aconfig_getContext(), true);
+        floppyDriveASetRenderMenu();
+        return;
+      }
+
+      floppyDriveASetOpenBrowser(slotIndex);
+      return;
+    }
+    case FLOPPY_DRIVE_A_SET_ASSIGN: {
+      enum navStatus status = navigate_directory(
+          false, false, key, floppiesFilter, navState->folderPath);
+
+      switch (status) {
+        case NAV_DIR_FIRST_TIME_OK:
+        case NAV_DIR_NEXT_TIME_OK:
+          floppyDriveASetRenderBrowser();
+          return;
+        case NAV_DIR_SELECTED: {
+          char pathBuffer[MAX_FILENAME_LENGTH + 1];
+          snprintf(pathBuffer, sizeof(pathBuffer), "%s/%s",
+                   navState->folderPath, navState->entries[navState->selected]);
+          settings_put_string(aconfig_getContext(),
+                              floppyDriveASetKeys[floppyDriveASetTargetSlot],
+                              pathBuffer);
+          settings_save(aconfig_getContext(), true);
+          floppyDriveASetState = FLOPPY_DRIVE_A_SET_SELECT;
+          floppyDriveASetRenderMenu();
+          return;
+        }
+        case 'M':
+          floppyDriveASetState = FLOPPY_DRIVE_A_SET_SELECT;
+          floppyDriveASetRenderMenu();
+          return;
+        default:
+          if (status != NAV_DIR_ERROR) {
+            floppyDriveASetRenderBrowser();
+          }
+          return;
+      }
+    }
+    case FLOPPY_DRIVE_A_SET_IDLE:
+    default:
+      floppyDriveASetState = FLOPPY_DRIVE_A_SET_SELECT;
+      floppyDriveASetRenderMenu();
+      return;
+  }
 }
 
 void cmdFloppyDriveB(const char *arg) {
@@ -1658,7 +1909,7 @@ void __not_in_flash_func(emul_start)() {
   // Short press: reset the device and restart the app
   // Long press: reset the device and erase the flash.
   select_configure();
-  select_coreWaitPush(reset_device,
+  select_coreWaitPush(handleSelectShortPress,
                       reset_deviceAndEraseFlash);  // Wait for the SELECT
                                                    // button to be pushed
 
@@ -1837,9 +2088,9 @@ void __not_in_flash_func(emul_start)() {
   // the device.
   init(NULL);
 
-// Blink on
+// Start with the activity LED off. Runtime access pulses it on demand.
 #ifdef BLINK_H
-  blink_on();
+  blink_off();
 #endif
 
   // 9. Start the main loop
@@ -1858,6 +2109,7 @@ void __not_in_flash_func(emul_start)() {
   absolute_time_t lastDecrement = get_absolute_time();
 
   while (getKeepActive()) {
+    blink_poll();
     // #if PICO_CYW43_ARCH_POLL
     //     network_safePoll();
     //     cyw43_arch_wait_for_work_until(wifiScanTime);
@@ -1868,6 +2120,17 @@ void __not_in_flash_func(emul_start)() {
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
+
+        if (pendingDriveACycle) {
+          pendingDriveACycle = false;
+          uint8_t newSlot = 0;
+          FRESULT cycleResult = floppy_cycleDriveA(&newSlot);
+          if (cycleResult == FR_OK) {
+            blink_startCountSequence(newSlot);
+          } else {
+            DPRINTF("Error cycling floppy A image: %d\n", cycleResult);
+          }
+        }
 
         // Call all the "drives" loops
         chandler_loop();
