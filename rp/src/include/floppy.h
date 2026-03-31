@@ -56,6 +56,15 @@
 //        │ FLOPPYEMUL_SVAR_EMULATION_MODE             │
 //        │   size 4 bytes                             │
 // 0x9A14 ├────────────────────────────────────────────┤
+//        │ FLOPPYEMUL_SVAR_ENABLED                    │
+//        │   size 4 bytes                             │
+// 0x9A18 ├────────────────────────────────────────────┤
+//        │ FLOPPYEMUL_SVAR_MEDIA_CHANGED_A            │
+//        │   size 4 bytes                             │
+// 0x9A1C ├────────────────────────────────────────────┤
+//        │ FLOPPYEMUL_SVAR_MEDIA_CHANGED_B            │
+//        │   size 4 bytes                             │
+// 0x9A20 ├────────────────────────────────────────────┤
 //        │ Empty space...                             │
 //        ...
 // 0x9A28 ├────────────────────────────────────────────┤
@@ -75,6 +84,12 @@
 #define FLOPPYEMUL_SVAR_EMULATION_MODE (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 2)
 #define FLOPPYEMUL_SVAR_ENABLED \
   (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 3)  // enabled flag
+#define FLOPPYEMUL_SVAR_MEDIA_CHANGED_A (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 4)
+#define FLOPPYEMUL_SVAR_MEDIA_CHANGED_B (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 5)
+
+#define FLOPPY_MEDIA_NOCHANGE 0
+#define FLOPPY_MEDIA_UNKNOWN 1
+#define FLOPPY_MEDIA_CHANGED 2
 
 // We will need 32 bytes extra for the variables of the floppy emulator
 #define FLOPPYEMUL_VARIABLES_OFFSET                       \
@@ -110,11 +125,6 @@
 
 // The buffer for the read of the images
 #define FLOPPYEMUL_IMAGE (FLOPPYEMUL_VARIABLES_OFFSET + 256)
-
-// Media type changed flags
-#define MED_NOCHANGE 0
-#define MED_UNKNOWN 1
-#define MED_CHANGED 2
 
 // BPB fields
 #define BPB_RECSIZE 0
@@ -205,6 +215,8 @@ void __not_in_flash_func(floppy_dma_irq_handler_lookup)(void);
 // Function Prototypes
 void __not_in_flash_func(floppy_init)();
 void __not_in_flash_func(floppy_loop)();
+bool floppy_canCycleDriveA(void);
+FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex);
 void floppy_removeMSAExtension(char *filename);
 FRESULT floppy_createSTImage(const char *folder, char *stFilename, int nTracks,
                              int nSectors, int nSides, const char *volLavel,

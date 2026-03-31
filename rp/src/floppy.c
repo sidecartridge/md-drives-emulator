@@ -102,6 +102,149 @@ static uint32_t memoryRandomTokenAddress = 0;
 static uint32_t memoryRandomTokenSeedAddress = 0;
 static uint32_t memoryFirmwareCode = 0;
 
+#define FLOPPY_DRIVE_A_SLOT_MIN 1
+#define FLOPPY_DRIVE_A_SLOT_MAX 10
+
+static const char *const floppyDriveASlotKeys[FLOPPY_DRIVE_A_SLOT_MAX + 1] = {
+    NULL,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_2,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_3,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_4,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_5,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_6,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_7,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_8,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_9,
+    ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_10,
+};
+
+static uint8_t currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
+static bool floppyMediaChangeClearPending[2] = {false, false};
+static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
+
+static inline bool floppyStateIsMounted(FloppyDiskState state) {
+  return state == FLOPPY_DISK_MOUNTED_RW || state == FLOPPY_DISK_MOUNTED_RO;
+}
+
+static inline FIL *floppyGetFileObject(FloppyDrive drive) {
+  return (drive == FLOPPY_DRIVE_A) ? &fobjA : &fobjB;
+}
+
+static inline char *floppyGetFullPath(FloppyDrive drive) {
+  return (drive == FLOPPY_DRIVE_A) ? fullPathA : fullPathB;
+}
+
+static inline FloppyDiskState *floppyGetStatePtr(FloppyDrive drive) {
+  return (drive == FLOPPY_DRIVE_A) ? &floppyDiskStatus.stateA
+                                   : &floppyDiskStatus.stateB;
+}
+
+static inline BPBData *floppyGetBPBData(FloppyDrive drive) {
+  return (drive == FLOPPY_DRIVE_A) ? &BPBDataA : &BPBDataB;
+}
+
+static inline uint32_t floppyGetMediaChangedVarIndex(FloppyDrive drive) {
+  return (drive == FLOPPY_DRIVE_A) ? FLOPPYEMUL_SVAR_MEDIA_CHANGED_A
+                                   : FLOPPYEMUL_SVAR_MEDIA_CHANGED_B;
+}
+
+static inline void floppySetMediaChange(FloppyDrive drive, uint32_t status) {
+  SET_SHARED_PRIVATE_VAR(floppyGetMediaChangedVarIndex(drive), status,
+                         memorySharedAddress,
+                         FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+}
+
+static inline uint16_t floppyGetRootDirStartSector(const BPBData *bpb) {
+  if (bpb == NULL || bpb->datrec < bpb->rdlen) {
+    return 0;
+  }
+  return (uint16_t)(bpb->datrec - bpb->rdlen);
+}
+
+static inline void floppyResetMediaChangeClearOnRootRead(FloppyDrive drive) {
+  floppyMediaChangeClearPending[drive] = false;
+  floppyMediaChangeClearSector[drive] = 0;
+}
+
+static inline void floppyArmMediaChangeClearOnRootRead(FloppyDrive drive) {
+  floppyMediaChangeClearSector[drive] =
+      floppyGetRootDirStartSector(floppyGetBPBData(drive));
+  floppyMediaChangeClearPending[drive] = true;
+}
+
+static inline void floppyMaybeClearMediaChangeAfterRead(FloppyDrive drive,
+                                                        uint16_t lSector) {
+  if (!floppyMediaChangeClearPending[drive]) {
+    return;
+  }
+
+  if (lSector != floppyMediaChangeClearSector[drive]) {
+    return;
+  }
+
+  floppySetMediaChange(drive, FLOPPY_MEDIA_NOCHANGE);
+  floppyResetMediaChangeClearOnRootRead(drive);
+}
+
+static inline const char *floppyGetDriveASettingKey(uint8_t slotIndex) {
+  if (slotIndex < FLOPPY_DRIVE_A_SLOT_MIN ||
+      slotIndex > FLOPPY_DRIVE_A_SLOT_MAX) {
+    return NULL;
+  }
+  return floppyDriveASlotKeys[slotIndex];
+}
+
+static bool floppyGetDriveAPathForSlot(uint8_t slotIndex, char *pathBuffer,
+                                       size_t pathBufferSize) {
+  if (pathBuffer == NULL || pathBufferSize == 0) {
+    return false;
+  }
+
+  pathBuffer[0] = '\0';
+  const char *key = floppyGetDriveASettingKey(slotIndex);
+  if (key == NULL) {
+    return false;
+  }
+
+  SettingsConfigEntry *entry = settings_find_entry(aconfig_getContext(), key);
+  if (entry == NULL || entry->value[0] == '\0') {
+    return false;
+  }
+
+  snprintf(pathBuffer, pathBufferSize, "%s", entry->value);
+  return pathBuffer[0] != '\0';
+}
+
+static uint8_t floppyCountConfiguredDriveASlots(void) {
+  uint8_t count = 0;
+  char pathBuffer[FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH];
+
+  for (uint8_t slot = FLOPPY_DRIVE_A_SLOT_MIN; slot <= FLOPPY_DRIVE_A_SLOT_MAX;
+       ++slot) {
+    if (floppyGetDriveAPathForSlot(slot, pathBuffer, sizeof(pathBuffer))) {
+      count++;
+    }
+  }
+
+  return count;
+}
+
+static uint8_t floppyFindNextConfiguredDriveASlot(uint8_t currentSlot) {
+  char pathBuffer[FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH];
+
+  for (uint8_t step = 1; step <= FLOPPY_DRIVE_A_SLOT_MAX; ++step) {
+    uint8_t slot = (uint8_t)(((currentSlot - 1 + step) %
+                              FLOPPY_DRIVE_A_SLOT_MAX) +
+                             1);
+    if (floppyGetDriveAPathForSlot(slot, pathBuffer, sizeof(pathBuffer))) {
+      return slot;
+    }
+  }
+
+  return 0;
+}
+
 // Function to check if there is enough free disk space to create a file of size
 // 'nDiskSize'
 static FRESULT checkDiskSpace(const char *folder, uint32_t nDiskSize) {
@@ -749,6 +892,16 @@ FRESULT copy_file(const char *folder, const char *src_filename,
  * @return FRESULT The result of the operation. FR_OK if successful, an error
  * code otherwise.
  */
+static inline uint16_t floppyReadLe16(const BYTE *buffer, size_t offset) {
+  return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
+}
+
+static inline uint32_t floppyReadLe32(const BYTE *buffer, size_t offset) {
+  return (uint32_t)buffer[offset] | ((uint32_t)buffer[offset + 1] << 8) |
+         ((uint32_t)buffer[offset + 2] << 16) |
+         ((uint32_t)buffer[offset + 3] << 24);
+}
+
 static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   BYTE buffer[FLOPPY_SECTOR_SIZE] = {0}; /* File copy buffer */
   unsigned int br = 0;                   /* File read/write count */
@@ -774,32 +927,41 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
     return fr;  // Check for error in reading
   }
 
-  BPBData bpb_tmp;  // Temporary BPBData structure
+  BPBData bpb_tmp = {0};  // Temporary BPBData structure
 
-  bpb_tmp.recsize = ((uint16_t)buffer[11]) |
-                    ((uint16_t)buffer[12] << 8);     // Sector size in bytes
-  bpb_tmp.clsiz = (uint16_t)buffer[13];              // Cluster size
-  bpb_tmp.clsizb = bpb_tmp.clsiz * bpb_tmp.recsize;  // Cluster size in bytes
-  bpb_tmp.rdlen =
-      ((uint16_t)buffer[17] >> 4) |
-      ((uint16_t)buffer[18] << 8);      // Root directory length in sectors
-  bpb_tmp.fsiz = (uint16_t)buffer[22];  // FAT size in sectors
-  bpb_tmp.fatrec = bpb_tmp.fsiz + 1;    // Sector number of second FAT
-  bpb_tmp.datrec = bpb_tmp.rdlen + bpb_tmp.fatrec +
-                   bpb_tmp.fsiz;  // Sector number of first data cluster
-  bpb_tmp.numcl =
-      ((((uint16_t)buffer[20] << 8) | (uint16_t)buffer[19]) - bpb_tmp.datrec) /
-      bpb_tmp.clsiz;     // Number of data clusters on the disk
-  bpb_tmp.bflags = 0;    // Magic flags
-  bpb_tmp.trackcnt = 0;  // Track count
-  bpb_tmp.sidecnt = (uint16_t)buffer[26];  // Side count
-  bpb_tmp.secpcyl =
-      (uint16_t)(buffer[24] * bpb_tmp.sidecnt);  // Sectors per cylinder
-  bpb_tmp.secptrack = (uint16_t)buffer[24];      // Sectors per track
-  bpb_tmp.reserved[0] = 0;                       // Reserved
-  bpb_tmp.reserved[1] = 0;                       // Reserved
-  bpb_tmp.reserved[2] = 0;                       // Reserved
-                            //    bpb_tmp.diskNum = disknumber;
+  uint16_t reservedSectors = floppyReadLe16(buffer, 14);
+  uint16_t rootEntryCount = floppyReadLe16(buffer, 17);
+  uint32_t totalSectors = floppyReadLe16(buffer, 19);
+  uint8_t fatCount = buffer[16];
+
+  bpb_tmp.recsize = floppyReadLe16(buffer, 11);  // Sector size in bytes
+  bpb_tmp.clsiz = (uint16_t)buffer[13];          // Cluster size
+  bpb_tmp.clsizb = bpb_tmp.clsiz * bpb_tmp.recsize;
+
+  if (totalSectors == 0) {
+    totalSectors = floppyReadLe32(buffer, 32);
+  }
+
+  if (bpb_tmp.recsize != 0) {
+    bpb_tmp.rdlen =
+        (uint16_t)(((uint32_t)rootEntryCount * 32U + bpb_tmp.recsize - 1U) /
+                   bpb_tmp.recsize);
+  }
+
+  bpb_tmp.fsiz = floppyReadLe16(buffer, 22);  // FAT size in sectors
+  bpb_tmp.fatrec = reservedSectors + bpb_tmp.fsiz;
+  bpb_tmp.datrec =
+      reservedSectors + ((uint16_t)fatCount * bpb_tmp.fsiz) + bpb_tmp.rdlen;
+
+  if (bpb_tmp.clsiz != 0 && totalSectors >= bpb_tmp.datrec) {
+    bpb_tmp.numcl = (uint16_t)((totalSectors - bpb_tmp.datrec) / bpb_tmp.clsiz);
+  }
+
+  bpb_tmp.bflags = 0;  // Magic flags
+  bpb_tmp.sidecnt = floppyReadLe16(buffer, 26);
+  bpb_tmp.secptrack = floppyReadLe16(buffer, 24);
+  bpb_tmp.secpcyl = (uint16_t)(bpb_tmp.secptrack * bpb_tmp.sidecnt);
+  bpb_tmp.trackcnt = 0;
 
   // Copy the temporary BPB data to the provided BPB structure
   *bpb = bpb_tmp;
@@ -937,6 +1099,82 @@ static void printPayload(uint8_t *payloadShowBytesPtr) {
   }
 }
 
+static FRESULT floppyUnmountDrive(FloppyDrive drive) {
+  FIL *fobj = floppyGetFileObject(drive);
+  FloppyDiskState *state = floppyGetStatePtr(drive);
+  char *fullPath = floppyGetFullPath(drive);
+
+  if (floppyStateIsMounted(*state)) {
+    FRESULT fr = floppyImgClose(fobj);
+    if (fr != FR_OK) {
+      *state = FLOPPY_DISK_ERROR;
+      return fr;
+    }
+  }
+
+  memset(fobj, 0, sizeof(*fobj));
+  fullPath[0] = '\0';
+  *state = FLOPPY_DISK_UNMOUNTED;
+
+  CLEAR_SHARED_PRIVATE_VAR_BIT(FLOPPYEMUL_SVAR_EMULATION_MODE,
+                               (drive == FLOPPY_DRIVE_A) ? 0 : 1,
+                               memorySharedAddress,
+                               FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+  return FR_OK;
+}
+
+static FRESULT floppyMountDrivePath(FloppyDrive drive, const char *fname) {
+  if (fname == NULL || fname[0] == '\0') {
+    *floppyGetStatePtr(drive) = FLOPPY_DISK_ERROR;
+    return FR_INVALID_NAME;
+  }
+
+  bool isRW = isFloppyRW(fname);
+  FIL *fobj = floppyGetFileObject(drive);
+  char *fullPath = floppyGetFullPath(drive);
+  BPBData *bpb = floppyGetBPBData(drive);
+  FloppyDiskState *state = floppyGetStatePtr(drive);
+  floppyResetMediaChangeClearOnRootRead(drive);
+
+  snprintf(fullPath, FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH, "%s", fname);
+  DPRINTF("Mounting drive %c path: %s\n",
+          (drive == FLOPPY_DRIVE_A) ? 'A' : 'B', fullPath);
+
+  FRESULT err = floppyImgOpen(fullPath, isRW, fobj);
+  if (err != FR_OK) {
+    *state = FLOPPY_DISK_ERROR;
+    return err;
+  }
+
+  FRESULT bpbFound = createBPB(fobj, bpb);
+  if (bpbFound != FR_OK) {
+    *state = FLOPPY_DISK_ERROR;
+    floppyImgClose(fobj);
+    memset(fobj, 0, sizeof(*fobj));
+    fullPath[0] = '\0';
+    return bpbFound;
+  }
+
+  if (drive == FLOPPY_DRIVE_A) {
+    memcpy((void *)(memorySharedAddress + FLOPPYEMUL_BPB_DATA_A), bpb,
+           sizeof(BPBDataA));
+  } else {
+    memcpy((void *)(memorySharedAddress + FLOPPYEMUL_BPB_DATA_B), bpb,
+           sizeof(BPBDataB));
+  }
+
+  SET_SHARED_PRIVATE_VAR_BIT(FLOPPYEMUL_SVAR_EMULATION_MODE,
+                             (drive == FLOPPY_DRIVE_A) ? 0 : 1,
+                             memorySharedAddress,
+                             FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+
+  *state = isRW ? FLOPPY_DISK_MOUNTED_RW : FLOPPY_DISK_MOUNTED_RO;
+
+  DPRINTF("Drive %c mounted successfully.\n",
+          (drive == FLOPPY_DRIVE_A) ? 'A' : 'B');
+  return FR_OK;
+}
+
 FRESULT __not_in_flash_func(vDriveOpen)(uint8_t drive) {
   char *fname = NULL;
 
@@ -944,17 +1182,16 @@ FRESULT __not_in_flash_func(vDriveOpen)(uint8_t drive) {
     SettingsConfigEntry *fnameDriveAParam = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A);
     if (fnameDriveAParam != NULL) {
-      // Copy the drive name from the settings
       fname = fnameDriveAParam->value;
     }
   } else {
     SettingsConfigEntry *fnameDriveBParam = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_B);
     if (fnameDriveBParam != NULL) {
-      // Copy the drive name from the settings
       fname = fnameDriveBParam->value;
     }
   }
+
   DPRINTF("Mounting drive %c with filename: %s\n",
           (drive == FLOPPY_DRIVE_A) ? 'A' : 'B', fname ? fname : "NULL");
 
@@ -1046,6 +1283,61 @@ FRESULT __not_in_flash_func(vDriveOpen)(uint8_t drive) {
   return FR_OK;  // Return success if the BPB was created successfully
 }
 
+bool floppy_canCycleDriveA(void) {
+  SettingsConfigEntry *floppyEnabledParam = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
+  if (floppyEnabledParam == NULL || !isTrue(floppyEnabledParam->value)) {
+    return false;
+  }
+
+  return floppyCountConfiguredDriveASlots() >= 2;
+}
+
+FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex) {
+  if (!floppy_canCycleDriveA()) {
+    return FR_INVALID_PARAMETER;
+  }
+
+  uint8_t nextSlot = floppyFindNextConfiguredDriveASlot(currentDriveASlot);
+  if (nextSlot == 0 || nextSlot == currentDriveASlot) {
+    return FR_INVALID_PARAMETER;
+  }
+
+  char nextPath[FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH] = {0};
+  if (!floppyGetDriveAPathForSlot(nextSlot, nextPath, sizeof(nextPath))) {
+    return FR_INVALID_NAME;
+  }
+
+  char previousPath[FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH] = {0};
+  snprintf(previousPath, sizeof(previousPath), "%s", fullPathA);
+  uint8_t previousSlot = currentDriveASlot;
+  FloppyDiskState previousState = floppyDiskStatus.stateA;
+
+  FRESULT closeResult = floppyUnmountDrive(FLOPPY_DRIVE_A);
+  if (closeResult != FR_OK) {
+    return closeResult;
+  }
+
+  FRESULT mountResult = floppyMountDrivePath(FLOPPY_DRIVE_A, nextPath);
+  if (mountResult != FR_OK) {
+    if (previousPath[0] != '\0' && previousState != FLOPPY_DISK_ERROR) {
+      FRESULT reopenResult = floppyMountDrivePath(FLOPPY_DRIVE_A, previousPath);
+      if (reopenResult == FR_OK) {
+        currentDriveASlot = previousSlot;
+      }
+    }
+    return mountResult;
+  }
+
+  currentDriveASlot = nextSlot;
+  floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_CHANGED);
+  floppyArmMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
+  if (newSlotIndex != NULL) {
+    *newSlotIndex = currentDriveASlot;
+  }
+  return FR_OK;
+}
+
 void __not_in_flash_func(floppy_init)() {
   FRESULT fr; /* FatFs function common result code */
 
@@ -1121,6 +1413,11 @@ void __not_in_flash_func(floppy_init)() {
   SET_SHARED_PRIVATE_VAR(FLOPPYEMUL_SVAR_ENABLED,
                          floppyEnabled ? 0xFFFFFFFF : 0, memorySharedAddress,
                          FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+  floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_NOCHANGE);
+  floppySetMediaChange(FLOPPY_DRIVE_B, FLOPPY_MEDIA_NOCHANGE);
+  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
+  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_B);
+  currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
 
   fr = vDriveOpen(FLOPPY_DRIVE_A);  // Open floppy drive A
   if (fr != FR_OK) {
@@ -1380,6 +1677,8 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("Read sector %i of size %i bytes to memory address %08X\n",
               lSector, sSize, memorySharedAddress + FLOPPYEMUL_IMAGE);
       CHANGE_ENDIANESS_BLOCK16(memorySharedAddress + FLOPPYEMUL_IMAGE, sSize);
+      floppyMaybeClearMediaChangeAfterRead(
+          (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B, lSector);
       break;
     }
     case FLOPPYEMUL_WRITE_SECTORS: {
