@@ -31,8 +31,6 @@ static void cmdFloppyDriveASet(const char *arg);
 static void cmdFloppyDriveAEject(const char *arg);
 static void cmdFloppyDriveB(const char *arg);
 static void cmdFloppyDriveBEject(const char *arg);
-static void cmdFormatFloppy(const char *arg);
-static void cmdMSA2ST(const char *arg);
 static void cmdBootEnabled(const char *arg);
 static void cmdXbiosEnabled(const char *arg);
 static void cmdRTCEnabled(const char *arg);
@@ -58,8 +56,6 @@ static const Command commands[] = {
     {"A", cmdFloppyDriveAEject},
     {"b", cmdFloppyDriveB},
     {"B", cmdFloppyDriveBEject},
-    {"i", cmdFormatFloppy},
-    {"c", cmdMSA2ST},
     {"t", cmdBootEnabled},
     {"s", cmdXbiosEnabled},
     {"r", cmdRTCEnabled},
@@ -104,7 +100,6 @@ static int appStatus = APP_MODE_SETUP;
 
 // USB Mass Storage ready
 static bool usbMassStorageReady = false;
-static bool usbMassStorageReadyPrevious = false;
 static volatile bool pendingDriveACycle = false;
 
 // Folder search
@@ -128,9 +123,6 @@ typedef struct {
 } DirNavigation;
 
 static DirNavigation *navState = NULL;
-
-static FloppyFormatState floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
-static FloppyImageHeader floppyImageHeader = {0};
 
 typedef enum {
   FLOPPY_DRIVE_A_SET_IDLE = 0,
@@ -428,24 +420,6 @@ static bool __not_in_flash_func(floppiesFilter)(const char *name, BYTE attr) {
   return false;
 }
 
-// Filter: include only files with extensions .msa.
-//(case-insensitive), and omit hidden files (those starting with a dot).
-static bool __not_in_flash_func(floppiesMSAFilter)(const char *name,
-                                                   BYTE attr) {
-  if (name[0] == '.') {
-    return false;  // skip dotfiles
-  }
-  if (attr & AM_DIR) {
-    return true;  // directories always
-  }
-  size_t len = strlen(name);
-  // Check for .msa (4 chars)
-  if (len > 4 && strcasecmp(name + len - 4, ".msa") == 0) {
-    return true;
-  }
-  return false;
-}
-
 static inline void vt52Cursor(uint8_t row, uint8_t col) {
   char vt52Seq[5];
   vt52Seq[0] = '\x1B';
@@ -464,26 +438,38 @@ static void showTitle() {
       "Multi-drive Emulator - " RELEASE_VERSION "\n\x1Bq");
 }
 
+static void __not_in_flash_func(showCounter)(int cdown);
+
+static void drawSetupInfoLine(const char *message) {
+  u8g2_SetDrawColor(display_getU8g2Ref(), 1);
+  u8g2_DrawBox(display_getU8g2Ref(), 0,
+               DISPLAY_HEIGHT - DISPLAY_TERM_CHAR_HEIGHT, DISPLAY_WIDTH,
+               DISPLAY_TERM_CHAR_HEIGHT);
+  u8g2_SetFont(display_getU8g2Ref(), u8g2_font_squeezed_b7_tr);
+  u8g2_SetDrawColor(display_getU8g2Ref(), 0);
+  u8g2_DrawStr(display_getU8g2Ref(), 0, DISPLAY_HEIGHT - 1,
+               (message != NULL) ? message : "");
+  u8g2_SetDrawColor(display_getU8g2Ref(), 1);
+  u8g2_SetFont(display_getU8g2Ref(), u8g2_font_amstrad_cpc_extended_8f);
+}
+
+static void refreshSetupInfoLine(void) {
+  if (usbMassStorageReady) {
+    drawSetupInfoLine("USB Mass Storage Connected");
+  } else if (haltCountdown) {
+    drawSetupInfoLine("Countdown stopped. Press [E] or [X] to continue.");
+  } else {
+    showCounter(countdown);
+  }
+}
+
 static void __not_in_flash_func(menu)(void) {
-  floppyFormatState = FLOPPY_FORMAT_SIZE_STATE;
   term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
 
   showTitle();
 
-  // Global options, read only
-  vt52Cursor(2, 0);
-
-  // Display USB Mass Storage status
-  term_printString("\x1BpUSB Mass Storage: ");
-  if (usbMassStorageReady) {
-    term_printString("READY");
-  } else {
-    term_printString("NOT READY");
-  }
-  term_printString("\n\x1Bq");
-
   // Configurable options
-  vt52Cursor(5, 0);
+  vt52Cursor(2, 0);
   // Display first GEMDRIVE options
   term_printString("[G]EMDRIVE Enabled? ");
   // Is it enabled?
@@ -513,9 +499,8 @@ static void __not_in_flash_func(menu)(void) {
     // term_printString(isTrue(gemDriveReadonly->value) ? "Yes" : "No");
     term_printString("\n\n");
 
-    term_printString("\n");
   } else {
-    term_printString("No\n\n\n\n\n");
+    term_printString("No\n\n\n\n");
   }
 
   // Display the Floppy options
@@ -565,8 +550,9 @@ static void __not_in_flash_func(menu)(void) {
     DPRINTF("XBIOS: %s\n", floppyXbiosEnabled->value);
     term_printString("  XBIO[S] trap?");
     term_printString(isTrue(floppyXbiosEnabled->value) ? "Yes" : "No");
-    // Format floppy
-    term_printString("\n  Format [I]mage | [C]onvert MSA to ST\n\n");
+    // Formatting and MSA conversion now live in the File Manager
+    // microfirmware, so keep the floppy setup menu focused on mounting.
+    term_printString("\n\n");
   } else {
     term_printString("No\n\n\n\n\n\n\n");
   }
@@ -589,7 +575,7 @@ static void __not_in_flash_func(menu)(void) {
     } else {
       term_printString("Not set");
     }
-    term_printString("\n  [P]ort NTP: ");
+    term_printString("\n  [P]ort:");
     // Print the NTP server port
     SettingsConfigEntry *ntpPort = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_NTP_PORT);
@@ -598,7 +584,7 @@ static void __not_in_flash_func(menu)(void) {
     } else {
       term_printString("Not set");
     }
-    term_printString("\n  [U]TC Offset: ");
+    term_printString(" [U] Offset:");
     // Print the UTC offset
     SettingsConfigEntry *utcOffset = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_UTC_OFFSET);
@@ -607,12 +593,12 @@ static void __not_in_flash_func(menu)(void) {
     } else {
       term_printString("Not set");
     }
-    term_printString("  [Y]2K Patch?");
+    term_printString(" [Y]2K Patch?");
     // Print the Y2K patch
     SettingsConfigEntry *y2kPatch = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
     if (y2kPatch != NULL) {
-      term_printString(isTrue(y2kPatch->value) ? "Yes" : "No");
+      term_printString(isTrue(y2kPatch->value) ? "Y" : "N");
     } else {
       term_printString("Not set");
     }
@@ -628,6 +614,7 @@ static void __not_in_flash_func(menu)(void) {
 
   vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
   term_printString("Select an option: ");
+  refreshSetupInfoLine();
 }
 
 static void __not_in_flash_func(showCounter)(int cdown) {
@@ -639,15 +626,7 @@ static void __not_in_flash_func(showCounter)(int cdown) {
     showTitle();
     sprintf(msg, "Booting... Please wait...               ");
   }
-  u8g2_SetDrawColor(display_getU8g2Ref(), 1);
-  u8g2_DrawBox(display_getU8g2Ref(), 0,
-               DISPLAY_HEIGHT - DISPLAY_TERM_CHAR_HEIGHT, DISPLAY_WIDTH,
-               DISPLAY_TERM_CHAR_HEIGHT);
-  u8g2_SetFont(display_getU8g2Ref(), u8g2_font_squeezed_b7_tr);
-  u8g2_SetDrawColor(display_getU8g2Ref(), 0);
-  u8g2_DrawStr(display_getU8g2Ref(), 0, DISPLAY_HEIGHT - 1, msg);
-  u8g2_SetDrawColor(display_getU8g2Ref(), 1);
-  u8g2_SetFont(display_getU8g2Ref(), u8g2_font_amstrad_cpc_extended_8f);
+  drawSetupInfoLine(msg);
 }
 
 // Command handlers
@@ -1411,251 +1390,6 @@ void cmdFloppyDriveBEject(const char *arg) {
   ejectFloppyDrive(false);
 }
 
-void cmdFormatFloppy(const char *arg) {
-  SettingsConfigEntry *floppyDrive = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
-  if (isTrue(floppyDrive->value)) {
-    DPRINTF("Floppy format state: %d\n", floppyFormatState);
-    switch (floppyFormatState) {
-      case FLOPPY_FORMAT_SIZE_STATE:
-        // Set the floppy format size
-        {
-          showTitle();
-          term_printString("\n\n");
-          term_printString("Format a new floppy image file\n\n");
-          term_printString("  [1] 360K (DS)\n");
-          term_printString("  [2] 720K (DD)\n");
-          term_printString("  [3] 1.44M (HD)\n");
-          term_printString("  [4] 2.88M (ED)\n");
-          term_printString("Enter the disk image size: ");
-          term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
-          haltCountdown = true;
-          floppyFormatState = FLOPPY_FORMAT_NAME_STATE;
-          break;
-        }
-      case FLOPPY_FORMAT_NAME_STATE:
-        // Set the floppy format name
-        {
-          switch (arg[0]) {
-            case '1':
-              term_printString("360K (DS)\n");
-              floppyImageHeader.num_tracks = 80;
-              floppyImageHeader.num_sides = 1;
-              floppyImageHeader.num_sectors = 9;
-              break;
-            case '2':
-              term_printString("720K (DD)\n");
-              floppyImageHeader.num_tracks = 80;
-              floppyImageHeader.num_sides = 2;
-              floppyImageHeader.num_sectors = 9;
-              break;
-            case '3':
-              term_printString("1.44M (HD)\n");
-              floppyImageHeader.num_tracks = 80;
-              floppyImageHeader.num_sides = 2;
-              floppyImageHeader.num_sectors = 18;
-              break;
-            case '4':
-              term_printString("2.88M (ED)\n");
-              floppyImageHeader.num_tracks = 80;
-              floppyImageHeader.num_sides = 2;
-              floppyImageHeader.num_sectors = 36;
-              break;
-            default:
-              return;
-          }
-          term_printString("\nEnter the name of the file:\n");
-          term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
-          floppyFormatState = FLOPPY_FORMAT_LABEL_STATE;
-          break;
-        }
-      case FLOPPY_FORMAT_LABEL_STATE:
-        // Set the floppy format label
-        {
-          // Create a file name concatenating:
-          // 1. The name of the file
-          // 2. The extension .st.rw
-          char fileName[MAX_FILENAME_LENGTH + 1];
-          snprintf(fileName, sizeof(fileName), "%s.st.rw",
-                   term_getInputBuffer());
-          // Check if the file name is valid
-          // if (!isValidFileName(fileName)) {
-          //   term_printString("Invalid file name.\n");
-          //   term_printString("Press SPACE to continue...\n");
-          //   return;
-          // }
-          // Copy the file name to the floppy image header
-          strncpy(floppyImageHeader.floppy_name, fileName,
-                  sizeof(floppyImageHeader.floppy_name));
-          floppyImageHeader
-              .floppy_name[sizeof(floppyImageHeader.floppy_name) - 1] = '\0';
-          term_clearInputBuffer();
-          term_printString("\n");
-          term_printString("Enter the label of the file:\n");
-          term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
-          floppyFormatState = FLOPPY_FORMAT_CONFIRM_STATE;
-          break;
-        }
-      case FLOPPY_FORMAT_CONFIRM_STATE:
-        // Confirm the floppy format
-        {
-          // Check if the label is valid
-          // if (!isValidLabel(term_getInputBuffer())) {
-          //   term_printString("Invalid label.\n");
-          //   term_printString("Press SPACE to continue...\n");
-          //   return;
-          // }
-          // Copy the label to the floppy image header
-          strncpy(floppyImageHeader.volume_name, term_getInputBuffer(),
-                  sizeof(floppyImageHeader.volume_name));
-          floppyImageHeader
-              .volume_name[sizeof(floppyImageHeader.volume_name) - 1] = '\0';
-          term_clearInputBuffer();
-          term_printString("\n");
-          term_printString("Floppy image:\n");
-          term_printString("  File name: ");
-          term_printString(floppyImageHeader.floppy_name);
-          term_printString("\n  Label: ");
-          term_printString(floppyImageHeader.volume_name);
-          term_printString("\n  tracks: ");
-          term_printString((floppyImageHeader.num_tracks == 80) ? "80" : "40");
-          term_printString("  sectors: ");
-          // Convert to string
-          char numSectors[4];
-          snprintf(numSectors, sizeof(numSectors), "%d",
-                   floppyImageHeader.num_sectors);
-          term_printString(numSectors);
-          term_printString("  sides: ");
-          term_printString((floppyImageHeader.num_sides == 2) ? "2" : "1");
-          term_printString("\n\n");
-          term_printString("Start formatting? (Y/N)");
-          term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
-          floppyFormatState = FLOPPY_FORMAT_FORMATTING_STATE;
-          break;
-        }
-      case FLOPPY_FORMAT_FORMATTING_STATE: {
-        if (arg[0] != 'Y' && arg[0] != 'y') {
-          term_printString("Format cancelled.\n");
-          term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
-          menu();
-          return;
-        }
-        term_printString("\n\nFormatting floppy disk... Please wait\n");
-        // Perform the actual formatting here
-        floppyFormatState = FLOPPY_FORMAT_DONE_STATE;
-        term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
-        term_setLastSingleKeyCommand('i');
-        term_forceInputChar('i', false);  // Force the input to 'i' to continue
-        break;
-      }
-      case FLOPPY_FORMAT_DONE_STATE: {
-        // Check if the key is a valid navigation key
-        SettingsConfigEntry *floppyDriveFolder = settings_find_entry(
-            aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
-
-        FRESULT err = floppy_createSTImage(
-            floppyDriveFolder->value, floppyImageHeader.floppy_name,
-            floppyImageHeader.num_tracks, floppyImageHeader.num_sectors,
-
-            floppyImageHeader.num_sides, floppyImageHeader.volume_name, false);
-        term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
-        menu();
-        break;
-      }
-    }
-  }
-}
-
-static void selectMSA(const char *arg) {
-  // Check if the Floppy is enabled
-  SettingsConfigEntry *floppyDrive = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
-  if (isTrue(floppyDrive->value)) {
-    haltCountdown = true;
-    enum navStatus status = NAV_DIR_ERROR;
-    // Check if this is the first time we enter the command
-    switch (term_getCommandLevel()) {
-      case TERM_COMMAND_LEVEL_SINGLE_KEY: {
-        SettingsConfigEntry *floppyDriveFolder = settings_find_entry(
-            aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
-        strncpy(navState->folderPath, floppyDriveFolder->value,
-                sizeof(navState->folderPath));
-        term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
-        status = navigate_directory(true, false, '\0', floppiesMSAFilter,
-                                    navState->folderPath);
-        break;
-      }
-      case TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY: {
-        // If we are here is because we have already entered the command
-        char key = arg[0];
-        // Check if the key is a valid navigation key
-        status = navigate_directory(false, false, key, floppiesMSAFilter,
-                                    navState->folderPath);
-        break;
-      }
-      default:
-        break;
-    }
-    switch (status) {
-      case NAV_DIR_FIRST_TIME_OK:
-      case NAV_DIR_NEXT_TIME_OK: {
-        // Print the navState->selected entry
-        DPRINTF("Entries: %d\n", navState->count);
-        DPRINTF("Selected entry: %d = %s\n", navState->selected,
-                navState->entries[navState->selected]);
-        // Redraw the navState->page
-        showTitle();
-        DPRINTF("Folder: %s\n", navState->folderPath);
-        term_printString(" file: ");
-        term_printString(navState->folderPath);
-        drawPage(NAV_LINES_PER_PAGE_OFFSET);
-        break;
-      }
-      case NAV_DIR_SELECTED: {
-        // Confirm selection
-        // Save the navState->selected entry
-        // Source file
-        char bufSrcTmp[MAX_FILENAME_LENGTH + 1];
-        snprintf(bufSrcTmp, sizeof(bufSrcTmp), "%s",
-                 navState->entries[navState->selected]);
-        DPRINTF("File to convert to ST: %s\n", bufSrcTmp);
-
-        // Already processing, do nothing
-        char bufTmp[MAX_FILENAME_LENGTH + 1];
-        snprintf(bufTmp, sizeof(bufTmp), "%s",
-                 navState->entries[navState->selected]);
-        // Remove the .msa or .MSA extension
-        floppy_removeMSAExtension(bufTmp);
-        // And add a .st.rw extension
-        char bufTmp2[MAX_FILENAME_LENGTH + 1];
-        snprintf(bufTmp2, sizeof(bufTmp2), "%s.st.rw", bufTmp);
-        FRESULT ferr =
-            floppy_MSA2ST(navState->folderPath, bufSrcTmp, bufTmp2, false);
-        if (ferr != FR_OK) {
-          DPRINTF("Error converting MSA to ST: %d\n", ferr);
-          term_printString("Error converting MSA to ST.\n");
-        } else {
-          DPRINTF("MSA converted to ST: %s\n", bufTmp2);
-          term_printString("MSA converted to ST.\n");
-        }
-        menu();
-        term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
-      }
-      default:
-        break;
-    }
-  }
-}
-
-void cmdMSA2ST(const char *arg) {
-  // Convert MSA to ST
-  SettingsConfigEntry *floppyDrive = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
-  if (isTrue(floppyDrive->value)) {
-    selectMSA(arg);
-  }
-}
-
 void cmdBootEnabled(const char *arg) {
   // Boot option to booting from the floppy
   // Check first if the FLOPPY is enabled
@@ -1846,8 +1580,6 @@ void cmdPort(const char *arg) {
 
 static bool getKeepActive() { return keepActive; }
 
-static bool getJumpBooster() { return jumpBooster; }
-
 static void preinit() {
   // Initialize the terminal
   term_init();
@@ -1893,6 +1625,21 @@ void failure(const char *message) {
   term_printString(message);
 
   display_refresh();
+}
+
+static void waitForSdFailureAndReturnToBooster(const char *message) {
+  failure(message);
+  term_printString("\n\nPress any key to return to Booster.\n");
+  display_refresh();
+
+  while (!term_waitAnyKey()) {
+#ifdef BLINK_H
+    blink_poll();
+#endif
+  }
+
+  jumpBooster = true;
+  finishAppLoop();
 }
 
 static void init(const char *path) {
@@ -2034,17 +1781,11 @@ void __not_in_flash_func(emul_start)() {
   if (gemDrive == NULL) {
     DPRINTF("GEMDRIVE not found in the configuration.\n");
     DPRINTF("Error initializing the SD card: GEMDRIVE params not found\n");
-    failure(
+    waitForSdFailureAndReturnToBooster(
         "SD card error.\nCheck the card is inserted correctly.\nInsert "
-        "card "
-        "and restart the computer.");
-    while (1) {
-      // Wait forever
-      term_loop();
-#ifdef BLINK_H
-      blink_toogle();
-#endif
-    }
+        "the card, then power cycle your computer or press RESET on your "
+        "Multidevice.");
+    return;
   } else {
     DPRINTF("GEMDRIVE: %s\n", gemDrive->value);
     if (isTrue(gemDrive->value)) {
@@ -2060,17 +1801,11 @@ void __not_in_flash_func(emul_start)() {
       int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
       if (sdcardErr != SDCARD_INIT_OK) {
         DPRINTF("Error initializing the SD card: %i\n", sdcardErr);
-        failure(
-            "SD card error.\nCheck the card is inserted correctly.\nInsert "
-            "card "
-            "and restart the computer.");
-        while (1) {
-          // Wait forever
-          term_loop();
-#ifdef BLINK_H
-          blink_toogle();
-#endif
-        }
+        waitForSdFailureAndReturnToBooster(
+            "SD card error.\nCheck the card is inserted correctly.\n\n"
+            "Insert the card, then power cycle the computer or press RESET "
+            "on the Multidevice");
+        return;
       } else {
         DPRINTF("SD card found & initialized for GEMDRIVE\n");
       }
@@ -2084,17 +1819,11 @@ void __not_in_flash_func(emul_start)() {
   if (floppyDrive == NULL) {
     DPRINTF("FLOPPY not found in the configuration.\n");
     DPRINTF("Error initializing the SD card: FLOPPY params not found\n");
-    failure(
-        "SD card error.\nCheck the card is inserted correctly.\nInsert "
-        "card "
-        "and restart the computer.");
-    while (1) {
-      // Wait forever
-      term_loop();
-#ifdef BLINK_H
-      blink_toogle();
-#endif
-    }
+    waitForSdFailureAndReturnToBooster(
+        "SD card error.\nCheck that the card is inserted correctly.\nInsert "
+        "the card, then power cycle your computer\nor press RESET on your "
+        "Multidevice.");
+    return;
   } else
     DPRINTF("FLOPPY: %s\n", floppyDrive->value);
   if (isTrue(floppyDrive->value)) {
@@ -2110,17 +1839,11 @@ void __not_in_flash_func(emul_start)() {
     int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
     if (sdcardErr != SDCARD_INIT_OK) {
       DPRINTF("Error initializing the SD card: %i\n", sdcardErr);
-      failure(
-          "SD card error.\nCheck the card is inserted correctly.\nInsert "
-          "card "
-          "and restart the computer.");
-      while (1) {
-        // Wait forever
-        term_loop();
-#ifdef BLINK_H
-        blink_toogle();
-#endif
-      }
+      waitForSdFailureAndReturnToBooster(
+          "SD card error.\nCheck that the card is inserted correctly.\n"
+          "Insert the card, then power cycle your computer\nor press RESET "
+          "on your Multidevice.");
+      return;
     } else {
       DPRINTF("SD card found & initialized for GEMDRIVE\n");
     }
@@ -2154,21 +1877,12 @@ void __not_in_flash_func(emul_start)() {
   DPRINTF("Start the app loop here\n");
   bool usbInitialized = false;         // USB not initialized yet
   bool usbMassStorageMounted = false;  // USB mass storage not mounted
-  absolute_time_t wifiScanTime = make_timeout_time_ms(
-      WIFI_SCAN_TIME_MS);  // 3 seconds minimum for network scanning
 
   // Initialize the timer for decrementing the countdown
   absolute_time_t lastDecrement = get_absolute_time();
 
   while (getKeepActive()) {
     blink_poll();
-    // #if PICO_CYW43_ARCH_POLL
-    //     network_safePoll();
-    //     cyw43_arch_wait_for_work_until(wifiScanTime);
-    // #else
-    //     sleep_ms(SLEEP_LOOP_MS);
-    //     DPRINTF("Polling...\n");
-    // #endif
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
@@ -2285,10 +1999,12 @@ void __not_in_flash_func(emul_start)() {
       case APP_MODE_SETUP: {
         if (cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN) && (!usbInitialized)) {
           DPRINTF("USB VBUS is high, starting USB mass storage...\n");
-          usb_mass_init();
-
-          usbInitialized = true;
-          DPRINTF("USB mass storage initialized\n");
+          usbInitialized = usb_mass_init();
+          if (usbInitialized) {
+            DPRINTF("USB mass storage initialized\n");
+          } else {
+            DPRINTF("ERROR: USB mass storage initialization failed\n");
+          }
         }
         if (usbInitialized) {
           // tinyusb device task
@@ -2297,9 +2013,9 @@ void __not_in_flash_func(emul_start)() {
           usbMassStorageMounted = usb_mass_get_mounted();
           // Show on screen the change in the status of the USB mass storage
           if (usbMassStorageReady != usbMassStorageMounted) {
-            usbMassStorageReadyPrevious = usbMassStorageReady;
             usbMassStorageReady = usbMassStorageMounted;
             menu();
+            display_refresh();
           }
           if (usbMassStorageReady) {
             haltCountdown = true;
