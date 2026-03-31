@@ -29,16 +29,9 @@
 #define USBDRIVE_READ_ONLY false
 #define USBDRIVE_MASS_STORE true
 
-#undef TUD_OPT_HIGH_SPEED
-#define TUD_OPT_HIGH_SPEED true
-
-#undef CFG_TUSB_DEBUG
-#define CFG_TUSB_DEBUG 0
-
 // Init USB Mass storage device
 bool usb_mass_init(void);
 bool usb_mass_start(void);
 bool usb_mass_get_mounted(void);
-void usb_cdc_task(void);
 
 #endif  // USB_MASS_H

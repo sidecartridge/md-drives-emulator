@@ -10,14 +10,176 @@
 
 static DWORD sz_drv;
 static DWORD sz_sect = 0;
+static BYTE msc_sector_buf[FF_MAX_SS];
 
 static bool ejected = false;
 static bool mounted = false;
 
+static void usb_mass_activity_begin(void) {
+#ifdef BLINK_H
+  blink_off();
+#endif
+}
+
+static void usb_mass_activity_end(void) {
+#ifdef BLINK_H
+  blink_on();
+#endif
+}
+
+static bool usb_mass_range_valid(uint32_t lba, uint32_t offset,
+                                 uint32_t bufsize) {
+  if (sz_sect == 0) return false;
+
+  uint64_t start_lba = (uint64_t)lba + (offset / sz_sect);
+  uint64_t sectors_touched =
+      ((uint64_t)(offset % sz_sect) + bufsize + sz_sect - 1) / sz_sect;
+
+  return sectors_touched == 0 || (start_lba + sectors_touched) <= sz_drv;
+}
+
+static int32_t usb_mass_read_chunked(uint8_t lun, uint32_t lba, uint32_t offset,
+                                     void *buffer, uint32_t bufsize) {
+  if (bufsize == 0) return 0;
+  if (!usb_mass_range_valid(lba, offset, bufsize)) {
+    tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);
+    return -1;
+  }
+
+  usb_mass_activity_begin();
+
+  uint32_t current_lba = lba + (offset / sz_sect);
+  uint32_t sector_offset = offset % sz_sect;
+  uint32_t remaining = bufsize;
+  uint8_t *dst = (uint8_t *)buffer;
+  DRESULT res;
+
+  if (sector_offset != 0) {
+    uint32_t chunk =
+        remaining < (sz_sect - sector_offset) ? remaining : (sz_sect - sector_offset);
+    res = disk_read(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    memcpy(dst, msc_sector_buf + sector_offset, chunk);
+    dst += chunk;
+    remaining -= chunk;
+    current_lba++;
+  }
+
+  if (remaining >= sz_sect) {
+    uint32_t full_sectors = remaining / sz_sect;
+    res = disk_read(0, dst, current_lba, full_sectors);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    uint32_t bytes_read = full_sectors * sz_sect;
+    dst += bytes_read;
+    remaining -= bytes_read;
+    current_lba += full_sectors;
+  }
+
+  if (remaining > 0) {
+    res = disk_read(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    memcpy(dst, msc_sector_buf, remaining);
+  }
+
+  usb_mass_activity_end();
+  return (int32_t)bufsize;
+}
+
+static int32_t usb_mass_write_chunked(uint8_t lun, uint32_t lba,
+                                      uint32_t offset, uint8_t *buffer,
+                                      uint32_t bufsize) {
+  if (bufsize == 0) return 0;
+  if (!usb_mass_range_valid(lba, offset, bufsize)) {
+    tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);
+    return -1;
+  }
+
+  usb_mass_activity_begin();
+
+  uint32_t current_lba = lba + (offset / sz_sect);
+  uint32_t sector_offset = offset % sz_sect;
+  uint32_t remaining = bufsize;
+  uint8_t *src = buffer;
+  DRESULT res;
+
+  if (sector_offset != 0) {
+    uint32_t chunk =
+        remaining < (sz_sect - sector_offset) ? remaining : (sz_sect - sector_offset);
+    res = disk_read(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    memcpy(msc_sector_buf + sector_offset, src, chunk);
+    res = disk_write(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    src += chunk;
+    remaining -= chunk;
+    current_lba++;
+  }
+
+  if (remaining >= sz_sect) {
+    uint32_t full_sectors = remaining / sz_sect;
+    res = disk_write(0, src, current_lba, full_sectors);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    uint32_t bytes_written = full_sectors * sz_sect;
+    src += bytes_written;
+    remaining -= bytes_written;
+    current_lba += full_sectors;
+  }
+
+  if (remaining > 0) {
+    res = disk_read(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+
+    memcpy(msc_sector_buf, src, remaining);
+    res = disk_write(0, msc_sector_buf, current_lba, 1);
+    if (res != RES_OK) {
+      tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+      usb_mass_activity_end();
+      return -1;
+    }
+  }
+
+  usb_mass_activity_end();
+  return (int32_t)bufsize;
+}
+
 bool usb_mass_get_mounted(void) { return mounted; }
 
 bool usb_mass_init() {
-  DPRINTF("TUD_OPT_HIGH_SPEED: %s\n", TUD_OPT_HIGH_SPEED ? "true" : "false");
+  DPRINTF("CFG_TUD_MAX_SPEED: %d\n", CFG_TUD_MAX_SPEED);
   return usb_mass_start();
 }
 
@@ -25,15 +187,20 @@ bool usb_mass_start(void) {
   // Init USB
   DPRINTF("Init USB\n");
   ejected = false;
+  mounted = false;
   // init device stack on configured roothub port
-  tud_init(BOARD_TUD_RHPORT);
+  bool ok = tud_init(BOARD_TUD_RHPORT);
+  if (!ok) {
+    DPRINTF("ERROR: TinyUSB init failed\n");
+    return false;
+  }
 
   // Turn on the LED
 #ifdef BLINK_H
   blink_on();
 #endif
 
-  return true;
+  return ok;
 }
 
 //--------------------------------------------------------------------+
@@ -162,19 +329,7 @@ bool __not_in_flash_func(tud_msc_start_stop_cb)(uint8_t lun,
 // Copy disk's data to buffer (up to bufsize) and return number of copied bytes.
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                           void *buffer, uint32_t bufsize) {
-  (void)lun;
-
-  if (offset != 0) return -1;
-  if (bufsize != sz_sect) return -1;
-  if (lba >= sz_drv) return -1;
-
-  // DPRINTF("Read10 LBA %lu, bufsize %lu, offset %lu\n", lba, bufsize, offset);
-
-  DRESULT res = disk_read(0, buffer, lba, 1);
-
-  if (res != RES_OK) return res;
-
-  return (int32_t)bufsize;
+  return usb_mass_read_chunked(lun, lba, offset, buffer, bufsize);
 }
 
 bool tud_msc_is_writable_cb(uint8_t lun) {
@@ -184,20 +339,7 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
 
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                            uint8_t *buffer, uint32_t bufsize) {
-  (void)lun;
-
-  if (offset != 0) return -1;
-  if (bufsize != sz_sect) return -1;
-  if (lba >= sz_drv) return -1;
-
-  //   DPRINTF("Write10 LBA %lu, Offset %lu, Size %lu\n", lba, offset, bufsize);
-
-  DRESULT res = disk_write(0, buffer, lba, 1);
-  if (res != RES_OK) return res;
-
-  int32_t status = 0;
-
-  return (int32_t)bufsize;
+  return usb_mass_write_chunked(lun, lba, offset, buffer, bufsize);
 }
 
 // Callback invoked when received an SCSI command not in built-in list below
