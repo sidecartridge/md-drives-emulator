@@ -15,7 +15,6 @@
 
 // Generic config parameter
 #define ACONFIG_PARAM_MODE "MODE"
-#define ACONFIG_PARAM_BUFF_TYPE "BUFFER_TYPE"
 
 // RTC configuration
 #define ACONFIG_PARAM_DRIVES_RTC_ENABLED "RTC_ENABLED"
