@@ -99,9 +99,6 @@ static bool jumpBooster = false;
 // GEM launched
 static bool gemLaunched = false;
 
-// Do we have network or not?
-static bool hasNetwork = false;
-
 // app status
 static int appStatus = APP_MODE_SETUP;
 
@@ -167,6 +164,131 @@ static bool __not_in_flash_func(isTrue)(const char *value) {
     return true;
   }
   return false;
+}
+
+static bool isRTCEnabled(void) {
+  SettingsConfigEntry *rtcEnabled = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
+  return (rtcEnabled != NULL) && isTrue(rtcEnabled->value);
+}
+
+static int getBootStatusAfterSetup(void) {
+  return isRTCEnabled() ? APP_MODE_NTP_INIT : APP_EMULATION_INIT;
+}
+
+static void ntpProgressPrint(const char *message) {
+  term_printString(message);
+  display_refresh();
+}
+
+static void ntpProgressPrintCurrentIp(void) {
+  ip_addr_t currentIp = network_getCurrentIp();
+  if (currentIp.addr == 0) {
+    return;
+  }
+
+  char ipStr[32];
+  ipaddr_ntoa_r(&currentIp, ipStr, sizeof(ipStr));
+  term_printString("IP address: ");
+  term_printString(ipStr);
+  term_printString("\n");
+  display_refresh();
+}
+
+static int runOnDemandRtcNtpSync(void) {
+  SettingsConfigEntry *wifiMode =
+      settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
+  if (wifiMode == NULL) {
+    DPRINTF("No WiFi mode found in the settings. Skipping RTC/NTP sync.\n");
+    ntpProgressPrint("Skipping RTC/NTP sync: Wi-Fi mode not configured.\n");
+    return 1;
+  }
+
+  wifi_mode_t wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
+  if (wifiModeValue != WIFI_MODE_STA) {
+    DPRINTF("WiFi mode is not STA (%d). Skipping RTC/NTP sync.\n",
+            wifiModeValue);
+    ntpProgressPrint("Skipping RTC/NTP sync: Wi-Fi mode is not STA.\n");
+    return 1;
+  }
+
+  ntpProgressPrint("Initializing Wi-Fi...\n");
+  network_deInit();
+
+  int err = network_wifiInit(WIFI_MODE_STA);
+  if (err != 0) {
+    DPRINTF("Error initializing WiFi for RTC/NTP sync: %i\n", err);
+    ntpProgressPrint("Failed to initialize Wi-Fi.\n");
+    return -1;
+  }
+
+  network_setPollingCallback(term_loop);
+
+  int maxAttempts = 3;
+  int attempt = 0;
+  err = NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
+
+  while ((attempt < maxAttempts) &&
+         (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
+    char attemptMessage[48];
+    snprintf(attemptMessage, sizeof(attemptMessage),
+             "Connecting to Wi-Fi (%d/%d)...\n", attempt + 1, maxAttempts);
+    ntpProgressPrint(attemptMessage);
+    err = network_wifiStaConnect();
+    attempt++;
+
+    if (err != NETWORK_WIFI_STA_CONN_OK) {
+      char errorMessage[64];
+      snprintf(errorMessage, sizeof(errorMessage), "Connection failed: %s\n",
+               network_WifiStaConnStatusString(err));
+      ntpProgressPrint(errorMessage);
+    }
+
+    if ((err > 0) && (err < NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
+      DPRINTF("Error connecting to the WiFi network: %i\n", err);
+    }
+  }
+
+  network_setPollingCallback(NULL);
+
+  if (err != 0) {
+    if (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT) {
+      DPRINTF("Timeout connecting to the WiFi network after %d attempts\n",
+              maxAttempts);
+    }
+    network_deInit();
+    return -1;
+  }
+
+  ntpProgressPrint("Wi-Fi connected.\n");
+  ntpProgressPrintCurrentIp();
+  ntpProgressPrint("Synchronizing time with NTP...\n");
+
+  int ret = rtc_queryNTPTime();
+  network_deInit();
+
+  return (ret < 0) ? -1 : 0;
+}
+
+static void finishAppLoop(void) {
+  DPRINTF("Exiting the app loop...\n");
+
+  if (jumpBooster) {
+    select_coreWaitPushDisable();
+    sleep_ms(SLEEP_LOOP_MS);
+    SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_RESET);
+    sleep_ms(SLEEP_LOOP_MS);
+
+    DPRINTF("Jumping to the booster app...\n");
+    reset_jump_to_booster();
+    return;
+  }
+
+  SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
+
+  while (1) {
+    sleep_ms(SLEEP_LOOP_MS);
+  }
 }
 
 char *__not_in_flash_func(right)(const char *str, int n) {
@@ -350,25 +472,6 @@ static void __not_in_flash_func(menu)(void) {
 
   // Global options, read only
   vt52Cursor(2, 0);
-
-  // Display network status
-  term_printString("\x1BpNetwork: ");
-  ip_addr_t currentIp = network_getCurrentIp();
-
-  hasNetwork = currentIp.addr != 0;
-  if (hasNetwork) {
-    term_printString("CONNECTED");
-    char ipStr[32];
-
-    // Convert to dotted-decimal in a reentrant way
-    ipaddr_ntoa_r(&currentIp, ipStr, sizeof(ipStr));
-
-    term_printString(" | IP: ");
-    term_printString(ipStr);
-  } else {
-    term_printString("NOT CONNECTED");
-  }
-  term_printString("\n\x1Bq");
 
   // Display USB Mass Storage status
   term_printString("\x1BpUSB Mass Storage: ");
@@ -575,7 +678,7 @@ void cmdExit(const char *arg) {
     term_printString("Exiting terminal...\n");
     // Send continue to desktop command
     haltCountdown = true;
-    appStatus = APP_MODE_NTP_INIT;
+    appStatus = getBootStatusAfterSetup();
   }
 }
 
@@ -2032,58 +2135,7 @@ void __not_in_flash_func(emul_start)() {
   // initialized
   preinit();
 
-  // 7 Init the network, if needed
-  // It's always a good idea to wait for the network to be ready
-  // Get the WiFi mode from the settings
-  // If you are developing code that does not use the network, you can
-  // comment this section
-  // It's important to note that the network parameters are taken from the
-  // global configuration of the Booster app. The network parameters are
-  // ready only for the microfirmware apps.
-  SettingsConfigEntry *wifiMode =
-      settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
-  wifi_mode_t wifiModeValue = WIFI_MODE_STA;
-  if (wifiMode == NULL) {
-    DPRINTF("No WiFi mode found in the settings. No initializing.\n");
-  } else {
-    wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
-    if (wifiModeValue != WIFI_MODE_AP) {
-      DPRINTF("WiFi mode is STA\n");
-      wifiModeValue = WIFI_MODE_STA;
-      int err = network_wifiInit(wifiModeValue);
-      if (err != 0) {
-        DPRINTF("Error initializing the network: %i. No initializing.\n", err);
-      } else {
-        // Set the term_loop as a callback during the polling period
-        network_setPollingCallback(term_loop);
-        // Connect to the WiFi network
-        int maxAttempts = 3;  // or any other number defined elsewhere
-        int attempt = 0;
-        err = NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
-
-        while ((attempt < maxAttempts) &&
-               (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-          err = network_wifiStaConnect();
-          attempt++;
-
-          if ((err > 0) && (err < NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-            DPRINTF("Error connecting to the WiFi network: %i\n", err);
-          }
-        }
-
-        if (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT) {
-          DPRINTF("Timeout connecting to the WiFi network after %d attempts\n",
-                  maxAttempts);
-          // Optionally, return an error code here.
-        }
-        network_setPollingCallback(NULL);
-      }
-    } else {
-      DPRINTF("WiFi mode is AP. No initializing.\n");
-    }
-  }
-
-  // 8. Now complete the terminal emulator initialization
+  // 7. Now complete the terminal emulator initialization
   // The terminal emulator is used to interact with the user to configure
   // the device.
   init(NULL);
@@ -2093,7 +2145,7 @@ void __not_in_flash_func(emul_start)() {
   blink_off();
 #endif
 
-  // 9. Start the main loop
+  // 8. Start the main loop
   // The main loop is the core of the app. It is responsible for running the
   // app, handling the user input, and performing the tasks of the app.
   // The main loop runs until the user decides to exit.
@@ -2203,13 +2255,15 @@ void __not_in_flash_func(emul_start)() {
         break;
       }
       case APP_MODE_NTP_INIT: {
-        // Querying the NTP time
-        DPRINTF("Querying the NTP time...\n");
-        int ret = rtc_queryNTPTime();
+        showTitle();
+        term_printString("\nPreparing RTC network sync...\n");
+        display_refresh();
+        DPRINTF("Starting on-demand RTC/NTP sync...\n");
+        int ret = runOnDemandRtcNtpSync();
         if (ret < 0) {
           DPRINTF("Error querying the NTP time: %d\n", ret);
           term_printString("Failed to set time.\n");
-        } else {
+        } else if (ret == 0) {
           term_printString("Time set successfully!\n");
           datetime_t rtcTime = {0};
           rtc_get_datetime(&rtcTime);
@@ -2219,6 +2273,8 @@ void __not_in_flash_func(emul_start)() {
                    rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour,
                    rtcTime.min, rtcTime.sec);
           term_printString(msg);
+        } else {
+          DPRINTF("RTC/NTP sync skipped.\n");
         }
         // Check remote commands
         appStatus = APP_MODE_NTP_DONE;
@@ -2265,7 +2321,7 @@ void __not_in_flash_func(emul_start)() {
             display_refresh();
             if (countdown <= 0) {
               haltCountdown = true;
-              appStatus = APP_MODE_NTP_INIT;
+              appStatus = getBootStatusAfterSetup();
             }
           }
         }
@@ -2277,25 +2333,5 @@ void __not_in_flash_func(emul_start)() {
     }
   }
 
-  DPRINTF("Exiting the app loop...\n");
-
-  if (jumpBooster) {
-    select_coreWaitPushDisable();  // Disable the SELECT button
-    sleep_ms(SLEEP_LOOP_MS);
-    // We must reset the computer
-    SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_RESET);
-    sleep_ms(SLEEP_LOOP_MS);
-
-    // Jump to the booster app
-    DPRINTF("Jumping to the booster app...\n");
-    reset_jump_to_booster();
-  } else {
-    // 9. Send CONTINUE computer command to continue booting
-    SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
-  }
-
-  while (1) {
-    // Wait for the computer to start
-    sleep_ms(SLEEP_LOOP_MS);
-  }
+  finishAppLoop();
 }

@@ -36,7 +36,6 @@ You can change both folders later from the setup screen.
 
 The setup screen displays the following information:
 - **Emulator Version**: The version of the Drives Emulator app.
-- **Network Status**: Indicates whether the app is connected to the network and the local IP address of the SidecarTridge Multi-device.
 - **USB Mass Storage Status**: Indicates whether the SidecarTridge Multi-device is connected to the computer via USB and the current status of the USB mass storage device connected. 
 
 ### GEMDrive Hard Disk Emulation
@@ -109,7 +108,25 @@ If only slot 1 is configured, a short **`SELECT`** press does nothing during run
 
 ### Real Time Clock Emulation
 
-The Real Time Clock (RTC) emulation allows the Multi-device to emulate RTC functionality for Atari ST computers, enabling accurate timekeeping and date management. Refer to the RTC Emulator documentation in the SidecarTridge docs for the complete setup and usage details.
+The Real Time Clock (RTC) emulation allows the Multi-device to emulate RTC functionality for Atari ST computers, enabling accurate timekeeping and date management.
+
+When RTC is enabled, the emulator can also synchronize the internal RP2040 clock with an NTP server during boot:
+
+- The WiFi STA stack is started **only on demand**, right before the NTP sync.
+- If RTC is disabled, the emulator skips the whole WiFi/NTP startup path and continues booting immediately.
+- If WiFi is not configured in **STA** mode, NTP sync is skipped and the emulator continues booting.
+- After the NTP attempt finishes, the WiFi stack is shut down again.
+
+When the RTC/NTP flow runs, the emulator shows the progress on screen:
+
+- WiFi initialization
+- connection attempts and failures
+- the assigned IP address when a connection succeeds
+- NTP synchronization status
+
+If the NTP sync fails or times out, the emulator still continues into normal emulation.
+
+Refer to the RTC Emulator documentation in the SidecarTridge docs for the complete setup and usage details.
 
 ### Other Setup Screen Commands
 
@@ -141,6 +158,8 @@ It is recommended to connect the Multi-device to your computer via USB before la
 ### 🚀 Exiting to Desktop
 
 Pressing **`E`** on the setup screen will exit the emulator and return to the Atari desktop enabling the hard or floppy drives emulation. 
+
+If RTC is enabled, the emulator may briefly initialize WiFi at this point to obtain the NTP time before continuing. The screen will show the connection progress and, when successful, the assigned IP address and time-sync result.
 
 To return to the setup screen, press **`SELECT`** on your Multi-device and reboot. Or simply power off your Atari and power it on again.  
 Note that during runtime, a short **`SELECT`** press is used for floppy A image cycling if multiple drive-A slots are configured.

@@ -27,10 +27,14 @@
 #define MEM_SANITY_CHECK 0
 #define MEM_OVERFLOW_CHECK 0
 
+// Current runtime use is limited to STA DHCP, DNS resolution and UDP NTP.
+// Keep the packet/heap sizes that are already known to work, but trim the
+// protocol feature set down to that minimal profile.
 #define MEMP_NUM_PBUF 4
-#define MEMP_NUM_TCP_PCB 10
-#define MEMP_NUM_TCP_SEG 32
-#define MEMP_NUM_ARP_QUEUE 10
+#define MEMP_NUM_UDP_PCB 4
+#define MEMP_NUM_TCP_PCB 0
+#define MEMP_NUM_TCP_SEG 0
+#define MEMP_NUM_ARP_QUEUE 4
 #define PBUF_POOL_SIZE 4
 #define LWIP_ARP 1
 #define LWIP_ETHERNET 1
@@ -52,9 +56,12 @@
 #define LWIP_CHKSUM_ALGORITHM 3
 #define LWIP_DHCP 1
 #define LWIP_IPV4 1
-#define LWIP_TCP 1
+#define LWIP_TCP 0
 #define LWIP_UDP 1
 #define LWIP_DNS 1
+#define DNS_TABLE_SIZE 1
+#define DNS_MAX_SERVERS 2
+#define LWIP_MDNS_RESPONDER 0
 #define LWIP_TCP_KEEPALIVE 0
 #define LWIP_NETIF_TX_SINGLE_PBUF 1
 #define DHCP_DOES_ARP_CHECK 0
