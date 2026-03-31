@@ -3,7 +3,7 @@
 Welcome to the `md-drives-emulator` workspace. This file captures the local rules and build habits that matter when working on this repository.
 
 ## 1. Environment Setup
-- **Workspace root:** `/Users/diego/mister_wkspc/md-drives-emulator`
+- **Workspace root:** `$HOME/mister_wkspc/md-drives-emulator`
 - **SDK paths used by the RP build:**
   - `PICO_SDK_PATH=$REPO_ROOT/pico-sdk`
   - `PICO_EXTRAS_PATH=$REPO_ROOT/pico-extras`
@@ -40,7 +40,7 @@ cmake -S rp/src -B rp/build
   - deletes and recreates `rp/build`
 - Prefer `cmake -S rp/src -B rp/build` and `cmake --build rp/build -j4` for normal RP validation.
 - The top-level `build.sh` wipes and recreates `dist/`.
-- The Atari target build uses `stcmd` inside [target/atarist/build.sh](/Users/diego/mister_wkspc/md-drives-emulator/target/atarist/build.sh).
+- The Atari target build uses `stcmd` inside [target/atarist/build.sh]($HOME/mister_wkspc/md-drives-emulator/target/atarist/build.sh).
 
 ## 4. Editing Guardrails
 - Do not modify vendored code unless the user explicitly asks for it:
@@ -50,12 +50,12 @@ cmake -S rp/src -B rp/build
 - Keep ROM bus timing changes isolated and minimal. A build passing does not prove the cartridge bus behavior is correct on hardware.
 - Prefer incremental validation after each RP-side change when touching PIO, DMA, or linker behavior.
 - `romemul` is the ROM4 path. `commemul` is the ROM3 sampled-command path.
-- `romemul` and `commemul` currently run together from RP startup in [emul.c](/Users/diego/mister_wkspc/md-drives-emulator/rp/src/emul.c).
+- `romemul` and `commemul` currently run together from RP startup in [emul.c]($HOME/mister_wkspc/md-drives-emulator/rp/src/emul.c).
 - `term.c` and `chandler.c` both ingest ROM3 samples via `commemul_poll()`. Do not reintroduce the old ROM4 DMA IRQ command path unless the user explicitly wants that rollback.
 - ROM3/ROM4 work is timing-sensitive because both paths can touch shared bus control signals. If you change either PIO program, assume hardware validation is required even if the firmware builds.
 - Protocol ACK timing matters. The remote side can retransmit if shared-memory token ACK writes are delayed behind slow handlers. Treat ACK-order changes as behavior changes, not refactors.
 - The RTC/NTP WiFi flow is now on-demand. Boot no longer performs an unconditional STA init/connect path. Setup exit chooses `APP_MODE_NTP_INIT` only when `RTC_ENABLED` is true; otherwise it goes straight to `APP_EMULATION_INIT`.
-- `APP_MODE_NTP_INIT` now owns the full temporary RTC/NTP network transaction in [emul.c](/Users/diego/mister_wkspc/md-drives-emulator/rp/src/emul.c): clean `network_deInit()`, `network_wifiInit(WIFI_MODE_STA)`, STA connect retries, `rtc_queryNTPTime()`, then `network_deInit()` again.
+- `APP_MODE_NTP_INIT` now owns the full temporary RTC/NTP network transaction in [emul.c]($HOME/mister_wkspc/md-drives-emulator/rp/src/emul.c): clean `network_deInit()`, `network_wifiInit(WIFI_MODE_STA)`, STA connect retries, `rtc_queryNTPTime()`, then `network_deInit()` again.
 - Keep the Pico W LED policy as-is: `blink.c` may still call `network_initChipOnly()` for LED access. Do not assume “no WiFi at boot” means “no CYW43 chip init at boot”.
 - Because of that chip-only LED init, the deferred RTC/NTP path must start from a clean `network_deInit()` before calling `network_wifiInit(WIFI_MODE_STA)`. This is intentional and should not be removed casually.
 - The setup menu no longer shows a live network line. User-facing RTC network information now appears only during the RTC/NTP exit flow: WiFi init, connect attempts, failure messages, and the assigned IP address.
