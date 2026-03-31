@@ -79,7 +79,7 @@ static sd_card_t sd_cards[] = {  // One for each SD card
 /* ********************************************************************** */
 size_t sd_get_num() { return count_of(sd_cards); }
 sd_card_t *sd_get_by_num(size_t num) {
-  if (num <= sd_get_num()) {
+  if (num < sd_get_num()) {
     return &sd_cards[num];
   } else {
     return NULL;
@@ -87,7 +87,7 @@ sd_card_t *sd_get_by_num(size_t num) {
 }
 size_t spi_get_num() { return count_of(spis); }
 spi_t *spi_get_by_num(size_t num) {
-  if (num <= sd_get_num()) {
+  if (num < spi_get_num()) {
     return &spis[num];
   } else {
     return NULL;
