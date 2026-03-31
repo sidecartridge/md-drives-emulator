@@ -15,6 +15,7 @@
 static TransmissionProtocol lastProtocol;
 static bool lastProtocolValid = false;
 static uint32_t lastProtocolAcceptedAtUs = 0;
+static uint8_t lastInputScanCode = 0;
 
 static uint32_t memorySharedAddress = 0;
 static uint32_t memoryRandomTokenAddress = 0;
@@ -415,7 +416,8 @@ static void termInputChar(char chr, bool shiftKey) {
       DPRINTF("Single key command reentry: %c\n", lastSingleKeyCommand);
       for (size_t i = 0; i < numCommands; i++) {
         if (lastSingleKeyCommand == commands[i].command[0]) {
-          char paramString[2] = {chr, '\0'};
+          char paramString[4] = {chr, shiftKey ? 'S' : 'N',
+                                 (char)lastInputScanCode, '\0'};
           commands[i].handler(paramString);  // Pass the argument as string
           break;
         }
@@ -683,6 +685,7 @@ void __not_in_flash_func(term_loop)() {
           DPRINTF("Keystroke: %d. Shift key: %d, Scan code: %d\n", keystroke,
                   shiftKey, scanCode);
         }
+        lastInputScanCode = scanCode;
         termInputChar(keystroke, shiftKey > 0);
         break;
       }
