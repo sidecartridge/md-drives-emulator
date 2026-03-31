@@ -8,6 +8,7 @@
 
 #include "chandler.h"
 
+#include "blink.h"
 #include "commemul.h"
 
 static TransmissionProtocol pendingProtocol;
@@ -21,11 +22,6 @@ static uint32_t memoryRandomTokenSeedAddress = 0;
 
 // Head of the callback list
 static CommandCallbackNode *callbackListHead = NULL;
-
-// State variables
-static bool ledOff = false;
-static absolute_time_t lastTransitionTime;  // Time of the last state change
-static absolute_time_t now = {0};           // Current time
 
 static inline void __not_in_flash_func(chandler_clear_pending_protocol)(void) {
   pendingProtocol.command_id = 0;
@@ -196,18 +192,15 @@ void __not_in_flash_func(chandler_loop)() {
     if (cur->cb) cur->cb(&pendingProtocol, payloadPtr);
   }
 #if defined(CYW43_WL_GPIO_LED_PIN)
-  // If LED is on, check if it has been off for at least LED_ON_DELAY_US and
-  // turn it on
-  now = get_absolute_time();
-  if (absolute_time_diff_us(lastTransitionTime, now) >= LED_ON_DELAY_US) {
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);  // Turn LED off
-    ledOff = true;
-    lastTransitionTime = now;  // Update the transition time
-  } else {
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);  // Turn LED on
-    ledOff = false;
-    lastTransitionTime = now;  // Update the transition time
+  if (blink_isSequenceActive()) {
+    incrementalCmdCount++;
+    TPROTO_SET_RANDOM_TOKEN64(
+        memoryRandomTokenAddress,
+        (((uint64_t)incrementalCmdCount) << 32) | randomToken);
+    chandler_clear_pending_protocol();
+    return;
   }
+  blink_activityPulse();
 #endif
   // DPRINTF("Command %x executed.IncrementalCmdCount: %x.",
   //         lastProtocol.command_id, incrementalCmdCount);
