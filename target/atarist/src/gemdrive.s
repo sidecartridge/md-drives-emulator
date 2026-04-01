@@ -417,63 +417,117 @@ _notlong:
 ;
 ; Trap #1 handler goes here
 ;
-    save_regs
+	save_regs
 
-    move.w 6(a0),d3                      ; get GEMDOS opcode number
-
-;    cmp.w #$0e, d3                       ; Check if it's a Dsetdrv() call
-;    beq .Dsetdrv
-;    cmp.w #$19, d3                       ; Check if it's a Dgetdrv() call
-;    beq .Dgetdrv
-    cmp.w #$1a, d3                       ; Check if it's a Fsetdta() call
-    beq .Fsetdta
-
-    cmp.w #Dfree, d3                     ; Check if it's a Dfree() call
-    beq .Dfree
-    cmp.w #$39, d3                       ; Check if it's a Dcreate() call
-    beq .Dcreate
-    cmp.w #$3a, d3                       ; Check if it's a Ddelete() call
-    beq .Ddelete
-    cmp.w #$3b, d3                       ; Check if it's a Dsetpath() call
-    beq .Dsetpath
-    cmp.w #$3c, d3                       ; Check if it's a Fcreate() call
-    beq .Fcreate
-    cmp.w #$47, d3                       ; Check if it's a Dgetpath() call
-    beq .Dgetpath
-    cmp.w #$3d, d3                       ; Check if it's a Fopen() call
-    beq .Fopen
-    cmp.w #$3e, d3                       ; Check if it's a Fclose() call
-    beq .Fclose
-    cmp.w #Frename, d3                   ; Check if it's a Frename() call
-    beq .Frename
-    cmp.w #Fdatime, d3                 ; Check if it's a Fdatetime() call
-    beq .Fdatime
-    cmp.w #$3f, d3                       ; Check if it's a Fread() call
-    beq .Fread
-    cmp.w #$40, d3                       ; Check if it's a Fwrite() call
-    beq .Fwrite
-    cmp.w #Fattrib, d3                   ; Check if it's a Fattrib() call
-    beq .Fattrib
-    cmp.w #$4e, d3                       ; Check if it's a Fsfirst() call
-    beq .Fsfirst
-    cmp.w #$4f, d3                       ; Check if it's a Fsnext() call
-    beq .Fsnext
-    cmp.w #Pexec, d3                     ; Check if it's a Pexec() call
-    beq .Pexec
-    cmp.w #$41, d3                       ; Check if it's a Fdelete() call
-    beq .Fdelete
-    cmp.w #Fseek, d3                     ; Check if it's a Fseek() call
-    beq .Fseek
+	move.w 6(a0),d3                      ; get GEMDOS opcode number
+	and.l #$FFFF, d3                     ; Normalize opcode for indexed lookup
+	cmp.w #$57, d3                       ; Highest opcode handled in the table
+	bhi .exec_old_handler
+	add.w d3, d3                         ; Multiply opcode by 4
+	add.w d3, d3
+	movea.l .gemdos_dispatch_table(pc,d3.w), a1
+	jmp (a1)
 
 ;.show_vector_calls:
 ;    ; Trace the not implemented GEMDOS call
 ;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
 
 .exec_old_handler:
-    restore_regs
-    restore_cpu_cache
-    move.l old_handler,-(sp)            ; Fake a return
-    rts                                 ; to old code.
+	restore_regs
+	restore_cpu_cache
+	move.l old_handler,-(sp)            ; Fake a return
+	rts                                 ; to old code.
+
+	even
+.gemdos_dispatch_table:
+	dc.l .exec_old_handler ; 0x00
+	dc.l .exec_old_handler ; 0x01
+	dc.l .exec_old_handler ; 0x02
+	dc.l .exec_old_handler ; 0x03
+	dc.l .exec_old_handler ; 0x04
+	dc.l .exec_old_handler ; 0x05
+	dc.l .exec_old_handler ; 0x06
+	dc.l .exec_old_handler ; 0x07
+	dc.l .exec_old_handler ; 0x08
+	dc.l .exec_old_handler ; 0x09
+	dc.l .exec_old_handler ; 0x0A
+	dc.l .exec_old_handler ; 0x0B
+	dc.l .exec_old_handler ; 0x0C
+	dc.l .exec_old_handler ; 0x0D
+	dc.l .exec_old_handler ; 0x0E
+	dc.l .exec_old_handler ; 0x0F
+	dc.l .exec_old_handler ; 0x10
+	dc.l .exec_old_handler ; 0x11
+	dc.l .exec_old_handler ; 0x12
+	dc.l .exec_old_handler ; 0x13
+	dc.l .exec_old_handler ; 0x14
+	dc.l .exec_old_handler ; 0x15
+	dc.l .exec_old_handler ; 0x16
+	dc.l .exec_old_handler ; 0x17
+	dc.l .exec_old_handler ; 0x18
+	dc.l .exec_old_handler ; 0x19
+	dc.l .Fsetdta          ; 0x1A
+	dc.l .exec_old_handler ; 0x1B
+	dc.l .exec_old_handler ; 0x1C
+	dc.l .exec_old_handler ; 0x1D
+	dc.l .exec_old_handler ; 0x1E
+	dc.l .exec_old_handler ; 0x1F
+	dc.l .exec_old_handler ; 0x20
+	dc.l .exec_old_handler ; 0x21
+	dc.l .exec_old_handler ; 0x22
+	dc.l .exec_old_handler ; 0x23
+	dc.l .exec_old_handler ; 0x24
+	dc.l .exec_old_handler ; 0x25
+	dc.l .exec_old_handler ; 0x26
+	dc.l .exec_old_handler ; 0x27
+	dc.l .exec_old_handler ; 0x28
+	dc.l .exec_old_handler ; 0x29
+	dc.l .exec_old_handler ; 0x2A
+	dc.l .exec_old_handler ; 0x2B
+	dc.l .exec_old_handler ; 0x2C
+	dc.l .exec_old_handler ; 0x2D
+	dc.l .exec_old_handler ; 0x2E
+	dc.l .exec_old_handler ; 0x2F
+	dc.l .exec_old_handler ; 0x30
+	dc.l .exec_old_handler ; 0x31
+	dc.l .exec_old_handler ; 0x32
+	dc.l .exec_old_handler ; 0x33
+	dc.l .exec_old_handler ; 0x34
+	dc.l .exec_old_handler ; 0x35
+	dc.l .Dfree            ; 0x36
+	dc.l .exec_old_handler ; 0x37
+	dc.l .exec_old_handler ; 0x38
+	dc.l .Dcreate          ; 0x39
+	dc.l .Ddelete          ; 0x3A
+	dc.l .Dsetpath         ; 0x3B
+	dc.l .Fcreate          ; 0x3C
+	dc.l .Fopen            ; 0x3D
+	dc.l .Fclose           ; 0x3E
+	dc.l .Fread            ; 0x3F
+	dc.l .Fwrite           ; 0x40
+	dc.l .Fdelete          ; 0x41
+	dc.l .Fseek            ; 0x42
+	dc.l .Fattrib          ; 0x43
+	dc.l .exec_old_handler ; 0x44
+	dc.l .exec_old_handler ; 0x45
+	dc.l .exec_old_handler ; 0x46
+	dc.l .Dgetpath         ; 0x47
+	dc.l .exec_old_handler ; 0x48
+	dc.l .exec_old_handler ; 0x49
+	dc.l .exec_old_handler ; 0x4A
+	dc.l .Pexec            ; 0x4B
+	dc.l .exec_old_handler ; 0x4C
+	dc.l .exec_old_handler ; 0x4D
+	dc.l .Fsfirst          ; 0x4E
+	dc.l .Fsnext           ; 0x4F
+	dc.l .exec_old_handler ; 0x50
+	dc.l .exec_old_handler ; 0x51
+	dc.l .exec_old_handler ; 0x52
+	dc.l .exec_old_handler ; 0x53
+	dc.l .exec_old_handler ; 0x54
+	dc.l .exec_old_handler ; 0x55
+	dc.l .Frename          ; 0x56
+	dc.l .Fdatime          ; 0x57
 
 
 ; Start of the GEMDOS calls
