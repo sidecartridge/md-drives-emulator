@@ -21,12 +21,6 @@ static uint32_t memorySharedAddress = 0;
 static uint32_t memoryRandomTokenAddress = 0;
 static uint32_t memoryRandomTokenSeedAddress = 0;
 
-// Command handlers
-static void cmdClear(const char *arg);
-static void cmdExit(const char *arg);
-static void cmdHelp(const char *arg);
-static void cmdUnknown(const char *arg);
-
 // Command table
 static const Command *commands;
 
@@ -107,6 +101,16 @@ static inline void __not_in_flash_func(term_consume_rom3_sample)(
   uint16_t addrLsb = (uint16_t)(sample ^ ADDRESS_HIGH_BIT);
   tprotocol_parse(addrLsb, handle_protocol_command,
                   handle_protocol_checksum_error);
+}
+
+static inline void __not_in_flash_func(term_ack_last_protocol)(void) {
+  if (memoryRandomTokenAddress != 0) {
+    uint32_t randomToken = TPROTO_GET_RANDOM_TOKEN(lastProtocol.payload);
+    TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenAddress, randomToken);
+
+    uint32_t newRandomSeedToken = rand();
+    TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenSeedAddress, newRandomSeedToken);
+  }
 }
 
 static char screen[TERM_SCREEN_SIZE];
@@ -574,6 +578,31 @@ void term_init(void) {
   display_refresh();
 }
 
+bool __not_in_flash_func(term_waitAnyKey)(void) {
+  commemul_poll(term_consume_rom3_sample);
+
+  if (!lastProtocolValid) {
+    return false;
+  }
+
+  term_ack_last_protocol();
+
+  switch (lastProtocol.command_id) {
+    case APP_TERMINAL_START:
+      commandLevel = TERM_COMMAND_LEVEL_SINGLE_KEY;
+      term_clearInputBuffer();
+      SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_TERM);
+      lastProtocolValid = false;
+      return false;
+    case APP_TERMINAL_KEYSTROKE:
+      lastProtocolValid = false;
+      return true;
+    default:
+      lastProtocolValid = false;
+      return false;
+  }
+}
+
 // Invoke this function to process the commands from the active loop in the
 // main function
 void __not_in_flash_func(term_loop)() {
@@ -622,16 +651,9 @@ void __not_in_flash_func(term_loop)() {
     }
 #endif
 
-    if (memoryRandomTokenAddress != 0) {
-      // Acknowledge the command as soon as it is accepted, before any
-      // potentially slow handler work runs.
-      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenAddress, randomToken);
-
-      // Seed the next command token immediately as part of the same ack path.
-      uint32_t newRandomSeedToken =
-          rand();  // Generate a new random 32-bit value
-      TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenSeedAddress, newRandomSeedToken);
-    }
+    // Acknowledge the command as soon as it is accepted, before any
+    // potentially slow handler work runs.
+    term_ack_last_protocol();
 
     // Handle the command
     switch (lastProtocol.command_id) {
@@ -698,22 +720,6 @@ void __not_in_flash_func(term_loop)() {
   lastProtocolValid = false;
 }
 
-// Command handlers
-void term_cmdSettings(const char *arg) {
-  term_printString(
-      "\x1B"
-      "E"
-      "Available settings commands:\n");
-  term_printString("  print   - Show settings\n");
-  term_printString("  save    - Save settings\n");
-  term_printString("  erase   - Erase settings\n");
-  term_printString("  get     - Get setting (requires key)\n");
-  term_printString("  put_int - Set integer (key and value)\n");
-  term_printString("  put_bool- Set boolean (key and value)\n");
-  term_printString("  put_str - Set string (key and value)\n");
-  term_printString("\n");
-}
-
 void term_cmdPrint(const char *arg) {
   char *buffer = (char *)malloc(TERM_PRINT_SETTINGS_BUFFER_SIZE);
   if (buffer == NULL) {
@@ -723,18 +729,6 @@ void term_cmdPrint(const char *arg) {
   settings_print(aconfig_getContext(), buffer);
   term_printString(buffer);
   free(buffer);
-}
-
-void term_cmdClear(const char *arg) { term_clearScreen(); }
-
-void term_cmdExit(const char *arg) {
-  term_printString("Exiting terminal...\n");
-  // Send continue to desktop command
-  SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
-}
-
-void term_cmdUnknown(const char *arg) {
-  TPRINTF("Unknown command. Type 'help' for a list of commands.\n");
 }
 
 void term_cmdSave(const char *arg) {

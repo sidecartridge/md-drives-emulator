@@ -70,6 +70,10 @@ cmake -S rp/src -B rp/build
 - Slot-index LED feedback uses the non-blocking counted blink sequence in `blink.c`.
 - Runtime floppy/command activity LED is separate from the slot-index sequence. It now goes through `blink_activityPulse()` plus `blink_poll()` and should behave as a short access pulse, not a steady-on indicator.
 - `chandler.c` should not drive the Pico W LED GPIO directly anymore for normal activity. Keep activity LED ownership in `blink.c`.
+- The legacy setup-menu floppy utilities were removed. Do not reintroduce `Format Image` or `Convert MSA to ST` in the Drives Emulator menu; that workflow belongs in the File Manager microfirmware now.
+- USB device mode is now MSC-only. The old CDC composite path has been removed from the TinyUSB config and descriptors.
+- USB MSC read/write callbacks now support chunked host transfers, including multi-sector and partial-sector accesses. Do not regress them back to the old single-sector `offset == 0` assumption.
+- USB MSC LED behavior is intentionally inverted from floppy/GEMDRIVE activity: when USB mass storage is mounted, the Pico W LED stays on, turns off during active MSC read/write traffic, and turns back on when the transfer completes.
 
 ## 5. Formatting Rules
 - Do **not** use `PRIu32`, `PRIx32`, or related `PRI*` format macros in this repo.

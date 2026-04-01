@@ -168,17 +168,6 @@
   (APP_FLOPPYEMUL << 8 | 12)  // Show the debug info of the floppy emulator
 
 #define FLOPPY_SECTOR_SIZE 512  // Default sector size for floppy disks
-#define GEMDOS_FILE_ATTRIB_VOLUME_LABEL 8
-#define SPF_MAX 9
-
-typedef struct {
-  uint16_t ID;              /* Word : ID marker, should be $0E0F */
-  uint16_t SectorsPerTrack; /* Word : Sectors per track */
-  uint16_t Sides; /* Word : Sides (0 or 1; add 1 to this to get correct number
-                     of sides) */
-  uint16_t StartingTrack; /* Word : Starting track (0-based) */
-  uint16_t EndingTrack;   /* Word : Ending track (0-based) */
-} MSAHEADERSTRUCT;
 
 typedef struct {
   uint16_t recsize;     /* 0: Sector size in bytes                */
@@ -217,11 +206,5 @@ void __not_in_flash_func(floppy_init)();
 void __not_in_flash_func(floppy_loop)();
 bool floppy_canCycleDriveA(void);
 FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex);
-void floppy_removeMSAExtension(char *filename);
-FRESULT floppy_createSTImage(const char *folder, char *stFilename, int nTracks,
-                             int nSectors, int nSides, const char *volLavel,
-                             bool overwrite);
-FRESULT floppy_MSA2ST(const char *folder, char *msaFilename, char *stFilename,
-                      bool overwrite);
 
 #endif  // FLOPPY_H

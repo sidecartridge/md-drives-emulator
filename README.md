@@ -36,7 +36,7 @@ You can change both folders later from the setup screen.
 
 The setup screen displays the following information:
 - **Emulator Version**: The version of the Drives Emulator app.
-- **USB Mass Storage Status**: Indicates whether the SidecarTridge Multi-device is connected to the computer via USB and the current status of the USB mass storage device connected. 
+- **Boot information line**: The bottom line shows the setup countdown, `Countdown stopped. Press [E] or [X] to continue.`, or `USB Mass Storage Connected` when the device is mounted over USB.
 
 ### GEMDrive Hard Disk Emulation
 
@@ -86,8 +86,8 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 | **[SHIFT+B] Drive** | Unmount the floppy disk image from the B: drive. |
 | **Boo[t] enabled** | Enable or disable the boot sector emulation. When enabled, the emulator will attempt to boot from the floppy disk image. |
 | **XBIO[S] trap** | Enable or disable the XBIOS trap for floppy disk operations. When enabled, the emulator will intercept XBIOS calls related to floppy disk operations. |
-| **Format [I]mage** | Format a new floppy disk image. It can format image sizes of 360KB (DS), 720KB (DD), 1.44MB (HD), and 2.88MB (ED). The image will be created in the selected folder with a given name plus the extension `.ST.RW`. It will be created empty. |
-| **[C]onvert MSA to ST** | Convert a floppy disk image from MSA format to ST format. The converted image will be created in the selected folder with the same name plus the extension `.ST`. |
+
+Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks.
 
 #### Runtime floppy A image cycling
 
@@ -152,6 +152,10 @@ As a rule of thumb, **`SPACE`** will select the current item. So, if you want to
 USB mass storage is currently available only while you are in the **setup menu**.
 
 You can read and write the microSD card from your computer during setup without interrupting the setup screen.
+
+The USB device is exposed as a pure **MSC** device. The old composite CDC + MSC configuration is no longer used.
+
+When USB mass storage is mounted, the Pico W green LED stays on. During active USB read/write traffic, the LED turns off and then returns on again when the transfer finishes.
 
 It is recommended to connect the Multi-device to your computer via USB before launching the emulator.
 
