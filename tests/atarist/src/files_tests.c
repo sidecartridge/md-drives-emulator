@@ -1,6 +1,29 @@
 #include "files_tests.h"
 
 #include "test_runner.h"
+
+typedef struct {
+  unsigned short time;
+  unsigned short date;
+} DosDateTime;
+
+static unsigned short dos_make_time(unsigned short hour, unsigned short minute,
+                                    unsigned short second) {
+  return (unsigned short)(((hour & 0x1F) << 11) | ((minute & 0x3F) << 5) |
+                          ((second / 2) & 0x1F));
+}
+
+static unsigned short dos_make_date(unsigned short year, unsigned short month,
+                                    unsigned short day) {
+  return (unsigned short)((((year - 1980) & 0x7F) << 9) |
+                          ((month & 0x0F) << 5) | (day & 0x1F));
+}
+
+static void cleanup_fattrib_test_file(void) {
+  Fattrib("FATTR.TXT", 1, 0x00);
+  Fdelete("FATTR.TXT");
+}
+
 void test_create_write_read_file() {
   int handle = Fcreate("TEST1.TXT", 0);
   assert_result("Create file TEST1.TXT", handle >= 16384, TRUE);
@@ -464,6 +487,266 @@ void test_delete_while_open() {
   Fdelete("LOCK.TXT");
 }
 
+void test_file_rename_roundtrip() {
+  int handle = Fcreate("RENOLD.TXT", 0);
+  long written = Fwrite(handle, 7, "RENAMED");
+  Fclose(handle);
+  assert_result("Write RENOLD.TXT before rename", written == 7, 1);
+
+  int result = Frename(0, "RENOLD.TXT", "RENNEW.TXT");
+  assert_result("Rename RENOLD.TXT to RENNEW.TXT", result, 0);
+
+  handle = Fopen("RENOLD.TXT", 0);
+  assert_result("Open old renamed path should fail", handle, -33);
+
+  handle = Fopen("RENNEW.TXT", 0);
+  assert_result("Open RENNEW.TXT after rename", handle >= 0, 1);
+  if (handle >= 0) {
+    char buffer[16] = {0};
+    long read = Fread(handle, 7, buffer);
+    Fclose(handle);
+    assert_result("Read renamed file content", read == 7, 1);
+    assert_result("Renamed file content matches", strcmp(buffer, "RENAMED"),
+                  0);
+  }
+
+  Fdelete("RENOLD.TXT");
+  Fdelete("RENNEW.TXT");
+}
+
+void test_file_rename_error_paths() {
+  int handle = 0;
+  int result = 0;
+
+  Fdelete("RENMISS.TXT");
+  Fdelete("RENEXIST.TXT");
+  Fdelete("RENDEST.TXT");
+
+  result = Frename(0, "RENMISS.TXT", "RENDEST.TXT");
+  assert_result("Rename missing source file should fail", result, -33);
+
+  handle = Fcreate("RENEXIST.TXT", 0);
+  assert_result("Create RENEXIST.TXT before rename error test", handle >= 0, 1);
+  if (handle >= 0) {
+    Fwrite(handle, 6, "SOURCE");
+    Fclose(handle);
+  }
+
+  handle = Fcreate("RENDEST.TXT", 0);
+  assert_result("Create RENDEST.TXT before rename error test", handle >= 0, 1);
+  if (handle >= 0) {
+    Fwrite(handle, 4, "DEST");
+    Fclose(handle);
+  }
+
+  result = Frename(0, "RENEXIST.TXT", "RENDEST.TXT");
+  assert_result("Rename onto existing destination should fail", result, -36);
+
+  handle = Fopen("RENEXIST.TXT", 0);
+  assert_result("Source file still exists after failed rename", handle >= 0, 1);
+  if (handle >= 0) {
+    Fclose(handle);
+  }
+
+  handle = Fopen("RENDEST.TXT", 0);
+  assert_result("Destination file still exists after failed rename",
+                handle >= 0, 1);
+  if (handle >= 0) {
+    Fclose(handle);
+  }
+
+  Fdelete("RENMISS.TXT");
+  Fdelete("RENEXIST.TXT");
+  Fdelete("RENDEST.TXT");
+}
+
+void test_fattrib_roundtrip() {
+  cleanup_fattrib_test_file();
+  int handle = Fcreate("FATTR.TXT", 0);
+  assert_result("Create FATTR.TXT", handle >= 0, 1);
+  Fclose(handle);
+
+  long result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Inquire attributes of FATTR.TXT", result >= 0, 1);
+
+  result = Fattrib("FATTR.TXT", 1, 0x01);
+  assert_result("Set readonly on FATTR.TXT returns previous attributes", result,
+                0x20);
+
+  result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Readonly bit is set on FATTR.TXT", result & 0x03, 0x01);
+
+  result = Fattrib("FATTR.TXT", 1, 0x02);
+  assert_result("Set hidden on FATTR.TXT returns previous attributes", result,
+                0x21);
+
+  result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Hidden bit is set on FATTR.TXT", result & 0x03, 0x02);
+
+  result = Fattrib("FATTR.TXT", 1, 0x03);
+  assert_result("Set readonly+hidden on FATTR.TXT returns previous attributes",
+                result, 0x22);
+
+  result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Readonly+hidden bits are set on FATTR.TXT", result & 0x03,
+                0x03);
+
+  result = Fattrib("FATTR.TXT", 1, 0x00);
+  assert_result(
+      "Clear readonly+hidden on FATTR.TXT returns previous attributes", result,
+      0x23);
+
+  result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Readonly+hidden bits are cleared on FATTR.TXT", result & 0x03,
+                0);
+
+  result = Fdelete("FATTR.TXT");
+  assert_result("Delete FATTR.TXT", result, 0);
+
+  result = Fattrib("FATTR.TXT", 0, 0);
+  assert_result("Inquire deleted FATTR.TXT should fail", result, -33);
+
+  cleanup_fattrib_test_file();
+}
+
+void test_fdatime_roundtrip() {
+  int handle = Fcreate("FDTIME.TXT", 0);
+  Fwrite(handle, 4, "TIME");
+  Fclose(handle);
+
+  handle = Fopen("FDTIME.TXT", 2);
+  assert_result("Open FDTIME.TXT read/write", handle >= 0, 1);
+  if (handle >= 0) {
+    DosDateTime original = {0};
+    DosDateTime expected_a = {dos_make_time(13, 25, 10),
+                              dos_make_date(2024, 4, 1)};
+    DosDateTime set_a = expected_a;
+    DosDateTime verify_same_handle_a = {0};
+    DosDateTime verify_reopen_a = {0};
+    DosDateTime expected_b = {dos_make_time(21, 42, 58),
+                              dos_make_date(2025, 12, 31)};
+    DosDateTime set_b = expected_b;
+    DosDateTime verify_same_handle_b = {0};
+    DosDateTime verify_reopen_b = {0};
+
+    int result = Fdatime(&original, handle, 0);
+    assert_result("Inquire FDTIME.TXT timestamp", result, 0);
+
+    result = Fdatime(&set_a, handle, 1);
+    assert_result("Set FDTIME.TXT timestamp A", result, 0);
+
+    result = Fdatime(&verify_same_handle_a, handle, 0);
+    assert_result("Re-inquire FDTIME.TXT timestamp A on same handle", result,
+                  0);
+    assert_result("FDTIME.TXT time A matches expected on same handle",
+                  verify_same_handle_a.time, expected_a.time);
+    assert_result("FDTIME.TXT date A matches expected on same handle",
+                  verify_same_handle_a.date, expected_a.date);
+
+    result = Fclose(handle);
+    assert_result("Close FDTIME.TXT after timestamp A", result, 0);
+
+    handle = Fopen("FDTIME.TXT", 0);
+    assert_result("Re-open FDTIME.TXT read-only after timestamp A",
+                  handle >= 0, 1);
+    if (handle >= 0) {
+      result = Fdatime(&verify_reopen_a, handle, 0);
+      assert_result("Re-inquire FDTIME.TXT timestamp A after reopen", result,
+                    0);
+      assert_result("FDTIME.TXT time A matches expected after reopen",
+                    verify_reopen_a.time, expected_a.time);
+      assert_result("FDTIME.TXT date A matches expected after reopen",
+                    verify_reopen_a.date, expected_a.date);
+      Fclose(handle);
+    }
+
+    handle = Fopen("FDTIME.TXT", 2);
+    assert_result("Re-open FDTIME.TXT read/write for timestamp B",
+                  handle >= 0, 1);
+    if (handle >= 0) {
+      result = Fdatime(&set_b, handle, 1);
+      assert_result("Set FDTIME.TXT timestamp B", result, 0);
+
+      result = Fdatime(&verify_same_handle_b, handle, 0);
+      assert_result("Re-inquire FDTIME.TXT timestamp B on same handle", result,
+                    0);
+      assert_result("FDTIME.TXT time B matches expected on same handle",
+                    verify_same_handle_b.time, expected_b.time);
+      assert_result("FDTIME.TXT date B matches expected on same handle",
+                    verify_same_handle_b.date, expected_b.date);
+
+      result = Fclose(handle);
+      assert_result("Close FDTIME.TXT after timestamp B", result, 0);
+    }
+
+    handle = Fopen("FDTIME.TXT", 0);
+    assert_result("Final re-open FDTIME.TXT read-only after timestamp B",
+                  handle >= 0, 1);
+    if (handle >= 0) {
+      result = Fdatime(&verify_reopen_b, handle, 0);
+      assert_result("Re-inquire FDTIME.TXT timestamp B after reopen", result,
+                    0);
+      assert_result("FDTIME.TXT time B matches expected after reopen",
+                    verify_reopen_b.time, expected_b.time);
+      assert_result("FDTIME.TXT date B matches expected after reopen",
+                    verify_reopen_b.date, expected_b.date);
+      Fclose(handle);
+    }
+  }
+
+  Fdelete("FDTIME.TXT");
+}
+
+void test_fdatime_invalid_handle() {
+  int handle = Fcreate("FDTBAD.TXT", 0);
+  DosDateTime query = {0};
+  DosDateTime set_value = {dos_make_time(10, 20, 30),
+                           dos_make_date(2024, 6, 15)};
+
+  assert_result("Create FDTBAD.TXT for invalid-handle test", handle >= 0, 1);
+  if (handle >= 0) {
+    assert_result("Close FDTBAD.TXT before invalid-handle test", Fclose(handle),
+                  0);
+
+    assert_result("Fdatime inquire on closed handle fails",
+                  Fdatime(&query, handle, 0), -37);
+    assert_result("Fdatime set on closed handle fails",
+                  Fdatime(&set_value, handle, 1), -37);
+  }
+
+  Fdelete("FDTBAD.TXT");
+}
+
+void test_eof_and_closed_handle_behavior() {
+  int handle = Fcreate("EOFCLOSE.TXT", 0);
+  Fwrite(handle, 5, "ABCDE");
+  Fclose(handle);
+
+  handle = Fopen("EOFCLOSE.TXT", 0);
+  assert_result("Open EOFCLOSE.TXT for EOF checks", handle >= 0, 1);
+  if (handle >= 0) {
+    char buffer[8] = {0};
+    char eof_buffer[4] = {0};
+    long read = Fread(handle, 8, buffer);
+    assert_result("Read to EOF returns short length", read, 5);
+    assert_result("Read to EOF content matches", strcmp(buffer, "ABCDE"), 0);
+
+    read = Fread(handle, 3, eof_buffer);
+    assert_result("Read past EOF returns zero", read, 0);
+
+    assert_result("Close EOFCLOSE.TXT handle", Fclose(handle), 0);
+    assert_result("Close EOFCLOSE.TXT handle twice fails", Fclose(handle), -37);
+
+    read = Fread(handle, 1, buffer);
+    assert_result("Read from closed handle fails", read, -37);
+
+    long pos = Fseek(0, handle, 0);
+    assert_result("Seek on closed handle fails", pos, -37);
+  }
+
+  Fdelete("EOFCLOSE.TXT");
+}
+
 int run_files_tests(int presskey) {
   print("=== GEMDOS Files Test Suite ===\n\r");
 
@@ -498,6 +781,18 @@ int run_files_tests(int presskey) {
   test_file_handle_exhaustion();
   if (presskey) press_key("");
   test_partial_read();
+  if (presskey) press_key("");
+  test_file_rename_roundtrip();
+  if (presskey) press_key("");
+  test_file_rename_error_paths();
+  if (presskey) press_key("");
+  test_fattrib_roundtrip();
+  if (presskey) press_key("");
+  test_fdatime_roundtrip();
+  if (presskey) press_key("");
+  test_fdatime_invalid_handle();
+  if (presskey) press_key("");
+  test_eof_and_closed_handle_behavior();
   if (presskey) press_key("");
   test_write_power_of_two_files();
   if (presskey) press_key("");

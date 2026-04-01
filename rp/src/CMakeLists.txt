@@ -97,6 +97,7 @@ set(RP_SOURCES
     romemul.c
     rtc.c
     sdcard.c
+    sd_timeouts_config.c
     select.c
     term.c
     usb_descriptors.c

@@ -1355,6 +1355,9 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         }
         DPRINTF("Nothing returned from Fsfirst\n");
         int16_t errorCode = GEMDOS_EFILNF;
+        if (fr == FR_NO_PATH) {
+          errorCode = GEMDOS_EPTHNF;
+        }
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
         if (currentDTANode) {
           releaseDTA(ndta);

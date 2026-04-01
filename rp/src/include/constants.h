@@ -9,6 +9,7 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include "hardware/gpio.h"
 #include "hardware/vreg.h"
 
 // Common macros
@@ -55,7 +56,31 @@
 
 // It should shove the CPU out of the way when doing DMA transfers
 // to avoid bus contention. Only needed if you are pushing things
-#define PRIORITY_DMA 1  // Give priority to the DMA over the CPU
+#define PRIORITY_DMA 0  // Give priority to the DMA over the CPU
+
+// SD card GPIO drive strength
+#define SD_SPI_GPIO_DRIVE_STRENGTH GPIO_DRIVE_STRENGTH_2MA
+
+// SD card SPI mode
+// Allowed values from fatfs-sdk/src/sd_driver/SPI/my_spi.h and
+// fatfs-sdk/src/sd_driver/SPI/my_spi.c:
+// 0: CPOL=0, CPHA=0. Sample on leading rising edge, shift on falling edge.
+// 1: CPOL=0, CPHA=1. Sample on trailing falling edge, shift on rising edge.
+// 2: CPOL=1, CPHA=0. Sample on leading falling edge, shift on rising edge.
+// 3: CPOL=1, CPHA=1. Sample on trailing rising edge, shift on falling edge.
+// The driver asserts spi_mode < 4.
+#define SD_SPI_MODE 0
+
+// SD card SPI library retry/timeout tuning.
+// These defaults mirror fatfs-sdk/src/sd_driver/sd_timeouts.c and can be
+// adjusted here for recovery behavior.
+#define SD_TIMEOUT_COMMAND_MS 2000
+#define SD_TIMEOUT_COMMAND_RETRIES 10  // Default value: 3
+#define SD_TIMEOUT_SD_LOCK_MS 8000
+#define SD_TIMEOUT_SPI_READ_MS 1000
+#define SD_TIMEOUT_SPI_WRITE_MS 1000
+#define SD_TIMEOUT_SPI_WRITE_READ_MS 1000
+#define SD_TIMEOUT_SPI_LOCK_MS 4000
 
 // The FLASH clock divider by default is 4, but we can play with it. Careful
 // tuning may be required.

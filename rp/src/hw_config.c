@@ -36,6 +36,7 @@ socket, which SPI it is driven by, and how it is wired.
 #include "ff.h" /* Obtains integer types */
 //
 #include "diskio.h" /* Declarations of disk functions */
+#include "include/constants.h"
 #include "sdcard.h"
 
 // Hardware Configuration of SPI "objects"
@@ -47,11 +48,11 @@ static spi_t spis[] = {  // One for each SPI.
         .miso_gpio = 4,   // GPIO number (not pin number)
         .mosi_gpio = 3,
         .sck_gpio = 2,
-        .spi_mode = 0,  // SPI Mode 0. Do not change. Best configuration so far.
+        .spi_mode = SD_SPI_MODE,
         // .baud_rate = 12.5 * 1000 * 1000,
         .set_drive_strength = true,  // Set drive strength for GPIOs
-        .mosi_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
-        .sck_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
+        .mosi_gpio_drive_strength = SD_SPI_GPIO_DRIVE_STRENGTH,
+        .sck_gpio_drive_strength = SD_SPI_GPIO_DRIVE_STRENGTH,
         // .use_static_dma_channels = true,  // Use static DMA channels
         // .tx_dma = 10,                     // DMA channel for TX
         // .rx_dma = 11,                     // DMA channel for RX
@@ -62,7 +63,7 @@ static sd_spi_if_t spi_ifs[] = {{
     .spi = &spis[0],             // Pointer to the SPI driving this card
     .ss_gpio = -1,               // The SPI slave select GPIO for this SD card
     .set_drive_strength = true,  // Set drive strength for GPIOs
-    .ss_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA,
+    .ss_gpio_drive_strength = SD_SPI_GPIO_DRIVE_STRENGTH,
 }};
 
 // Hardware Configuration of the SD Card "objects"
