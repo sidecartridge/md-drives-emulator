@@ -202,6 +202,61 @@ Values below `1000` are clamped to **1 MHz**, and values above `24000` are clamp
 This project is based on an early version of the [SidecarTridge Multi-device Microfirmware App Template](https://github.com/sidecartridge/md-microfirmware-template).  
 To set up your development environment, please follow the instructions provided in the [official documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/).
 
+## 🧪 Atari GEMDRIVE Tests
+
+The GEMDRIVE Atari-side test program lives under `tests/atarist`.
+
+### Adding Tests
+
+For small additions, put the new `test_*()` function in the closest existing suite file under `tests/atarist/src`:
+
+- `files_tests.c`
+- `folder_tests.c`
+- `folder_listing_tests.c`
+- `workdir_tests.c`
+- `chksum_tests.c`
+
+Then register it by calling it from that suite's `run_*_tests(int presskey)` function.
+
+If you need a brand new suite:
+
+1. Add `tests/atarist/src/<name>_tests.c`.
+2. Add `tests/atarist/src/include/<name>_tests.h`.
+3. Include the header from `tests/atarist/src/main.c`.
+4. Call `run_<name>_tests(FALSE)` from `run()` in `tests/atarist/src/main.c`.
+5. Add the new object file to the compile/link lists in `tests/atarist/Makefile`.
+
+### Building
+
+The test build uses `stcmd` from the `atarist-docker-toolkit` wrapper in `tests/atarist/build.sh`.
+
+From the repository root:
+
+```bash
+./tests/atarist/build.sh "$PWD/tests/atarist" release
+```
+
+The build output is:
+
+- `tests/atarist/dist/FSTESTS.TOS`
+
+If you want file logging enabled in the test binary, pass any non-empty third argument:
+
+```bash
+./tests/atarist/build.sh "$PWD/tests/atarist" release 1
+```
+
+### Running
+
+Launch `FSTESTS.TOS` from the Atari desktop while GEMDRIVE is active and pointing to a writable test folder.
+
+The program prints:
+
+- the current drive and path at startup
+- each suite result on screen
+- `All tests completed.` when it reaches the end
+
+The main program currently calls all suites with `FALSE`, so the test run is automatic and does not pause between cases.
 
 
 

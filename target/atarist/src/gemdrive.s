@@ -954,6 +954,7 @@ _notlong:
     reentry_gem_unlock
 
     move.l (sp)+, d0                            ; Restore the error code
+    ext.l d0                                    ; Sign-extend GEMDOS 16-bit errors
     return_rte
 
 .Fsnext:
