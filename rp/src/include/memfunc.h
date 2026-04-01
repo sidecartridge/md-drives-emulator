@@ -11,27 +11,65 @@
 #ifndef MEMFUNC_H
 #define MEMFUNC_H
 
+#include <stdint.h>
+
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 
+static inline volatile uint8_t *memfunc_byte_ptr(const uint32_t address,
+                                                 const uint32_t offset) {
+  return (volatile uint8_t *)((uintptr_t)address + (uintptr_t)offset);
+}
+
+static inline void memfunc_write_u8(const uint32_t address,
+                                    const uint32_t offset,
+                                    const uint8_t value) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  ptr[0] = value;
+}
+
+static inline void memfunc_write_u16(const uint32_t address,
+                                     const uint32_t offset,
+                                     const uint16_t value) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  ptr[0] = (uint8_t)(value & 0xFFu);
+  ptr[1] = (uint8_t)((value >> 8) & 0xFFu);
+}
+
+static inline void memfunc_write_u32(const uint32_t address,
+                                     const uint32_t offset,
+                                     const uint32_t value) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  ptr[0] = (uint8_t)(value & 0xFFu);
+  ptr[1] = (uint8_t)((value >> 8) & 0xFFu);
+  ptr[2] = (uint8_t)((value >> 16) & 0xFFu);
+  ptr[3] = (uint8_t)((value >> 24) & 0xFFu);
+}
+
+static inline uint8_t memfunc_read_u8(const uint32_t address,
+                                      const uint32_t offset) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  return ptr[0];
+}
+
+static inline uint16_t memfunc_read_u16(const uint32_t address,
+                                        const uint32_t offset) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8);
+}
+
+static inline uint32_t memfunc_read_u32(const uint32_t address,
+                                        const uint32_t offset) {
+  volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
+  return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8) |
+         ((uint32_t)ptr[2] << 16) | ((uint32_t)ptr[3] << 24);
+}
+
 #define COPY_FIRMWARE_TO_RAM(emulROM, emulROM_length)  \
   do {                                                 \
     COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length); \
-  } while (0)
-
-#define ERASE_FIRMWARE_IN_RAM()                                \
-  do {                                                         \
-    memset((void *)&__rom_in_ram_start__, 0,                   \
-           ROM_SIZE_LONGWORDS * ROM_BANKS * sizeof(uint32_t)); \
-    DPRINTF("RAM for the firmware zeroed.\n");                 \
-  } while (0)
-
-#define COPY_FIRMWARE_TO_RAM_MEMCPY(emulROM, emulROM_length) \
-  do {                                                       \
-    memcpy(&__rom_in_ram_start__, emulROM, emulROM_length);  \
-    DPRINTF("Emulation firmware copied to RAM.\n");          \
   } while (0)
 
 #define COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length)                     \
@@ -74,42 +112,53 @@
     }                                                                     \
   } while (0)
 
-#define SWAP_WORD(data) \
-  ((((uint16_t)data << 8) & 0xFF00) | (((uint16_t)data >> 8) & 0xFF))
-
 #define SWAP_LONGWORD(data) \
   ((((uint32_t)data << 16) & 0xFFFF0000) | (((uint32_t)data >> 16) & 0xFFFF))
 
-#define WRITE_AND_SWAP_LONGWORD(address, offset, data) \
-  *((volatile uint32_t *)((address) + (offset))) =     \
-      ((((uint32_t)(data) << 16) & 0xFFFF0000) |       \
-       (((uint32_t)(data) >> 16) & 0xFFFF))
+#define WRITE_AND_SWAP_LONGWORD(address, offset, data)                        \
+  do {                                                                        \
+    memfunc_write_u32(                                                        \
+        (uint32_t)(address), (uint32_t)(offset),                              \
+        ((((uint32_t)(data) << 16) & 0xFFFF0000u) |                           \
+         (((uint32_t)(data) >> 16) & 0x0000FFFFu)));                          \
+  } while (0)
 
-#define WRITE_LONGWORD_RAW(address, offset, data) \
-  *((volatile uint32_t *)((address) + (offset))) = data
+#define WRITE_LONGWORD_RAW(address, offset, data)                             \
+  do {                                                                        \
+    memfunc_write_u32((uint32_t)(address), (uint32_t)(offset),                \
+                      (uint32_t)(data));                                      \
+  } while (0)
 
-#define WRITE_WORD(address, offset, data) \
-  *((volatile uint16_t *)((address) + (offset))) = data
+#define WRITE_BYTE(address, offset, data)                                     \
+  do {                                                                        \
+    memfunc_write_u8((uint32_t)(address), (uint32_t)(offset),                 \
+                     (uint8_t)(data));                                        \
+  } while (0)
+
+#define WRITE_WORD(address, offset, data)                                     \
+  do {                                                                        \
+    memfunc_write_u16((uint32_t)(address), (uint32_t)(offset),                \
+                      (uint16_t)(data));                                      \
+  } while (0)
 
 #define MEMSET16BIT(memory_address, offset, size, value)              \
   do {                                                                \
     for (int i = 0; i < size; i++) {                                  \
-      *((volatile uint16_t *)((memory_address) + (offset) + i * 2)) = \
-          (uint16_t)(value);                                          \
+      WRITE_WORD((memory_address), (offset) + i * 2, (uint16_t)(value)); \
     }                                                                 \
   } while (0)
 
+#define READ_BYTE(address, offset) \
+  (memfunc_read_u8((uint32_t)(address), (uint32_t)(offset)))
+
 #define READ_WORD(address, offset) \
-  (*((volatile uint16_t *)((address) + (offset))))
+  (memfunc_read_u16((uint32_t)(address), (uint32_t)(offset)))
 
 #define READ_LONGWORD(address, offset) \
-  (*((volatile uint32_t *)((address) + (offset))))
+  (memfunc_read_u32((uint32_t)(address), (uint32_t)(offset)))
 
-#define READ_AND_SWAP_LONGWORD(address, offset)                          \
-  ((((uint32_t)(*((volatile uint32_t *)((address) + (offset))) << 16) &  \
-     0xFFFF0000) |                                                       \
-    (((uint32_t)(*((volatile uint32_t *)((address) + (offset))) >> 16) & \
-      0xFFFF))))
+#define READ_AND_SWAP_LONGWORD(address, offset) \
+  (SWAP_LONGWORD(READ_LONGWORD((address), (offset))))
 
 #define COPY_AND_SWAP_16BIT_DMA(dest, source, num_bytes)           \
   do {                                                             \
@@ -151,14 +200,14 @@
   do {                                                                        \
     DPRINTF("Setting shared variable %d to %x\n", p_shared_variable_index,    \
             p_shared_variable_value);                                         \
-    *((volatile uint16_t *)(memory_shared_address +                           \
-                            memory_shared_variables_offset +                  \
-                            (p_shared_variable_index * 4) + 2)) =             \
-        p_shared_variable_value & 0xFFFF;                                     \
-    *((volatile uint16_t *)(memory_shared_address +                           \
-                            memory_shared_variables_offset +                  \
-                            (p_shared_variable_index * 4))) =                 \
-        p_shared_variable_value >> 16;                                        \
+    WRITE_WORD((memory_shared_address),                                        \
+               (memory_shared_variables_offset) +                              \
+                   ((p_shared_variable_index) * 4) + 2,                        \
+               (p_shared_variable_value) & 0xFFFFu);                           \
+    WRITE_WORD((memory_shared_address),                                        \
+               (memory_shared_variables_offset) +                              \
+                   ((p_shared_variable_index) * 4),                            \
+               (p_shared_variable_value) >> 16);                               \
   } while (0)
 
 /**
@@ -177,13 +226,14 @@
 #define GET_SHARED_VAR(p_shared_variable_index, p_shared_variable_result,     \
                        memory_shared_address, memory_shared_variables_offset) \
   do {                                                                        \
-    uint16_t high = *((volatile uint16_t *)(memory_shared_address +           \
-                                            memory_shared_variables_offset +  \
-                                            (p_shared_variable_index * 4)));  \
+    uint16_t high =                                                           \
+        READ_WORD((memory_shared_address),                                     \
+                  (memory_shared_variables_offset) +                           \
+                      ((p_shared_variable_index) * 4));                        \
     uint16_t low =                                                            \
-        *((volatile uint16_t *)(memory_shared_address +                       \
-                                memory_shared_variables_offset +              \
-                                (p_shared_variable_index * 4) + 2));          \
+        READ_WORD((memory_shared_address),                                     \
+                  (memory_shared_variables_offset) +                           \
+                      ((p_shared_variable_index) * 4) + 2);                    \
     *p_shared_variable_result = ((uint32_t)high << 16) | low;                 \
     DPRINTF("Getting shared variable %d = %x\n", p_shared_variable_index,     \
             p_shared_variable_result);                                        \
@@ -211,14 +261,14 @@
     DPRINTF("Memory address: %x\n",                                            \
             (memory_shared_address + memory_shared_variables_offset +          \
              (p_shared_variable_index * 4)));                                  \
-    *((volatile uint16_t *)(memory_shared_address +                            \
-                            memory_shared_variables_offset +                   \
-                            (p_shared_variable_index * 4) + 2)) =              \
-        p_shared_variable_value & 0xFFFF;                                      \
-    *((volatile uint16_t *)(memory_shared_address +                            \
-                            memory_shared_variables_offset +                   \
-                            (p_shared_variable_index * 4))) =                  \
-        p_shared_variable_value >> 16;                                         \
+    WRITE_WORD((memory_shared_address),                                        \
+               (memory_shared_variables_offset) +                              \
+                   ((p_shared_variable_index) * 4) + 2,                        \
+               (p_shared_variable_value) & 0xFFFFu);                           \
+    WRITE_WORD((memory_shared_address),                                        \
+               (memory_shared_variables_offset) +                              \
+                   ((p_shared_variable_index) * 4),                            \
+               (p_shared_variable_value) >> 16);                               \
   } while (0)
 
 /**
@@ -241,12 +291,11 @@
             p_shared_variable_index);                                        \
     uint32_t addr = memory_shared_address + memory_shared_variables_offset + \
                     (p_shared_variable_index * 4);                           \
-    uint32_t value = *((volatile uint16_t *)(addr + 2)) |                    \
-                     (*((volatile uint16_t *)(addr)) << 16);                 \
+    uint32_t value = READ_WORD(addr, 2) | ((uint32_t)READ_WORD(addr, 0) << 16); \
     value |= (1 << bit_position);                                            \
     DPRINTF("Memory address: %x, New Value: %x\n", addr, value);             \
-    *((volatile uint16_t *)(addr + 2)) = value & 0xFFFF;                     \
-    *((volatile uint16_t *)(addr)) = value >> 16;                            \
+    WRITE_WORD(addr, 2, value & 0xFFFFu);                                    \
+    WRITE_WORD(addr, 0, value >> 16);                                        \
   } while (0)
 
 /**
@@ -269,43 +318,11 @@
             p_shared_variable_index);                                        \
     uint32_t addr = memory_shared_address + memory_shared_variables_offset + \
                     (p_shared_variable_index * 4);                           \
-    uint32_t value = *((volatile uint16_t *)(addr + 2)) |                    \
-                     (*((volatile uint16_t *)(addr)) << 16);                 \
+    uint32_t value = READ_WORD(addr, 2) | ((uint32_t)READ_WORD(addr, 0) << 16); \
     value &= ~(1 << bit_position);                                           \
     DPRINTF("Memory address: %x, New Value: %x\n", addr, value);             \
-    *((volatile uint16_t *)(addr + 2)) = value & 0xFFFF;                     \
-    *((volatile uint16_t *)(addr)) = value >> 16;                            \
+    WRITE_WORD(addr, 2, value & 0xFFFFu);                                    \
+    WRITE_WORD(addr, 0, value >> 16);                                        \
   } while (0)
-
-/**
- * @brief Macro to check if a flag is set.
- *
- * This macro checks if the specified flag is set in the 'flags' variable.
- *
- * @param flag The flag to check.
- * @return 1 if the flag is set, 0 otherwise.
- */
-#define IS_FLAG_SET(flag) (flags & flag)
-
-/**
- * @brief Set a flag in the flags variable.
- *
- * This macro sets a flag in the `flags` variable by performing a bitwise OR
- * operation.
- *
- * @param flag The flag to be set.
- */
-#define SET_FLAG(flag) (flags |= flag)
-
-/**
- * @brief Clear a specific flag in the given flags variable.
- *
- * This macro clears the specified flag in the given flags variable by
- * performing a bitwise AND operation with the complement of the flag. The
- * result is then stored back in the flags variable.
- *
- * @param flag The flag to be cleared.
- */
-#define CLEAR_FLAG(flag) (flags &= ~flag)
 
 #endif  // MEMFUNC_H

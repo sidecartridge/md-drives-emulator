@@ -8,6 +8,8 @@
 
 #include "floppy.h"
 
+#include <assert.h>
+
 static BPBData BPBDataA = {
     FLOPPY_SECTOR_SIZE, /* recsize     */
     2,                  /* clsiz       */
@@ -187,6 +189,28 @@ static inline void floppyMaybeClearMediaChangeAfterRead(FloppyDrive drive,
   floppyResetMediaChangeClearOnRootRead(drive);
 }
 
+static inline bool floppyTransferSizeIsValid(uint16_t sSize) {
+  if (sSize == 0) {
+    DPRINTF("ERROR: Floppy transfer size must be greater than zero\n");
+    return false;
+  }
+
+  if ((sSize & 1u) != 0u) {
+    DPRINTF("ERROR: Floppy transfer size must be even for 16-bit swaps: %u\n",
+            sSize);
+    return false;
+  }
+
+  if ((uint32_t)sSize > FLOPPYEMUL_IMAGE_BUFFER_SIZE) {
+    DPRINTF(
+        "ERROR: Floppy transfer size %u exceeds shared image buffer size %lu\n",
+        sSize, (unsigned long)FLOPPYEMUL_IMAGE_BUFFER_SIZE);
+    return false;
+  }
+
+  return true;
+}
+
 static inline const char *floppyGetDriveASettingKey(uint8_t slotIndex) {
   if (slotIndex < FLOPPY_DRIVE_A_SLOT_MIN ||
       slotIndex > FLOPPY_DRIVE_A_SLOT_MAX) {
@@ -282,6 +306,11 @@ static uint8_t floppyFindNextConfiguredDriveASlot(uint8_t currentSlot) {
  */
 FRESULT copy_file(const char *folder, const char *src_filename,
                   const char *dest_filename, bool overwrite_flag) {
+  if (folder == NULL || src_filename == NULL || dest_filename == NULL) {
+    DPRINTF("ERROR: Invalid NULL parameter in copy_file\n");
+    return FR_INVALID_PARAMETER;
+  }
+
   FRESULT fr;    // FatFS function common result code
   FIL src_file;  // File objects
   FIL dest_file;
@@ -292,8 +321,19 @@ FRESULT copy_file(const char *folder, const char *src_filename,
   char dest_path[256];
 
   // Create full paths for source and destination files
-  sprintf(src_path, "%s/%s", folder, src_filename);
-  sprintf(dest_path, "%s/%s", folder, dest_filename);
+  int src_path_len = snprintf(src_path, sizeof(src_path), "%s/%s", folder,
+                              src_filename);
+  if (src_path_len < 0 || (size_t)src_path_len >= sizeof(src_path)) {
+    DPRINTF("ERROR: Source path is too long in copy_file\n");
+    return FR_INVALID_NAME;
+  }
+
+  int dest_path_len = snprintf(dest_path, sizeof(dest_path), "%s/%s", folder,
+                               dest_filename);
+  if (dest_path_len < 0 || (size_t)dest_path_len >= sizeof(dest_path)) {
+    DPRINTF("ERROR: Destination path is too long in copy_file\n");
+    return FR_INVALID_NAME;
+  }
 
   DPRINTF("Copying file '%s' to '%s'. Overwrite? %s\n", src_path, dest_path,
           overwrite_flag ? "YES" : "NO");
@@ -331,6 +371,11 @@ FRESULT copy_file(const char *folder, const char *src_filename,
     if (fr != FR_OK) break;  // Break on error
     fr = f_write(&dest_file, buffer, br,
                  &bw);  // Write it to the destination file
+    if (fr == FR_OK && bw != br) {
+      DPRINTF("ERROR: Short write while copying file (%u/%u bytes)\n", bw, br);
+      fr = FR_DISK_ERR;
+      break;
+    }
   } while (fr == FR_OK && br == sizeof buffer);
 
   // Close files
@@ -377,7 +422,6 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
     DPRINTF(
         "ERROR: Could not seek to the start of the first sector to create "
         "BPB\n");
-    f_close(fsrc);
     return fr;  // Check for error in reading
   }
 
@@ -385,7 +429,6 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
               &br); /* Read a chunk of data from the source file */
   if (fr) {
     DPRINTF("ERROR: Could not read the first boot sector to create the BPBP\n");
-    f_close(fsrc);
     return fr;  // Check for error in reading
   }
 
@@ -807,6 +850,12 @@ void __not_in_flash_func(floppy_init)() {
   DPRINTF("Initializing Floppies...\n");  // Print always
 
   memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  if ((memorySharedAddress & 0x3u) != 0u) {
+    DPRINTF("ERROR: FLOPPY shared memory base 0x%08lx is not 4-byte aligned\n",
+            (unsigned long)memorySharedAddress);
+    assert((memorySharedAddress & 0x3u) == 0u);
+    return;
+  }
   memoryRandomTokenAddress =
       memorySharedAddress + FLOPPYEMUL_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
@@ -1066,6 +1115,9 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
       DPRINTF("DISK READ %s (%d) - LSECTOR: %i / SSIZE: %i\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize);
+      if (!floppyTransferSizeIsValid(sSize)) {
+        return;
+      }
 
       if (diskNum == 0) {
         // Drive A. Check if the disk is mounted
@@ -1099,22 +1151,22 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
 
       // If we are here, the disk is mounted and we should be able to read the
       // sectors
-      FIL fobjTmp = {0};
+      FIL *fobjTmp = NULL;
       char *fullPathTmp = NULL;
       unsigned int bytesRead = {0};
       if (diskNum == 0) {
-        fobjTmp = fobjA;
+        fobjTmp = &fobjA;
         fullPathTmp = fullPathA;
       } else {
-        fobjTmp = fobjB;
+        fobjTmp = &fobjB;
         fullPathTmp = fullPathB;
       }
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(&fobjTmp, lSector * sSize);
+      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
-        floppyImgClose(&fobjTmp);
+        floppyImgClose(fobjTmp);
         if (diskNum == 0) {
           floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;  // Set error state for A
         } else {
@@ -1122,19 +1174,30 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         }
         return;  // Return if the seek operation failed
       }
-      ferr = f_read(&fobjTmp, (void *)(memorySharedAddress + FLOPPYEMUL_IMAGE),
+      ferr = f_read(fobjTmp, (void *)(memorySharedAddress + FLOPPYEMUL_IMAGE),
                     sSize,
                     &bytesRead); /* Read a chunk of data from the source file */
       if (ferr) {
         DPRINTF("ERROR: Could not read file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
-        floppyImgClose(&fobjTmp);
+        floppyImgClose(fobjTmp);
         if (diskNum == 0) {
           floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;  // Set error state for A
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
         return;  // Return if the read operation failed
+      }
+      if (bytesRead != sSize) {
+        DPRINTF("ERROR: Short read from file %s (%u/%u bytes). Closing file.\n",
+                fullPathTmp, bytesRead, sSize);
+        floppyImgClose(fobjTmp);
+        if (diskNum == 0) {
+          floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;
+        } else {
+          floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
+        }
+        return;
       }
       DPRINTF("Read sector %i of size %i bytes to memory address %08X\n",
               lSector, sSize, memorySharedAddress + FLOPPYEMUL_IMAGE);
@@ -1154,6 +1217,9 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // skip d5 register
       DPRINTF("DISK WRITE %s (%d) - LSECTOR: %i / SSIZE: %i at addr: %08X\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize, addrRemote);
+      if (!floppyTransferSizeIsValid(sSize)) {
+        return;
+      }
 
       if (diskNum == 0) {
         // Drive A. Check if the disk is mounted
@@ -1206,23 +1272,23 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
 
       // Change the endianness of the bytes read
       CHANGE_ENDIANESS_BLOCK16(target16, sSize);
-      FIL fobjTmp = {0};
+      FIL *fobjTmp = NULL;
       char *fullPathTmp = NULL;
       unsigned int bytesRead = {0};
       if (diskNum == 0) {
-        fobjTmp = fobjA;
+        fobjTmp = &fobjA;
         fullPathTmp = fullPathA;
       } else {
-        fobjTmp = fobjB;
+        fobjTmp = &fobjB;
         fullPathTmp = fullPathB;
       }
 
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(&fobjTmp, lSector * sSize);
+      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\r\n",
                 fullPathTmp, ferr);
-        floppyImgClose(&fobjTmp);
+        floppyImgClose(fobjTmp);
         if (diskNum == 0) {
           floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;  // Set error state for A
         } else {
@@ -1231,18 +1297,29 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         return;  // Return if the read operation failed
       }
       ferr =
-          f_write(&fobjTmp, target16, sSize,
+          f_write(fobjTmp, target16, sSize,
                   &bytesRead); /* Write a chunk of data from the source file */
       if (ferr) {
-        DPRINTF("ERROR: Could not read file %s (%d). Closing file.\r\n",
+        DPRINTF("ERROR: Could not write file %s (%d). Closing file.\r\n",
                 fullPathTmp, ferr);
-        floppyImgClose(&fobjTmp);
+        floppyImgClose(fobjTmp);
         if (diskNum == 0) {
           floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;  // Set error state for A
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
         return;  // Return if the read operation failed
+      }
+      if (bytesRead != sSize) {
+        DPRINTF("ERROR: Short write to file %s (%u/%u bytes). Closing file.\n",
+                fullPathTmp, bytesRead, sSize);
+        floppyImgClose(fobjTmp);
+        if (diskNum == 0) {
+          floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;
+        } else {
+          floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
+        }
+        return;
       }
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);

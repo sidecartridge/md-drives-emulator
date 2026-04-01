@@ -8,6 +8,7 @@
 
 #include "gemdrive.h"
 
+#include <assert.h>
 #include <stdlib.h>
 
 // The GEMDOS calls
@@ -390,13 +391,9 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
 
       WRITE_AND_SWAP_LONGWORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 12,
                               data->d_offset_drive);
-      *((uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20)) =
-          data->d_attrib;
-
-      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 22)) =
-          data->d_time;
-      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 24)) =
-          data->d_date;
+      WRITE_BYTE(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 20, data->d_attrib);
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 22, data->d_time);
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 24, data->d_date);
 
       WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 28,
                  data->d_length & 0xFFFF);  // Least significant 16 bits
@@ -409,26 +406,25 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
                                14);
       char attribsStr[7] = "";
       sdcard_getAttribsSTStr(
-          attribsStr,
-          *((uint8_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 20)));
+          attribsStr, READ_BYTE(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 20));
       DPRINTF(
           "Populate DTA. addr: %x - attrib: %s - time: %d - date: %d - length: "
           "%x - filename: %s\n",
           dta_address, attribsStr,
-          *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 22)),
-          *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 24)),
+          READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 22),
+          READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 24),
           (uint32_t)(READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 26)
                      << 16) |
               (READ_WORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 28)),
           (char *)(memory_address_dta + GEMDRIVE_DTA_TRANSFER + 30));
-      *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) = GEMDOS_EOK;
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND, GEMDOS_EOK);
     } else {
       // If no more files found, return ENMFIL for Fsnext
       // If no files found, return EFILNF for Fsfirst
       DPRINTF("DTA at %x showing error code: %x\n", dta_address,
               gemdos_err_code);
-      *((int16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) =
-          (int16_t)gemdos_err_code;
+      WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND,
+                 (uint16_t)gemdos_err_code);
       // release the memory allocated for the hash table
       releaseDTA(dta_address);
       DPRINTF("DTA at %x released. DTA table elements: %d\n", dta_address,
@@ -442,7 +438,7 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
   } else {
     // No DTA structure found, return error
     DPRINTF("DTA not found at %x\n", dta_address);
-    *((uint16_t *)(memory_address_dta + GEMDRIVE_DTA_F_FOUND)) = 0xFFFF;
+    WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND, 0xFFFF);
   }
 }
 
@@ -450,8 +446,8 @@ static void __not_in_flash_func(addFile)(FileDescriptors **head,
                                          FileDescriptors *newFDescriptor,
                                          const char *fpath, FIL fobject,
                                          uint16_t new_fd) {
-  strncpy(newFDescriptor->fpath, fpath, GEMDRIVE_MAX_FOLDER_LENGTH);
-  newFDescriptor->fpath[GEMDRIVE_MAX_FOLDER_LENGTH] =
+  strncpy(newFDescriptor->fpath, fpath, sizeof(newFDescriptor->fpath) - 1);
+  newFDescriptor->fpath[sizeof(newFDescriptor->fpath) - 1] =
       '\0';  // Ensure null-termination
   newFDescriptor->fobject = fobject;
   newFDescriptor->fd = new_fd;
@@ -611,76 +607,75 @@ static void __not_in_flash_func(getLocalFullPathname)(uint16_t *pyldPtr,
 static void printVars(uint32_t mem) {
   // DPRINTF("Printing shared variables\n");
   DPRINTF(" GEMDRIVE_REENTRY_TRAP(0x%04x): %x\n", GEMDRIVE_REENTRY_TRAP,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_REENTRY_TRAP))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_REENTRY_TRAP)));
   // For strings, swapping is not applicable, so print as is.
   DPRINTF(" GEMDRIVE_DEFAULT_PATH(0x%04x): %s\n", GEMDRIVE_DEFAULT_PATH,
           (char *)(mem + GEMDRIVE_DEFAULT_PATH));
   DPRINTF(" GEMDRIVE_DTA_F_FOUND(0x%04x): %x\n", GEMDRIVE_DTA_F_FOUND,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DTA_F_FOUND))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DTA_F_FOUND)));
   DPRINTF(" GEMDRIVE_DTA_TRANSFER(0x%04x): %x\n", GEMDRIVE_DTA_TRANSFER,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DTA_TRANSFER))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DTA_TRANSFER)));
   DPRINTF(" GEMDRIVE_DTA_EXIST(0x%04x): %x\n", GEMDRIVE_DTA_EXIST,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DTA_EXIST))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DTA_EXIST)));
   DPRINTF(" GEMDRIVE_DTA_RELEASE(0x%04x): %x\n", GEMDRIVE_DTA_RELEASE,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DTA_RELEASE))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DTA_RELEASE)));
   DPRINTF(
       " GEMDRIVE_SET_DPATH_STATUS(0x%04x): %x\n", GEMDRIVE_SET_DPATH_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_SET_DPATH_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_SET_DPATH_STATUS)));
   DPRINTF(" GEMDRIVE_FOPEN_HANDLE(0x%04x): %x\n", GEMDRIVE_FOPEN_HANDLE,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FOPEN_HANDLE))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FOPEN_HANDLE)));
   DPRINTF(" GEMDRIVE_READ_BYTES(0x%04x): %x\n", GEMDRIVE_READ_BYTES,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_READ_BYTES))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_READ_BYTES)));
   DPRINTF(" GEMDRIVE_READ_BUFF(0x%04x): %x\n", GEMDRIVE_READ_BUFF,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_READ_BUFF))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_READ_BUFF)));
   DPRINTF(" GEMDRIVE_WRITE_BYTES(0x%04x): %x\n", GEMDRIVE_WRITE_BYTES,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_WRITE_BYTES))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_WRITE_BYTES)));
   DPRINTF(" GEMDRIVE_WRITE_CHK(0x%04x): %x\n", GEMDRIVE_WRITE_CHK,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_WRITE_CHK))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_WRITE_CHK)));
   DPRINTF(" GEMDRIVE_WRITE_CONFIRM_STATUS(0x%04x): %x\n",
           GEMDRIVE_WRITE_CONFIRM_STATUS,
-          SWAP_LONGWORD(
-              *((volatile uint32_t *)(mem + GEMDRIVE_WRITE_CONFIRM_STATUS))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_WRITE_CONFIRM_STATUS)));
   DPRINTF(
       " GEMDRIVE_FCLOSE_STATUS(0x%04x): %x\n", GEMDRIVE_FCLOSE_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FCLOSE_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FCLOSE_STATUS)));
   DPRINTF(
       " GEMDRIVE_DCREATE_STATUS(0x%04x): %x\n", GEMDRIVE_DCREATE_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DCREATE_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DCREATE_STATUS)));
   DPRINTF(
       " GEMDRIVE_DDELETE_STATUS(0x%04x): %x\n", GEMDRIVE_DDELETE_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DDELETE_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DDELETE_STATUS)));
   DPRINTF(
       " GEMDRIVE_FCREATE_HANDLE(0x%04x): %x\n", GEMDRIVE_FCREATE_HANDLE,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FCREATE_HANDLE))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FCREATE_HANDLE)));
   DPRINTF(
       " GEMDRIVE_FDELETE_STATUS(0x%04x): %x\n", GEMDRIVE_FDELETE_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FDELETE_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FDELETE_STATUS)));
   DPRINTF(" GEMDRIVE_FSEEK_STATUS(0x%04x): %x\n", GEMDRIVE_FSEEK_STATUS,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FSEEK_STATUS))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FSEEK_STATUS)));
   DPRINTF(
       " GEMDRIVE_FATTRIB_STATUS(0x%04x): %x\n", GEMDRIVE_FATTRIB_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FATTRIB_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FATTRIB_STATUS)));
   DPRINTF(
       " GEMDRIVE_FRENAME_STATUS(0x%04x): %x\n", GEMDRIVE_FRENAME_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FRENAME_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FRENAME_STATUS)));
   DPRINTF(
       " GEMDRIVE_FDATETIME_DATE(0x%04x): %x\n", GEMDRIVE_FDATETIME_DATE,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FDATETIME_DATE))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FDATETIME_DATE)));
   DPRINTF(
       " GEMDRIVE_FDATETIME_TIME(0x%04x): %x\n", GEMDRIVE_FDATETIME_TIME,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FDATETIME_TIME))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FDATETIME_TIME)));
   DPRINTF(
       " GEMDRIVE_FDATETIME_STATUS(0x%04x): %x\n", GEMDRIVE_FDATETIME_STATUS,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_FDATETIME_STATUS))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_FDATETIME_STATUS)));
   DPRINTF(" GEMDRIVE_DFREE_STATUS(0x%04x): %x\n", GEMDRIVE_DFREE_STATUS,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DFREE_STATUS))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DFREE_STATUS)));
   DPRINTF(" GEMDRIVE_DFREE_STRUCT(0x%04x): %x\n", GEMDRIVE_DFREE_STRUCT,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_DFREE_STRUCT))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_DFREE_STRUCT)));
   DPRINTF(" GEMDRIVE_PEXEC_MODE(0x%04x): %x\n", GEMDRIVE_PEXEC_MODE,
-          SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_PEXEC_MODE))));
+          SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_PEXEC_MODE)));
   DPRINTF(
       " GEMDRIVE_PEXEC_STACK_ADDR(0x%04x): %x\n", GEMDRIVE_PEXEC_STACK_ADDR,
-      SWAP_LONGWORD(*((volatile uint32_t *)(mem + GEMDRIVE_PEXEC_STACK_ADDR))));
+      SWAP_LONGWORD(READ_LONGWORD(mem, GEMDRIVE_PEXEC_STACK_ADDR)));
   // For strings, swapping is not applicable, so print as is.
   DPRINTF(" GEMDRIVE_PEXEC_FNAME(0x%04x): %s\n", GEMDRIVE_PEXEC_FNAME,
           (char *)(mem + GEMDRIVE_PEXEC_FNAME));
@@ -719,7 +714,7 @@ static void initVariables(uint32_t mem) {
   const uint16_t numSharedVars = (0x10000 - GEMDRIVE_RANDOM_TOKEN_OFFSET) / 4;
   DPRINTF("Initializing shared variables\n");
   for (uint32_t i = 0; i < numSharedVars; i++) {
-    *((volatile uint32_t *)(mem + (i * 4))) = 0;
+    WRITE_LONGWORD_RAW(mem, i * 4, 0);
   }
 }
 void __not_in_flash_func(gemdrive_init)() {
@@ -732,6 +727,12 @@ void __not_in_flash_func(gemdrive_init)() {
   dpathStr[1] = '\0';
 
   memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  if ((memorySharedAddress & 0x3u) != 0u) {
+    DPRINTF("ERROR: GEMDRIVE shared memory base 0x%08lx is not 4-byte aligned\n",
+            (unsigned long)memorySharedAddress);
+    assert((memorySharedAddress & 0x3u) == 0u);
+    return;
+  }
   memoryRandomTokenAddress = memorySharedAddress + GEMDRIVE_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + GEMDRIVE_RANDOM_TOKEN_SEED_OFFSET;
@@ -1251,12 +1252,10 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       switch (err) {
         case 0:
           DPRINTF("FSFIRST Added ndta: %x.\n", ndta);
-          currentDTANode = lookupDTA(ndta);
-          DPRINTF("DTA at %x added.\n", ndta);
           break;
         case -1:
-          DPRINTF("FSFIRST Error: DTA table full. Cannot add DTA at %x.\n",
-                  ndta);
+          DPRINTF(
+              "FSFIRST Error: Out of memory creating DTA node at %x.\n", ndta);
           break;
         case -2:
           DPRINTF("FSFIRST Error: DTA at %x already exists. Cannot add.\n",
@@ -1266,6 +1265,23 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           DPRINTF("FSFIRST Error: Unknown error adding DTA at %x.\n", ndta);
           break;
       }
+      if (err != 0) {
+        int16_t errorCode = (err == -1) ? GEMDOS_ENSMEM : GEMDOS_EINTRN;
+        WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, errorCode);
+        nullifyDTA(memorySharedAddress);
+        break;
+      }
+
+      currentDTANode = lookupDTA(ndta);
+      if (currentDTANode == NULL) {
+        DPRINTF("FSFIRST Error: DTA at %x was not found after insertion.\n",
+                ndta);
+        releaseDTA(ndta);
+        WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, GEMDOS_EINTRN);
+        nullifyDTA(memorySharedAddress);
+        break;
+      }
+      DPRINTF("DTA at %x added.\n", ndta);
 
       if (!(attribs & FS_ST_LABEL)) {
         attribs |= FS_ST_ARCH;
@@ -1280,6 +1296,15 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       }
       DPRINTF("Creating new directory object\n");
       currentDTANode->dj = (DIR *)malloc(sizeof(DIR));
+      if (currentDTANode->dj == NULL) {
+        DPRINTF("FSFIRST Error: Could not allocate directory object for %x.\n",
+                ndta);
+        releaseDTA(ndta);
+        WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, GEMDOS_ENSMEM);
+        nullifyDTA(memorySharedAddress);
+        break;
+      }
+      memset(currentDTANode->dj, 0, sizeof(DIR));
 
       // FILINFO is an output structure
       FILINFO fno = {0};
@@ -1287,9 +1312,14 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       size_t len = strlen(pattern) + 1;  // include terminator
       char *buf = malloc(len);           // single allocation
       if (!buf) {
-        DPRINTF("Error allocating memory for buf\n");
-        currentDTANode->pat = NULL;
-        currentDTANode->dj->pat = NULL;
+        DPRINTF("FSFIRST Error: Could not allocate pattern buffer for %x.\n",
+                ndta);
+        free(currentDTANode->dj);
+        currentDTANode->dj = NULL;
+        releaseDTA(ndta);
+        WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, GEMDOS_ENSMEM);
+        nullifyDTA(memorySharedAddress);
+        break;
       } else {
         memcpy(buf, pattern, len);  // one copy
         currentDTANode->pat = buf;
@@ -1452,11 +1482,6 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           nullifyDTA(memorySharedAddress);
         }
       } else {
-        f_closedir(dtaNode->dj);
-        if (dtaNode->dj != NULL) {
-          free(dtaNode->dj);
-          dtaNode->dj = NULL;
-        }
         DPRINTF("FsFirst not initalized\n");
         int16_t errorCode = GEMDOS_EINTRN;
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
@@ -1515,6 +1540,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           if (newFDescriptor == NULL) {
             DPRINTF("Memory allocation failed for new FileDescriptors\n");
             DPRINTF("ERROR: Could not add file to the list of open files\n");
+            FRESULT closeFr = f_close(&fobj);
+            if (closeFr != FR_OK) {
+              DPRINTF("ERROR: Could not close file after allocation failure (%d)\n",
+                      closeFr);
+            }
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
                                     GEMDOS_EINTRN);
           } else {
@@ -1589,6 +1619,12 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         if (newFDescriptor == NULL) {
           DPRINTF("Memory allocation failed for new FileDescriptors\n");
           DPRINTF("ERROR: Could not add file to the list of open files\n");
+          FRESULT closeFr = f_close(&fObj);
+          if (closeFr != FR_OK) {
+            DPRINTF(
+                "ERROR: Could not close created file after allocation failure (%d)\n",
+                closeFr);
+          }
           errorCode = GEMDOS_EINTRN;
         } else {
           addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter);

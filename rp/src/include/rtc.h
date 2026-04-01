@@ -74,6 +74,21 @@
                                 // bytes
 #define RTCEMUL_Y2K_PATCH (RTCEMUL_OLD_XBIOS_TRAP + 4)  // reentry_trap + 4 byte
 
+#define RTC_ASSERT_ALIGNED_2(offset) \
+  _Static_assert(((offset) & 0x1u) == 0u, #offset " must stay 2-byte aligned")
+#define RTC_ASSERT_ALIGNED_4(offset) \
+  _Static_assert(((offset) & 0x3u) == 0u, #offset " must stay 4-byte aligned")
+
+// Shared-memory layout contract for RTCEMUL.
+RTC_ASSERT_ALIGNED_4(RTCEMUL_RANDOM_TOKEN_OFFSET);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_RANDOM_TOKEN_SEED_OFFSET);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_SHARED_VARIABLES_OFFSET);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_VARIABLES_OFFSET);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_DATETIME_BCD);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_DATETIME_MSDOS);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_OLD_XBIOS_TRAP);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_Y2K_PATCH);
+
 #define NTP_DEFAULT_HOST "pool.ntp.org"
 #define NTP_DEFAULT_PORT 123
 #define NTP_DELTA 2208988800  // seconds between 1 Jan 1900 and 1 Jan 1970

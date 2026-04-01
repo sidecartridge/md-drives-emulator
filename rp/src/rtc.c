@@ -8,6 +8,8 @@
 
 #include "rtc.h"
 
+#include <assert.h>
+
 // Communication with the remote computer
 static TransmissionProtocol lastProtocol;
 static bool lastProtocolValid = false;
@@ -40,6 +42,16 @@ static long getUtcOffsetSeconds() { return utcOffsetSeconds; }
 static datetime_t *getRtcTime() { return &rtcTime; }
 
 static NTP_TIME *getNetTime() { return &netTime; }
+
+static void ntp_cleanup_pcb() {
+  if (netTime.ntp_pcb == NULL) {
+    return;
+  }
+
+  udp_recv(netTime.ntp_pcb, NULL, NULL);
+  udp_remove(netTime.ntp_pcb);
+  netTime.ntp_pcb = NULL;
+}
 
 static void hostFoundCB(const char *name, const ip_addr_t *ipaddr, void *arg) {
   if (!name) {
@@ -149,12 +161,19 @@ static bool isTrue(const char *value) {
   return false;
 }
 
-static void ntp_init() {
-  // Attempt to allocate a new UDP control block.
+static bool ntp_init() {
+  if (netTime.ntp_pcb != NULL) {
+    DPRINTF("Cleaning up stale NTP UDP control block before reinit.\n");
+    ntp_cleanup_pcb();
+  }
+
+  netTime.ntp_server_found = false;
+  netTime.ntp_error = false;
+
   netTime.ntp_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
   if (netTime.ntp_pcb == NULL) {
     DPRINTF("Failed to allocate a new UDP control block.\n");
-    return;
+    return false;
   }
 
   // Set up the callback function that will be called when an NTP response is
@@ -162,9 +181,8 @@ static void ntp_init() {
   udp_recv(netTime.ntp_pcb, ntpRecvCB, &netTime);
 
   // Initialization success, set flag.
-  netTime.ntp_server_found = false;
-  netTime.ntp_error = false;
   DPRINTF("NTP UDP control block initialized and callback set.\n");
+  return true;
 }
 
 static void set_internal_rtc() {
@@ -272,8 +290,10 @@ int rtc_queryNTPTime() {
   DPRINTF("UTC offset: %ld\n", getUtcOffsetSeconds());
 
   // Start the NTP client
-  ntp_init();
-  getNetTime()->ntp_server_found = false;
+  if (!ntp_init()) {
+    DPRINTF("Cannot initialize NTP UDP control block.\n");
+    return -1;
+  }
 
   bool dns_query_done = false;
   absolute_time_t rtcTimeoutSec =
@@ -323,21 +343,13 @@ int rtc_queryNTPTime() {
     DPRINTF("RP2040 RTC set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
             rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour, rtcTime.min,
             rtcTime.sec);
-    if (netTime.ntp_pcb) {
-      udp_recv(netTime.ntp_pcb, NULL, NULL);
-      udp_remove(netTime.ntp_pcb);
-      netTime.ntp_pcb = NULL;
-    }
+    ntp_cleanup_pcb();
     return 0;  // Success
 
   } else {
     DPRINTF("Timeout waiting for NTP server\n");
   }
-  if (netTime.ntp_pcb) {
-    udp_recv(netTime.ntp_pcb, NULL, NULL);
-    udp_remove(netTime.ntp_pcb);
-    netTime.ntp_pcb = NULL;
-  }
+  ntp_cleanup_pcb();
   return -1;  // Failure
 }
 
@@ -418,6 +430,12 @@ static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
 void rtc_initf() {
   DPRINTF("RTC init\n");
   memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  if ((memorySharedAddress & 0x3u) != 0u) {
+    DPRINTF("ERROR: RTC shared memory base 0x%08lx is not 4-byte aligned\n",
+            (unsigned long)memorySharedAddress);
+    assert((memorySharedAddress & 0x3u) == 0u);
+    return;
+  }
   memoryRandomTokenAddress = memorySharedAddress + RTCEMUL_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + RTCEMUL_RANDOM_TOKEN_SEED_OFFSET;
@@ -501,11 +519,13 @@ void rtc_initf() {
     uint32_t randomToken = rand();  // Generate a random 32-bit value
     DPRINTF("Init random token: %08X\n", memoryRandomTokenAddress);
     // Set the random token in the shared memory
-    TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenAddress, randomToken);
+    WRITE_LONGWORD_RAW(memorySharedAddress, RTCEMUL_RANDOM_TOKEN_OFFSET,
+                       randomToken);
     // Init the random token seed in the shared memory for the next command
     uint32_t newRandomSeedToken = rand();  // Generate a new random 32-bit value
     DPRINTF("Set the new random token seed: %08X\n", newRandomSeedToken);
-    TPROTO_SET_RANDOM_TOKEN(memoryRandomTokenSeedAddress, newRandomSeedToken);
+    WRITE_LONGWORD_RAW(memorySharedAddress, RTCEMUL_RANDOM_TOKEN_SEED_OFFSET,
+                       newRandomSeedToken);
   }
 
   bool rtcBoolEnabled = false;
