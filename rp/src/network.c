@@ -72,9 +72,8 @@ static char *network_trim_ascii_spaces(char *text) {
   }
 
   size_t len = strlen(text);
-  while (len > 0 &&
-         (text[len - 1] == ' ' || text[len - 1] == '\t' ||
-          text[len - 1] == '\r' || text[len - 1] == '\n')) {
+  while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+                     text[len - 1] == '\r' || text[len - 1] == '\n')) {
     text[--len] = '\0';
   }
 
@@ -308,7 +307,7 @@ const char *network_getAuthTypeStringShort(uint16_t connectCode) {
 #ifdef CYW43_WL_GPIO_LED_PIN
 int network_initChipOnly() {
   if (cyw43Initialized) {
-    DPRINTF("WiFi already initialized\n");
+    // DPRINTF("WiFi already initialized\n");
     return 0;
   }
   DPRINTF("CYW43 Logging level: %d\n", CYW43_VERBOSE_DEBUG);
