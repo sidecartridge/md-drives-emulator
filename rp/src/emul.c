@@ -23,7 +23,9 @@ static void cmdHiddenSettings(const char *arg);
 static void cmdGemdriveEnabled(const char *arg);
 static void cmdGemdriveFolder(const char *arg);
 static void cmdGemdriveDrive(const char *arg);
-static void cmdReadOnly(const char *arg);
+static void cmdAcsiEnabled(const char *arg);
+static void cmdAcsiImage(const char *arg);
+static void cmdAcsiFirstUnit(const char *arg);
 static void cmdFloppyEnabled(const char *arg);
 static void cmdFloppiesFolder(const char *arg);
 static void cmdFloppyDriveA(const char *arg);
@@ -48,7 +50,9 @@ static const Command commands[] = {
     {"g", cmdGemdriveEnabled},
     {"o", cmdGemdriveFolder},
     {"d", cmdGemdriveDrive},
-    {"n", cmdReadOnly},
+    {"c", cmdAcsiEnabled},
+    {"i", cmdAcsiImage},
+    {"n", cmdAcsiFirstUnit},
     {"f", cmdFloppyEnabled},
     {"l", cmdFloppiesFolder},
     {"a", cmdFloppyDriveA},
@@ -356,6 +360,107 @@ static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   return (c >= 'C' && c <= 'Z');
 }
 
+static char acsiUnitToDriveLetter(uint8_t unit) {
+  return (char)('C' + (unit & 0x7u));
+}
+
+static bool parseAcsiUnit(const char *value, uint8_t *unitOut) {
+  char *endptr = NULL;
+  long unit = strtol((value != NULL) ? value : "", &endptr, 10);
+  if ((value == NULL) || (value == endptr) || (*endptr != '\0') || (unit < 0) ||
+      (unit > 7)) {
+    return false;
+  }
+
+  if (unitOut != NULL) {
+    *unitOut = (uint8_t)unit;
+  }
+
+  return true;
+}
+
+static uint8_t getConfiguredAcsiUnit(void) {
+  SettingsConfigEntry *acsiFirstUnit = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_FIRST_UNIT);
+  uint8_t unit = 0;
+  if ((acsiFirstUnit != NULL) && parseAcsiUnit(acsiFirstUnit->value, &unit)) {
+    return unit;
+  }
+  return 0;
+}
+
+static bool isGemdriveEnabledConfigured(void) {
+  SettingsConfigEntry *gemDrive = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
+  return (gemDrive != NULL) && isTrue(gemDrive->value);
+}
+
+static bool isAcsiEnabledConfigured(void) {
+  SettingsConfigEntry *acsiEnabled = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
+  return (acsiEnabled != NULL) && isTrue(acsiEnabled->value);
+}
+
+static char getConfiguredGemdriveDriveLetter(void) {
+  SettingsConfigEntry *gemDriveDrive = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_DRIVE);
+  if ((gemDriveDrive != NULL) && isValidDrive(gemDriveDrive->value)) {
+    return (char)toupper((unsigned char)gemDriveDrive->value[0]);
+  }
+  return 'C';
+}
+
+static bool wouldGemdriveAcsiConflict(bool gemdriveEnabled,
+                                      char gemdriveDriveLetter,
+                                      bool acsiEnabled, uint8_t acsiUnit) {
+  if (!gemdriveEnabled || !acsiEnabled) {
+    return false;
+  }
+
+  return (char)toupper((unsigned char)gemdriveDriveLetter) ==
+         acsiUnitToDriveLetter(acsiUnit);
+}
+
+static void seedFolderPathFromStoredFile(
+    const char *storedFilePath, char folderPath[MAX_FILENAME_LENGTH + 1]) {
+  if ((storedFilePath == NULL) || (storedFilePath[0] == '\0')) {
+    strncpy(folderPath, "/", MAX_FILENAME_LENGTH);
+    folderPath[MAX_FILENAME_LENGTH] = '\0';
+    return;
+  }
+
+  strncpy(folderPath, storedFilePath, MAX_FILENAME_LENGTH);
+  folderPath[MAX_FILENAME_LENGTH] = '\0';
+
+  char *lastSlash = strrchr(folderPath, '/');
+  if (lastSlash == NULL) {
+    strncpy(folderPath, "/", MAX_FILENAME_LENGTH);
+    folderPath[MAX_FILENAME_LENGTH] = '\0';
+    return;
+  }
+
+  if (lastSlash == folderPath) {
+    folderPath[1] = '\0';
+    return;
+  }
+
+  *lastSlash = '\0';
+}
+
+static void buildSelectedPath(char out[MAX_FILENAME_LENGTH + 1],
+                              const char *folderPath, const char *entry) {
+  if ((folderPath == NULL) || (entry == NULL)) {
+    out[0] = '\0';
+    return;
+  }
+
+  if (strcmp(folderPath, "/") == 0) {
+    snprintf(out, MAX_FILENAME_LENGTH + 1, "/%s", entry);
+  } else {
+    snprintf(out, MAX_FILENAME_LENGTH + 1, "%s/%s", folderPath, entry);
+  }
+}
+
 // Remove last path component (".." navigation)
 static void __not_in_flash_func(pathUp)() {
   char temp[MAX_FILENAME_LENGTH + 1];
@@ -420,6 +525,11 @@ static bool __not_in_flash_func(floppiesFilter)(const char *name, BYTE attr) {
   return false;
 }
 
+static bool __not_in_flash_func(acsiImagesFilter)(const char *name, BYTE attr) {
+  (void)attr;
+  return (name[0] != '.');
+}
+
 static inline void vt52Cursor(uint8_t row, uint8_t col) {
   char vt52Seq[5];
   vt52Seq[0] = '\x1B';
@@ -436,6 +546,16 @@ static void showTitle() {
       "E"
       "\x1Bp"
       "Multi-drive Emulator - " RELEASE_VERSION "\n\x1Bq");
+}
+
+static void showSetupMessageScreen(const char *message) {
+  haltCountdown = true;
+  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
+  showTitle();
+  term_printString("\n\n");
+  term_printString((message != NULL) ? message : "");
+  term_printString("\nPress SPACE to continue...\n");
+  display_refresh();
 }
 
 static void __not_in_flash_func(showCounter)(int cdown);
@@ -470,7 +590,40 @@ static void __not_in_flash_func(menu)(void) {
 
   // Configurable options
   vt52Cursor(2, 0);
-  // Display first GEMDRIVE options
+  // Display the ACSI options
+  term_printString("A[C]SI Enabled (EXPERIMENTAL)? ");
+  SettingsConfigEntry *acsiEnabled = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
+  bool acsiIsEnabled = (acsiEnabled != NULL) && isTrue(acsiEnabled->value);
+  DPRINTF("ACSI: %s\n", acsiIsEnabled ? "true" : "false");
+  if (acsiIsEnabled) {
+    term_printString("Yes\n");
+
+    SettingsConfigEntry *acsiImage = settings_find_entry(
+        aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_IMAGE);
+    const char *acsiImageValue =
+        ((acsiImage != NULL) && (acsiImage->value[0] != '\0'))
+            ? acsiImage->value
+            : "<not set>";
+    char *acsiImageTail = right(acsiImageValue, 16);
+    term_printString("  [I]mage: ");
+    term_printString((acsiImageTail != NULL) ? acsiImageTail : acsiImageValue);
+    if (acsiImageTail != NULL) {
+      free(acsiImageTail);
+    }
+
+    uint8_t acsiFirstUnit = getConfiguredAcsiUnit();
+    char acsiUnitBuffer[16];
+    snprintf(acsiUnitBuffer, sizeof(acsiUnitBuffer), "%u (%c:)", acsiFirstUnit,
+             acsiUnitToDriveLetter(acsiFirstUnit));
+    term_printString("\n  First u[n]it: ");
+    term_printString(acsiUnitBuffer);
+    term_printString("\n\n");
+  } else {
+    term_printString("No\n\n\n\n");
+  }
+
+  // Display GEMDRIVE options
   term_printString("[G]EMDRIVE Enabled? ");
   // Is it enabled?
   SettingsConfigEntry *gemDrive = settings_find_entry(
@@ -695,11 +848,21 @@ void cmdHiddenSettings(const char *arg) {
 // GEMDRIVE commands
 //
 void cmdGemdriveEnabled(const char *arg) {
+  (void)arg;
   // Option to enable the GEMDRIVE
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
+  bool newEnabled = (gemDrive != NULL) ? !isTrue(gemDrive->value) : true;
+  if (newEnabled && wouldGemdriveAcsiConflict(
+                        true, getConfiguredGemdriveDriveLetter(),
+                        isAcsiEnabledConfigured(), getConfiguredAcsiUnit())) {
+    showSetupMessageScreen(
+        "Cannot enable GEMDRIVE: it conflicts with the current ACSI unit.");
+    return;
+  }
+
   settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED,
-                    !isTrue(gemDrive->value));
+                    newEnabled);
   settings_save(aconfig_getContext(), true);
   haltCountdown = true;
   menu();
@@ -1052,26 +1215,8 @@ void __not_in_flash_func(cmdGemdriveFolder)(const char *arg) {
   }
 }
 
-void cmdReadOnly(const char *arg) {
-  // Readonly option to avoid writing to the SD card
-  // Check first if the GEMDRIVE is enabled
-  SettingsConfigEntry *gemDrive = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
-  if (isTrue(gemDrive->value)) {
-    term_printString("GEMDRIVE is not enabled.\n");
-    SettingsConfigEntry *readOnly = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_READONLY);
-    settings_put_bool(aconfig_getContext(),
-                      ACONFIG_PARAM_DRIVES_GEMDRIVE_READONLY,
-                      !isTrue(readOnly->value));
-    settings_save(aconfig_getContext(), true);
-    haltCountdown = true;
-    menu();
-    display_refresh();
-  }
-}
-
 void cmdGemdriveDrive(const char *arg) {
+  (void)arg;
   // Check if the GEMDRIVE is enabled
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -1110,6 +1255,14 @@ void cmdGemdriveDrive(const char *arg) {
           }
           driveBuffer[len] = '\0';
         }
+        if (wouldGemdriveAcsiConflict(true, driveBuffer[0],
+                                      isAcsiEnabledConfigured(),
+                                      getConfiguredAcsiUnit())) {
+          showSetupMessageScreen(
+              "Cannot save GEMDRIVE drive: it conflicts with the current "
+              "ACSI unit.");
+          return;
+        }
         settings_put_string(aconfig_getContext(),
                             ACONFIG_PARAM_DRIVES_GEMDRIVE_DRIVE, driveBuffer);
         settings_save(aconfig_getContext(), true);
@@ -1117,6 +1270,136 @@ void cmdGemdriveDrive(const char *arg) {
       }
     }
   }
+}
+
+static void renderAcsiImageBrowser(const char *statusMessage) {
+  showTitle();
+  DPRINTF("Folder: %s\n", navState->folderPath);
+  term_printString("\nACSI image: ");
+  term_printString(navState->folderPath);
+  drawPage(NAV_LINES_PER_PAGE_OFFSET);
+  if (statusMessage != NULL) {
+    drawSetupInfoLine(statusMessage);
+  }
+  display_refresh();
+}
+
+//
+// ACSI commands
+//
+void cmdAcsiEnabled(const char *arg) {
+  (void)arg;
+  SettingsConfigEntry *acsiEnabled = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
+  bool newEnabled = (acsiEnabled != NULL) ? !isTrue(acsiEnabled->value) : true;
+
+  if (newEnabled &&
+      wouldGemdriveAcsiConflict(isGemdriveEnabledConfigured(),
+                                getConfiguredGemdriveDriveLetter(), true,
+                                getConfiguredAcsiUnit())) {
+    showSetupMessageScreen(
+        "Cannot enable ACSI: its first unit conflicts with the current "
+        "GEMDRIVE drive.");
+    return;
+  }
+
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED,
+                    newEnabled);
+  settings_save(aconfig_getContext(), true);
+  haltCountdown = true;
+  menu();
+  display_refresh();
+}
+
+void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
+  haltCountdown = true;
+  enum navStatus status = NAV_DIR_ERROR;
+
+  switch (term_getCommandLevel()) {
+    case TERM_COMMAND_LEVEL_SINGLE_KEY: {
+      SettingsConfigEntry *acsiImage = settings_find_entry(
+          aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_IMAGE);
+      seedFolderPathFromStoredFile(
+          (acsiImage != NULL) ? acsiImage->value : NULL, navState->folderPath);
+      term_setCommandLevel(TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY);
+      status = navigate_directory(true, false, '\0', acsiImagesFilter, NULL);
+      break;
+    }
+    case TERM_COMMAND_LEVEL_COMMAND_SINGLE_KEY_REENTRY: {
+      char key = (arg != NULL) ? arg[0] : '\0';
+      status = navigate_directory(false, false, key, acsiImagesFilter, NULL);
+      break;
+    }
+    default:
+      break;
+  }
+
+  switch (status) {
+    case NAV_DIR_FIRST_TIME_OK:
+    case NAV_DIR_NEXT_TIME_OK:
+      renderAcsiImageBrowser(NULL);
+      break;
+    case NAV_DIR_SELECTED: {
+      const char *selected = navState->entries[navState->selected];
+      size_t selectedLen = strlen(selected);
+      if ((selectedLen > 0 && selected[selectedLen - 1] == '/') ||
+          (strcmp(selected, "..") == 0)) {
+        renderAcsiImageBrowser("Select a file, not a directory.");
+        break;
+      }
+
+      char pathBuffer[MAX_FILENAME_LENGTH + 1];
+      buildSelectedPath(pathBuffer, navState->folderPath, selected);
+      settings_put_string(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_IMAGE,
+                          pathBuffer);
+      settings_save(aconfig_getContext(), true);
+      DPRINTF("ACSI image: %s. SAVED!\n", pathBuffer);
+      menu();
+      term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
+      display_refresh();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void cmdAcsiFirstUnit(const char *arg) {
+  (void)arg;
+  if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
+    showTitle();
+    term_printString("\n\n");
+    term_printString("Enter the first ACSI unit (0 to 7):\n");
+    term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
+    haltCountdown = true;
+    display_refresh();
+    return;
+  }
+
+  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
+
+  uint8_t firstUnit = 0;
+  if (!parseAcsiUnit(term_getInputBuffer(), &firstUnit)) {
+    showSetupMessageScreen("Invalid ACSI unit. Use a value from 0 to 7.");
+    return;
+  }
+
+  if (wouldGemdriveAcsiConflict(isGemdriveEnabledConfigured(),
+                                getConfiguredGemdriveDriveLetter(),
+                                isAcsiEnabledConfigured(), firstUnit)) {
+    showSetupMessageScreen(
+        "Cannot save the ACSI unit: it conflicts with the current GEMDRIVE "
+        "drive.");
+    return;
+  }
+
+  char unitBuffer[4];
+  snprintf(unitBuffer, sizeof(unitBuffer), "%u", firstUnit);
+  settings_put_string(aconfig_getContext(),
+                      ACONFIG_PARAM_DRIVES_ACSI_FIRST_UNIT, unitBuffer);
+  settings_save(aconfig_getContext(), true);
+  menu();
+  display_refresh();
 }
 
 //
@@ -1773,6 +2056,37 @@ void __not_in_flash_func(emul_start)() {
   // Each app or microfirmware must have a folder in the SD card where the
   // files are stored. The folder name is defined in the configuration.
   // If there is no folder in the micro SD card, the app will create it.
+  bool sdCardInitialized = false;
+
+  // ACSI images are selected from the SD card too, even though ACSI does not
+  // own a dedicated folder setting.
+  SettingsConfigEntry *acsiDrive = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
+  if (acsiDrive == NULL) {
+    DPRINTF("ACSI not found in the configuration.\n");
+    DPRINTF("Error initializing the SD card: ACSI params not found\n");
+    waitForSdFailureAndReturnToBooster(
+        "SD card error.\nCheck the card is inserted correctly.\nInsert "
+        "the card, then power cycle your computer or press RESET on your "
+        "Multidevice.");
+    return;
+  } else {
+    DPRINTF("ACSI: %s\n", acsiDrive->value);
+    if (isTrue(acsiDrive->value)) {
+      int sdcardErr = sdcard_initFilesystem(&fsys, "/");
+      if (sdcardErr != SDCARD_INIT_OK) {
+        DPRINTF("Error initializing the SD card for ACSI: %i\n", sdcardErr);
+        waitForSdFailureAndReturnToBooster(
+            "SD card error.\nCheck the card is inserted correctly.\nInsert "
+            "the card, then power cycle your computer or press RESET on your "
+            "Multidevice.");
+        return;
+      } else {
+        DPRINTF("SD card found & initialized for ACSI\n");
+        sdCardInitialized = true;
+      }
+    }
+  }
 
   // Let's start with the GEMDRIVE folder
   // First, check if the GEMDRIVE is enabled
@@ -1791,14 +2105,16 @@ void __not_in_flash_func(emul_start)() {
     if (isTrue(gemDrive->value)) {
       SettingsConfigEntry *folder = settings_find_entry(
           aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_FOLDER);
-      char *folderName = "/hd";
+      const char *folderName = "/hd";
       if (folder == NULL) {
         DPRINTF("FOLDER not found in the configuration. Using default value\n");
       } else {
         DPRINTF("FOLDER: %s\n", folder->value);
         folderName = folder->value;
       }
-      int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
+      int sdcardErr = sdCardInitialized
+                          ? sdcard_ensureFolder(folderName)
+                          : sdcard_initFilesystem(&fsys, folderName);
       if (sdcardErr != SDCARD_INIT_OK) {
         DPRINTF("Error initializing the SD card: %i\n", sdcardErr);
         waitForSdFailureAndReturnToBooster(
@@ -1808,6 +2124,7 @@ void __not_in_flash_func(emul_start)() {
         return;
       } else {
         DPRINTF("SD card found & initialized for GEMDRIVE\n");
+        sdCardInitialized = true;
       }
     }
   }
@@ -1829,14 +2146,16 @@ void __not_in_flash_func(emul_start)() {
   if (isTrue(floppyDrive->value)) {
     SettingsConfigEntry *folder = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
-    char *folderName = "/floppies";
+    const char *folderName = "/floppies";
     if (folder == NULL) {
       DPRINTF("FOLDER not found in the configuration. Using default value\n");
     } else {
       DPRINTF("FOLDER: %s\n", folder->value);
       folderName = folder->value;
     }
-    int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
+    int sdcardErr = sdCardInitialized
+                        ? sdcard_ensureFolder(folderName)
+                        : sdcard_initFilesystem(&fsys, folderName);
     if (sdcardErr != SDCARD_INIT_OK) {
       DPRINTF("Error initializing the SD card: %i\n", sdcardErr);
       waitForSdFailureAndReturnToBooster(
@@ -1845,7 +2164,8 @@ void __not_in_flash_func(emul_start)() {
           "on your Multidevice.");
       return;
     } else {
-      DPRINTF("SD card found & initialized for GEMDRIVE\n");
+      DPRINTF("SD card found & initialized for FLOPPY\n");
+      sdCardInitialized = true;
     }
   }
 
@@ -1925,6 +2245,9 @@ void __not_in_flash_func(emul_start)() {
         // DPRINTF("Forcing disconnect the USB mass storage...\n");
         // tud_disconnect();
 
+        DPRINTF("Running ACSI pre-init...\n");
+        acsi_preInit();
+
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");
         chandler_init();  // Initialize the command handler
@@ -1932,6 +2255,9 @@ void __not_in_flash_func(emul_start)() {
         // Initializing the GEMDRIVE
         DPRINTF("Initializing the GEMDRIVE...\n");
         gemdrive_init();
+        // Initializing ACSI
+        DPRINTF("Initializing the ACSI placeholder...\n");
+        acsi_init();
         // Initializing Floppy drives
         DPRINTF("Initializing the floppy drives...\n");
         floppy_init();  // Initialize the floppy drives
@@ -1940,6 +2266,7 @@ void __not_in_flash_func(emul_start)() {
         rtc_initf();  // Initialize the RTC emulator
 
         chandler_addCB(gemdrive_loop);  // Add the GEMDRIVE loop
+        chandler_addCB(acsi_loop);      // Add the ACSI loop
         chandler_addCB(floppy_loop);    // Add the floppy drives loop
         chandler_addCB(rtc_loop);       // Add the RTC loop
 
