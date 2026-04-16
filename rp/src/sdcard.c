@@ -67,6 +67,29 @@ bool sdcard_dirExist(const char *dir) {
   return dirExist;
 }
 
+sdcard_status_t sdcard_ensureFolder(const char *folderName) {
+  if ((folderName == NULL) || (folderName[0] == '\0') ||
+      (strcmp(folderName, "/") == 0)) {
+    DPRINTF("Empty or root folder name. Ignoring.\n");
+    return SDCARD_INIT_OK;
+  }
+
+  bool folderExists = sdcard_dirExist(folderName);
+  DPRINTF("Folder exists: %s\n", folderExists ? "true" : "false");
+  if (folderExists) {
+    return SDCARD_INIT_OK;
+  }
+
+  FRESULT fres = f_mkdir(folderName);
+  if (fres != FR_OK) {
+    DPRINTF("Error creating the folder.\n");
+    return SDCARD_CREATE_FOLDER_ERROR;
+  }
+
+  DPRINTF("Folder created.\n");
+  return SDCARD_INIT_OK;
+}
+
 sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName) {
   // Check the status of the sd card
   sdcard_status_t sdcardOk = sdcardInit();
@@ -84,26 +107,7 @@ sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName) {
   }
   DPRINTF("Filesystem mounted.\n");
 
-  // Now check if the folder exists in the SD card
-  bool folderExists = sdcard_dirExist(folderName);
-  DPRINTF("Folder exists: %s\n", folderExists ? "true" : "false");
-
-  // If the folder does not exist, try to create it
-  if (!folderExists) {
-    // If the folder is empty or '/' then ignore it
-    if (strcmp(folderName, "") == 0 || strcmp(folderName, "/") == 0) {
-      DPRINTF("Empty folder name. Ignoring.\n");
-      return SDCARD_INIT_OK;
-    }
-    // Create the folder
-    fres = f_mkdir(folderName);
-    if (fres != FR_OK) {
-      DPRINTF("Error creating the folder.\n");
-      return SDCARD_CREATE_FOLDER_ERROR;
-    }
-    DPRINTF("Folder created.\n");
-  }
-  return SDCARD_INIT_OK;
+  return sdcard_ensureFolder(folderName);
 }
 
 void sdcard_changeSpiSpeed(int baudRateKbits) {
