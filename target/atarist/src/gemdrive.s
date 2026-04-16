@@ -40,8 +40,8 @@ ROM_EXCHG_BUFFER_ADDR   equ (ROM4_START_ADDR + $8200)       ; ROM4 buffer addres
 RANDOM_TOKEN_ADDR:      equ (ROM_EXCHG_BUFFER_ADDR)
 RANDOM_TOKEN_SEED_ADDR  equ (RANDOM_TOKEN_ADDR + 4)         ; RANDOM_TOKEN_ADDR + 0 bytes
 RANDOM_TOKEN_POST_WAIT  equ $1                              ; Wait this cycles after the random number generator is ready
-COMMAND_TIMEOUT         equ $000000FFF ; Timeout for the simple command
-COMMAND_WRITE_TIMEOUT   equ $0000018FF ; Timeout for the command with large payload
+COMMAND_TIMEOUT         equ $00006FFF ; Timeout for commands (must cover FatFS SD operations)
+COMMAND_WRITE_TIMEOUT   equ $00006FFF ; Timeout for the command with large payload
 
 ROMCMD_START_ADDR:      equ (ROM3_START_ADDR)				; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    	equ ($ABCD) 			  	     	; Magic number header to identify a command
@@ -307,9 +307,12 @@ create_virtual_hard_disk:
     move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0    ; Get the drive number
     moveq.l #1, d1
     lsl.l d0, d1                         ; Calculate the bit number of the drive
-    or.l d1, _drvbits.w                  ; Set the drive bit
+    or.l d1, _drvbits.w                  ; Set the drive bit (all drives, so desktop sees it)
 
-    move.w d0, _bootdev.w                ; Set the boot device to the emulated drive if needed
+    cmp.w #2, d0                         ; Only set boot device if drive is C: (2)
+    bne.s .skip_bootdev
+    move.w d0, _bootdev.w                ; Set the boot device to C:
+.skip_bootdev:
 
 ;    move.l #hdv_default, _hdv_mediach.w ; Set the media change handler to a default handler
 ;    move.l #hdv_default, _hdv_rw.w      ; Set the read/write handler to a default handler
@@ -323,11 +326,13 @@ create_virtual_hard_disk:
 ;    clr.l _hdv_mediach.w
 ;    clr.w _cmdload.w                     ; Disable the automatic loading of COMMAND.P RG
 
+    cmp.w #2, d0                         ; Only set current drive + default path for C:
+    bne.s .skip_dsetdrv                  ; Non-C: drives stay invisible to default-drive lookups
     move.w d0, -(sp)                     ; Emulated drive in the parameter of Dsetdrv()
     gemdos Dsetdrv, 4                    ; Call Dsetdrv() and set the emulated drive
-
     pea default_path
     gemdos Dsetpath, 6                   ; Set the default path to "\"
+.skip_dsetdrv:
     rts
 
 default_path:
@@ -353,7 +358,7 @@ save_vectors:
     trap #13
     addq.l #8,sp
     move.l d0, d3                       ; Address of the old GEMDOS vector
-    move.l #old_handler, d4             ; Address of the old handlerHi ing
+    move.l #old_handler, d4             ; Address of the old handler
     send_sync CMD_SAVE_VECTORS, 8       ; Send the command to the Sidecart. 8 bytes of payload
     tst.w d0                            ; 0 if no error
     rts

@@ -222,7 +222,7 @@ static DTANode *dta_node_alloc(void) {
   return n;
 }
 
-static void dta_node_free(DTANode *n) {
+static void __not_in_flash_func(dta_node_free)(DTANode *n) {
   if (!n) return;
 
   // DTANode owns 'dj' and 'pat'. Ensure DIR is closed and dj->pat is detached
