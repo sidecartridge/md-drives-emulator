@@ -604,7 +604,7 @@ static void printPayload(uint8_t *payloadShowBytesPtr) {
   }
 }
 
-static FRESULT floppyUnmountDrive(FloppyDrive drive) {
+static FRESULT __not_in_flash_func(floppyUnmountDrive)(FloppyDrive drive) {
   FIL *fobj = floppyGetFileObject(drive);
   FloppyDiskState *state = floppyGetStatePtr(drive);
   char *fullPath = floppyGetFullPath(drive);
@@ -628,7 +628,7 @@ static FRESULT floppyUnmountDrive(FloppyDrive drive) {
   return FR_OK;
 }
 
-static FRESULT floppyMountDrivePath(FloppyDrive drive, const char *fname) {
+static FRESULT __not_in_flash_func(floppyMountDrivePath)(FloppyDrive drive, const char *fname) {
   if (fname == NULL || fname[0] == '\0') {
     *floppyGetStatePtr(drive) = FLOPPY_DISK_ERROR;
     return FR_INVALID_NAME;
