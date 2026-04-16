@@ -28,6 +28,10 @@ cmake -S rp/src -B rp/build
 # Full repo build
 ./build.sh pico_w debug 44444444-4444-4444-8444-444444444444
 
+# Build the Atari target from inside ./target/atarist
+cd target/atarist
+./build.sh "$PWD" release
+
 # Build the Atari GEMDRIVE tests through atarist-docker-toolkit/stcmd
 ./tests/atarist/build.sh "$PWD/tests/atarist" release
 ```
@@ -44,6 +48,9 @@ cmake -S rp/src -B rp/build
 - Prefer `cmake -S rp/src -B rp/build` and `cmake --build rp/build -j4` for normal RP validation.
 - The top-level `build.sh` wipes and recreates `dist/`.
 - The Atari target build uses `stcmd` inside [target/atarist/build.sh]($HOME/mister_wkspc/md-drives-emulator/target/atarist/build.sh).
+- Run the Atari target build from inside `./target/atarist`, so `"$PWD"` resolves to that folder:
+  - `cd target/atarist`
+  - `./build.sh "$PWD" release`
 - The Atari GEMDRIVE test binary is built with [tests/atarist/build.sh]($HOME/mister_wkspc/md-drives-emulator/tests/atarist/build.sh) and produces `tests/atarist/dist/FSTESTS.TOS`.
 
 ## 4. Editing Guardrails
