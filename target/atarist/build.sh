@@ -2,21 +2,31 @@
 
 # Ensure an argument is provided
 if [ -z "$1" ]; then
-    echo "Usage: $0 <working_folder> all|release"
+    echo "Usage: $0 <working_folder> all|release [debug_mode]"
     exit 1
 fi
 
 if [ -z "$2" ]; then
-    echo "Usage: $0 <working_folder> all|release"
+    echo "Usage: $0 <working_folder> all|release [debug_mode]"
     exit 1
 fi
 
 working_folder=$1
 build_type=$2
+debug_mode=$3
 target_firmware="target_firmware.h"
 
-# ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
-ST_WORKING_FOLDER=$working_folder stcmd make $build_type
+if [ -z "$debug_mode" ]; then
+    debug_mode=$DEBUG_MODE
+fi
+
+make_args=("$build_type")
+if [ -n "$debug_mode" ]; then
+    make_args+=("DEBUG_MODE=$debug_mode")
+fi
+
+# ST_WORKING_FOLDER=$working_folder/configurator stcmd make "${make_args[@]}"
+ST_WORKING_FOLDER=$working_folder stcmd make "${make_args[@]}"
 
 #filename_tos="./dist/SIDECART.TOS"
 
