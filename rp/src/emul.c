@@ -583,10 +583,111 @@ static void refreshSetupInfoLine(void) {
   }
 }
 
+// Quick one-shot SD health check: writes + reads a 4 KB block a handful of
+// times to the SD root under "/.sdhealth", times each op, and exposes the
+// averaged KB/s to the menu renderer below. Results are cached after the
+// first run so the menu can be redrawn without retesting.
+#define SDHEALTH_PATH "/.sdhealth"
+#define SDHEALTH_BLOCK_BYTES 4096u
+#define SDHEALTH_ITERATIONS 5
+
+static bool sdHealthDone = false;
+static bool sdHealthOk = false;
+static uint32_t sdHealthWriteKBPerS = 0;
+static uint32_t sdHealthReadKBPerS = 0;
+
+static bool runSdHealthTest(uint32_t *writeKBPerS, uint32_t *readKBPerS) {
+  static uint8_t buf[SDHEALTH_BLOCK_BYTES];
+  for (size_t i = 0; i < SDHEALTH_BLOCK_BYTES; ++i) {
+    buf[i] = (uint8_t)(i ^ (i >> 4));
+  }
+
+  uint64_t writeTotalUs = 0;
+  uint64_t readTotalUs = 0;
+
+  for (unsigned int iter = 0; iter < SDHEALTH_ITERATIONS; ++iter) {
+    FIL file;
+    FRESULT fr = f_open(&file, SDHEALTH_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fr != FR_OK) {
+      return false;
+    }
+    absolute_time_t t0 = get_absolute_time();
+    UINT written = 0;
+    fr = f_write(&file, buf, SDHEALTH_BLOCK_BYTES, &written);
+    if (fr == FR_OK) {
+      fr = f_sync(&file);
+    }
+    absolute_time_t t1 = get_absolute_time();
+    f_close(&file);
+    if (fr != FR_OK || written != SDHEALTH_BLOCK_BYTES) {
+      f_unlink(SDHEALTH_PATH);
+      return false;
+    }
+    writeTotalUs += (uint64_t)absolute_time_diff_us(t0, t1);
+
+    fr = f_open(&file, SDHEALTH_PATH, FA_READ);
+    if (fr != FR_OK) {
+      f_unlink(SDHEALTH_PATH);
+      return false;
+    }
+    t0 = get_absolute_time();
+    UINT read = 0;
+    fr = f_read(&file, buf, SDHEALTH_BLOCK_BYTES, &read);
+    t1 = get_absolute_time();
+    f_close(&file);
+    if (fr != FR_OK || read != SDHEALTH_BLOCK_BYTES) {
+      f_unlink(SDHEALTH_PATH);
+      return false;
+    }
+    readTotalUs += (uint64_t)absolute_time_diff_us(t0, t1);
+  }
+
+  f_unlink(SDHEALTH_PATH);
+
+  if (writeTotalUs == 0 || readTotalUs == 0) {
+    return false;
+  }
+
+  // KB/s = (bytes * 1e6) / (us * 1024). Use 64-bit intermediates to avoid
+  // overflow on slow cards (bytes * 1e6 alone already exceeds uint32).
+  uint64_t totalBytes = (uint64_t)SDHEALTH_BLOCK_BYTES * SDHEALTH_ITERATIONS;
+  *writeKBPerS =
+      (uint32_t)((totalBytes * 1000000ull) / (writeTotalUs * 1024ull));
+  *readKBPerS = (uint32_t)((totalBytes * 1000000ull) / (readTotalUs * 1024ull));
+  return true;
+}
+
+static void ensureSdHealthRun(void) {
+  if (sdHealthDone) return;
+  sdHealthOk = runSdHealthTest(&sdHealthWriteKBPerS, &sdHealthReadKBPerS);
+  sdHealthDone = true;
+  DPRINTF("SD health: %s W=%lu KB/s R=%lu KB/s\n",
+          sdHealthOk ? "ok" : "error",
+          (unsigned long)sdHealthWriteKBPerS,
+          (unsigned long)sdHealthReadKBPerS);
+}
+
+static void printSdHealthLine(void) {
+  char line[64];
+  if (sdHealthOk) {
+    snprintf(line, sizeof(line), "SD 4KB W=%lu KB/s  R=%lu KB/s\n",
+             (unsigned long)sdHealthWriteKBPerS,
+             (unsigned long)sdHealthReadKBPerS);
+  } else {
+    snprintf(line, sizeof(line), "SD 4KB check: ERROR\n");
+  }
+  term_printString(line);
+}
+
 static void __not_in_flash_func(menu)(void) {
   term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
 
   showTitle();
+
+  // SD speed sample on the second line — run once at first menu entry,
+  // cached thereafter so repeat renders are free.
+  ensureSdHealthRun();
+  printSdHealthLine();
 
   // Configurable options
   vt52Cursor(2, 0);
@@ -2220,6 +2321,10 @@ void __not_in_flash_func(emul_start)() {
 
         // Call all the "drives" loops
         chandler_loop();
+        // Deferred write-behind flushers. Cheap poll: both return
+        // immediately unless something was written ≥ their interval ago.
+        acsi_tick();
+        floppy_tick();
         if (!gemLaunched) {
           DPRINTF("Jumping to desktop...\n");
           SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
