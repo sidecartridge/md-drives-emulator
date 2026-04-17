@@ -248,7 +248,7 @@ number.
 /  bit1=1: Do not trust last allocated cluster number in the FSINFO.
 */
 
-#define FF_FS_LOCK 16
+#define FF_FS_LOCK 8
 /* The option FF_FS_LOCK switches file lock function to control duplicated file
 open /  and illegal operation to open objects. This option must be 0 when
 FF_FS_READONLY /  is 1.
