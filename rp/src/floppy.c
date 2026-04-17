@@ -125,6 +125,20 @@ static uint8_t currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
 static bool floppyMediaChangeClearPending[2] = {false, false};
 static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
 
+// Write-behind flush state per drive. FLOPPYEMUL_WRITE_SECTORS marks the
+// drive dirty; floppy_tick() issues a deferred f_sync once no writes have
+// arrived for FLOPPY_FLUSH_INTERVAL_MS.
+static volatile bool floppyDirty[2] = {false, false};
+static volatile uint32_t floppyDirtyAtMs[2] = {0, 0};
+
+static inline void __not_in_flash_func(floppyMarkWriteDirty)(uint8_t drive) {
+  if (drive > 1) return;
+  if (!floppyDirty[drive]) {
+    floppyDirtyAtMs[drive] = to_ms_since_boot(get_absolute_time());
+    floppyDirty[drive] = true;
+  }
+}
+
 static inline bool floppyStateIsMounted(FloppyDiskState state) {
   return state == FLOPPY_DISK_MOUNTED_RW || state == FLOPPY_DISK_MOUNTED_RO;
 }
@@ -1321,9 +1335,35 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         }
         return;
       }
+      floppyMarkWriteDirty((uint8_t)diskNum);
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);
       break;
     }
+  }
+}
+
+void __not_in_flash_func(floppy_tick)(void) {
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  for (uint8_t drive = 0; drive < 2; ++drive) {
+    if (!floppyDirty[drive]) continue;
+    FIL *fobj = (drive == 0) ? &fobjA : &fobjB;
+    FloppyDiskState state =
+        (drive == 0) ? floppyDiskStatus.stateA : floppyDiskStatus.stateB;
+    if (state != FLOPPY_DISK_MOUNTED_RW) {
+      // Image not writable (RO mount, unmounted, error): clear the dirty
+      // flag so we don't loop here once the drive is swapped out.
+      floppyDirty[drive] = false;
+      continue;
+    }
+    if ((now - floppyDirtyAtMs[drive]) < FLOPPY_FLUSH_INTERVAL_MS) continue;
+    FRESULT fr = f_sync(fobj);
+    if (fr != FR_OK) {
+      DPRINTF("Floppy tick f_sync %c failed (%d)\n",
+              (drive == 0) ? 'A' : 'B', (int)fr);
+      floppyDirtyAtMs[drive] = now;
+      continue;
+    }
+    floppyDirty[drive] = false;
   }
 }

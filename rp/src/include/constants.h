@@ -19,6 +19,14 @@
 // Time macros
 #define SEC_TO_MS 1000
 
+// Shared write-behind flush window for ACSI/floppy ticks. Writes mark the
+// backing image dirty and record when the dirty window opened; the tick
+// calls f_sync after this many milliseconds with no further writes
+// resetting the window. Each driver's header exposes its own alias
+// (ACSI_FLUSH_INTERVAL_MS, FLOPPY_FLUSH_INTERVAL_MS) that defaults to this
+// value so they can diverge if ever needed.
+#define DRIVES_FLUSH_INTERVAL_MS 3000u
+
 // SELECT signal
 #define SELECT_GPIO 5  // GPIO signal for SELECT
 
