@@ -791,11 +791,14 @@ _notlong:
     bra .fread_exit                      ; Exit the loop
 
 .fread_command_ok:
-    move.l GEMDRVEMUL_READ_BYTES, d0     ; The number of bytes actually read from the Sidecart or the error code
-    ext.l d0                             ; Extend the sign of the value
-    ; If d0 is negative, there is an error
-    bmi .fread_exit                      ; Exit the loop
-    tst.l d0                             ; Check if the number of bytes read is 0
+    ; GEMDRVEMUL_READ_BYTES holds a full 32-bit value: a positive byte count
+    ; on success or a negative GEMDOS error code. The RP already writes it
+    ; sign-extended, so no ext.l is needed — and an ext.l here would
+    ; misinterpret counts >= 32768 as negative errors (silent ceiling bug
+    ; waiting for BUFFER_READ_SIZE to ever exceed 32 KB).
+    move.l GEMDRVEMUL_READ_BYTES, d0     ; signed 32-bit: bytes read or GEMDOS error
+    bmi .fread_exit                      ; negative -> error, exit
+    tst.l d0                             ; zero -> EOF
     beq .fread_exit_ok                   ; If 0, we are done
 
     move.l _dskbufp, a5                  ; Address of the buffer to read the data from the Sidecart

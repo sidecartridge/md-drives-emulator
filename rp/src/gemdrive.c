@@ -1291,6 +1291,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
 
       if (currentDTANode->dj != NULL) {
         DPRINTF("DTA at %x already has a directory object. Freeing it\n", ndta);
+        // Mirror dta_node_free's ordering: close the directory (releasing
+        // any FatFS internal state it pinned) before freeing the DIR object.
+        // Defensive — this path should not normally fire because the
+        // releaseDTA() call above already cleaned any prior node.
+        (void)f_closedir(currentDTANode->dj);
         free(currentDTANode->dj);
         currentDTANode->dj = NULL;
       }
@@ -1736,10 +1741,18 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
             newOff = (newOff + off > size) ? size : newOff + off;
           }
           break;
-        case SEEK_END:  // SEEK_END 2 offset specifies the positive number of
-                        // bytes from the end of the file
+        case SEEK_END:  // GEMDOS Fseek mode 2: offset is relative to end of
+                        // file. TOS callers typically pass a negative offset
+                        // (seek N bytes back from EOF); positive offsets are
+                        // unusual but must still resolve to a sane position.
           if (off <= 0) {
             newOff = (size + off < 0) ? 0 : size + off;
+          } else {
+            // Positive offset would seek past EOF. Clamp to size so
+            // subsequent reads return 0 bytes (EOF) instead of leaving
+            // newOff at its prior value (which would silently ignore the
+            // seek request).
+            newOff = size;
           }
           break;
         default:
