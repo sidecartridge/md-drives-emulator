@@ -56,3 +56,4 @@ upload_s3.sh
 .history/
 build/
 dist/
+.cache/

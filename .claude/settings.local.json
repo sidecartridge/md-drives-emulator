@@ -7,7 +7,8 @@
       "Bash(grep -n \"Mshrink\\\\|Malloc\\\\|PTERMRES\\\\|_membot\\\\|_memtop\\\\|resident\\\\|install\" /Users/diego/mister_wkspc/md-drives-emulator/target/atarist/src/*.s)",
       "Bash(python3 /tmp/final_layout.py)",
       "Bash(cmake --build rp/build -j4)",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Bash(cmake --build /Users/diego/mister_wkspc/md-drives-emulator/rp/build -j4)"
     ]
   }
 }

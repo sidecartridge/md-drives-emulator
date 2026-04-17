@@ -52,6 +52,24 @@ cd target/atarist
   - `cd target/atarist`
   - `./build.sh "$PWD" release`
 - The Atari GEMDRIVE test binary is built with [tests/atarist/build.sh]($HOME/mister_wkspc/md-drives-emulator/tests/atarist/build.sh) and produces `tests/atarist/dist/FSTESTS.TOS`.
+- **Every Atari `.s` module at `target/atarist/src/*.s` must close with this tail block, placed AFTER `include "inc/sidecart_functions.s"`:**
+  ```asm
+          even
+          nop
+          nop
+          nop
+          nop
+          nop
+          nop
+          nop
+          nop
+  <module>_end:
+  ```
+  This is not optional. `target/atarist/firmware.py` strips trailing `0x00` bytes from `BOOT.BIN` before generating `rp/src/include/target_firmware.h`, so whatever non-zero bytes are emitted last become the final words of the C array. On the RP side, `COPY_FIRMWARE_TO_RAM` copies only `target_firmware_length` words into the 64 KB `__rom_in_ram_start__` region; the rest of that RAM is uninitialized. Two things subsequently over-read past the trimmed end:
+  1. `COMMAND_SYNC_WRITE_CODE_SIZE = 4 + (_end_sync_write_code_in_stack - _start_sync_write_code_in_stack)` — the `+4` safety margin means `send_sync_write_command_to_sidecart`'s code-copy loop reads 4 bytes past the polling code.
+  2. 68000 instruction prefetch on the last two words of the polling loop.
+
+  Without the NOP tail, the polling code (the last thing emitted by `include "inc/sidecart_functions.s"`) ends up as the tail of the trimmed firmware, the 4-byte over-read lands on uninitialized RP RAM, and the garbage either gets executed from `_dskbufp` or confuses TOS. The symptom is intermittent 4-bomb bus errors on write paths only — very hard to diagnose. `floppy.s`, `gemdrive.s`, and `rtc.s` already follow this convention. Any new `.s` module added must do the same.
 
 ## 4. Editing Guardrails
 - Do not modify vendored code unless the user explicitly asks for it:
