@@ -17,8 +17,8 @@ ACSIEMUL_BCB_POOL_BYTES    equ (32*1024+2*1024)
 ROM_EXCHG_BUFFER_ADDR   equ (ROM4_START_ADDR + $8200)
 RANDOM_TOKEN_ADDR       equ (ROM_EXCHG_BUFFER_ADDR)
 RANDOM_TOKEN_SEED_ADDR  equ (RANDOM_TOKEN_ADDR + 4)
-COMMAND_TIMEOUT         equ $00006FFF
-COMMAND_WRITE_TIMEOUT   equ $00006FFF
+COMMAND_TIMEOUT         equ $0006FFFF
+COMMAND_WRITE_TIMEOUT   equ $0006FFFF
 
 ROMCMD_START_ADDR       equ (ROM3_START_ADDR)
 CMD_MAGIC_NUMBER        equ ($ABCD)
@@ -28,13 +28,22 @@ APP_ACSIEMUL            equ $0500
 CMD_SET_SHARED_VAR      equ ($0 + APP_ACSIEMUL)
 CMD_READ_SECTOR         equ ($1 + APP_ACSIEMUL)
 CMD_READ_SECTOR_BATCH   equ ($2 + APP_ACSIEMUL)
+CMD_WRITE_SECTOR        equ ($3 + APP_ACSIEMUL)
+CMD_WRITE_SECTOR_BATCH  equ ($4 + APP_ACSIEMUL)
 CMD_DEBUG               equ ($C + APP_ACSIEMUL)
+
+ACSI_WRITE_CHUNK_SIZE   equ 1024
 
 ; Toggle batched sector reads: 1 = single RP round-trip for all sectors,
 ; 0 = one round-trip per logical sector (original path).
 USE_BATCH_READ          equ 1
 
-; Conservative byte limit for a single batch read — must be ≤ the RP's
+; Toggle batched sector writes: 1 = pack up to BATCH_MAX_BYTES worth of
+; sectors into a single RP flush (one f_sync for the whole batch),
+; 0 = original single-sector write path (one f_sync per logical sector).
+USE_BATCH_WRITE         equ 1
+
+; Conservative byte limit for a single batch read/write — must be ≤ the RP's
 ; ACSIEMUL_IMAGE_BUFFER_SIZE (22624). Rounded down for alignment.
 ACSIEMUL_BATCH_MAX_BYTES equ $5800
 
@@ -111,6 +120,13 @@ BCB_BUFR                equ 16
 
     include inc/tos.s
     include inc/sidecart_macros.s
+
+; Default _DEBUG to 0 if the build didn't pass -D_DEBUG=… (the Makefile
+; always does, but this keeps the file assemblable stand-alone and lets
+; `ifne _DEBUG` uniformly mean "debug mode on").
+    ifnd _DEBUG
+_DEBUG equ 0
+    endif
 
 chain_saved_hdv macro
     tst.l (ACSIEMUL_SHARED_VARIABLES + (\1 * 4))
@@ -392,7 +408,9 @@ acsi_assign_bcb_list_buffers:
     rts
 
 acsi_hdv_bpb:
+    ifne _DEBUG
     trace_hook_word DEBUG_HDV_BPB, 64(sp)
+    endif
     clr.l d0
     move.w 4(sp), d0
     cmp.l #15, d0
@@ -414,11 +432,17 @@ acsi_hdv_bpb:
 .acsi_hdv_bpb_return:
     rts
 .acsi_hdv_bpb_owned:
+    ifne _DEBUG
     trace_hook_word DEBUG_HDV_BPB_MATCH, 64(sp)
     move.w 4(sp), d7
     bsr.s acsi_trace_hdv_bpb_data
+    endif
     bra.s .acsi_hdv_bpb_return
 
+    ifne _DEBUG
+; Dump the Atari-visible BPB struct to the RP log in four CMD_DEBUG slices.
+; Present only in debug builds — release builds drop the function entirely
+; (not referenced once the caller above is also gated out).
 acsi_trace_hdv_bpb_data:
     movem.l d0-d7/a0-a6, -(sp)
     movea.l d0, a6
@@ -485,6 +509,7 @@ acsi_trace_hdv_bpb_data:
 
     movem.l (sp)+, d0-d7/a0-a6
     rts
+    endif
 
 acsi_hdv_rw:
     move.w 14(sp), d0                        ; d0.w = logical drive number (0=A, 1=B, 2=C...).
@@ -495,24 +520,33 @@ acsi_hdv_rw:
     move.l 0(a0, d0.w), d0                   ; Non-zero entry means this logical drive belongs to ACSI.
     beq .acsi_hdv_rw_chain_old               ; Zero BPB pointer means "not our drive": use previous hdv_rw.
     movea.l d0, a1                           ; a1 = BPB pointer for this logical drive.
-    btst #0, 5(sp)                           ; rwflag bit 0 selects write when set (low byte of word at 4(sp)).
-    bne.s .acsi_hdv_rw_success               ; Writes are still stubbed: acknowledge them without touching media.
     tst.w 10(sp)                             ; Sector count requested by TOS.
     beq.s .acsi_hdv_rw_success               ; A zero-sector request is a no-op and therefore succeeds.
-    tst.l 6(sp)                              ; The destination buffer pointer must be valid for a read.
-    beq.s .acsi_hdv_rw_read_fault            ; Null buffer: fail before touching the sidecart transport.
+    tst.l 6(sp)                              ; The buffer pointer must be valid.
+    beq.s .acsi_hdv_rw_read_fault            ; Null buffer: fail.
     movem.l d1-d7/a0-a4, -(sp)              ; Preserve caller registers (a5/a6 untouched by our code + send_sync).
     move.w 58(sp), d1                        ; d1 = sector count after the register save frame.
     move.w (a1), d2                          ; d2 = logical sector size announced in the BPB.
     bne.s .acsi_hdv_rw_have_recsize
     move.w #512, d2
 .acsi_hdv_rw_have_recsize:
-    movea.l 54(sp), a4                       ; a4 = destination buffer in ST RAM.
-    clr.w d5                                 ; d5 = read mode for acsi_do_transfer_sidecart.
+    movea.l 54(sp), a4                       ; a4 = buffer in ST RAM.
     moveq #0, d6                             ; d6 = starting logical sector within the emulated partition.
     move.w 60(sp), d6
     move.w 62(sp), d4                        ; d4 = logical drive number used by the RP-side mapper.
-    bsr.s acsi_do_transfer_sidecart          ; Pull the requested sectors from RP into the caller buffer.
+    btst #0, 53(sp)                          ; rwflag bit 0: 1=write, 0=read (low byte of word at 4+48=52(sp)).
+    bne.s .acsi_hdv_rw_write
+    ; Read path
+    clr.w d5
+    bsr.s acsi_do_transfer_sidecart
+    bra.s .acsi_hdv_rw_done
+.acsi_hdv_rw_write:
+    ifne USE_BATCH_WRITE
+    bsr acsi_write_sectors_batch
+    else
+    bsr acsi_write_sectors_to_sidecart
+    endif
+.acsi_hdv_rw_done:
     movem.l (sp)+, d1-d7/a0-a4              ; Restore the caller context and keep d0 as the BIOS status.
     rts                                      ; Return success or BIOS error code from the transfer helper.
 .acsi_hdv_rw_read_fault:
@@ -522,7 +556,6 @@ acsi_hdv_rw:
     clr.l d0
     rts
 .acsi_hdv_rw_chain_old:
-    trace_hook_word DEBUG_HDV_RW_OLD_HANDLER, 14(sp)
     tst.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_OLD_HDV_RW * 4))
     beq.s .acsi_hdv_rw_none
     movea.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_OLD_HDV_RW * 4)), a0
@@ -726,6 +759,152 @@ acsi_read_sectors_batch:
 .acsi_batch_exit:
     rts
 
+; Write logical sectors to the RP. Sends sector data in ACSI_WRITE_CHUNK_SIZE
+; chunks via send_sync_write_command_to_sidecart. Each chunk carries:
+;   d3 = recno:drive (packed)
+;   d4 = byte offset inside the sector (0, chunk, 2*chunk, ...)
+;   d6 = chunk size in bytes, plus d6 bytes streamed from a4.
+; The RP writes each chunk directly at IMAGE_BUFFER[d4] and flushes to SD
+; when d4 + chunkSize reaches recsize. Because d4 is declared by the caller,
+; retries land at the same offset and are inherently idempotent.
+; Entry: d1.w = count, d2.w = recsize, d4.w = drive, d6.l = starting recno,
+;        a4 = source buffer in Atari RAM.
+; Exit:  d0 = 0 on success, negative BIOS error on failure.
+acsi_write_sectors_to_sidecart:
+    subq.w #1, d1
+.acsi_write_sectors_loop:
+    bsr.s acsi_write_sector_to_sidecart
+    tst.w d0
+    bne.s .acsi_write_sectors_done
+    addq.l #1, d6
+    dbf d1, .acsi_write_sectors_loop
+.acsi_write_sectors_done:
+    rts
+
+; Write one logical sector in chunks. Each chunk self-addresses via d4 so the
+; RP placement is independent of previous chunks; timeout-triggered retries
+; overwrite the same bytes at the same offset.
+; Entry: d2.l = recsize, d3 pre-packed = recno:drive (set below from d4/d6),
+;        a4 = source buffer.
+; Exit:  d0 = 0 on success, negative on error. a4 advanced by recsize.
+acsi_write_sector_to_sidecart:
+    ; Pack d3 = recno:drive for all chunks of this sector
+    move.w d6, d3
+    swap d3
+    move.w d4, d3                            ; d3 = recno:drive (constant for all chunks)
+    moveq #0, d4                             ; d4 = byte offset inside sector
+.acsi_write_chunk_loop:
+    ; Zero-extend recsize into d5 so garbage in the caller's d2.high never
+    ; leaks into the long arithmetic (TOS's hdv_rw convention does not
+    ; guarantee a clean d2.high; trusting move.l d2,... corrupts the chunk
+    ; size and walks a4 into unrelated RAM).
+    moveq #0, d5
+    move.w d2, d5                            ; d5 = recsize (zero-extended)
+    sub.l d4, d5                             ; d5 = remaining = recsize - offset
+    cmp.l #ACSI_WRITE_CHUNK_SIZE, d5
+    ble.s .acsi_write_chunk_custom
+    move.l #ACSI_WRITE_CHUNK_SIZE, d5
+.acsi_write_chunk_custom:
+    ; d5 = bytes this chunk. d4 = offset in sector (sent to RP).
+    move.w #CMD_RETRIES_COUNT, d7
+.acsi_write_chunk_retry:
+    movem.l d1-d7/a4, -(sp)
+    move.w #CMD_WRITE_SECTOR, d0
+    move.l d5, d6                            ; d6 = bytes to stream from a4
+    bsr send_sync_write_command_to_sidecart
+    movem.l (sp)+, d1-d7/a4
+    tst.w d0
+    beq.s .acsi_write_chunk_ok
+    dbf d7, .acsi_write_chunk_retry
+    moveq #EWRITF, d0
+    rts
+.acsi_write_chunk_ok:
+    add.l d5, a4                             ; advance source pointer
+    add.l d5, d4                             ; offset += chunk
+    cmp.w d2, d4                             ; offset < recsize? (word compare: recsize ≤ 8192 fits)
+    blt.s .acsi_write_chunk_loop
+.acsi_write_sector_done:
+    ; All chunks sent. Check RP status.
+    move.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_RW_STATUS * 4)), d0
+    tst.l d0
+    rts
+
+; Batched write path. Splits a multi-sector Rwabs request into back-to-back
+; batches of up to ACSIEMUL_BATCH_MAX_BYTES / recsize sectors. Each batch
+; is sent as a stream of CMD_WRITE_SECTOR_BATCH chunks; the RP buffers all
+; sectors of the batch in IMAGE_BUFFER and commits them with a single
+; f_write + f_sync. Compared to the single-sector path this collapses N
+; directory-entry syncs per Rwabs into ⌈totalBytes / BATCH_MAX_BYTES⌉.
+; Entry: d1.w = count, d2.w = recsize, d4.w = drive, d6.l = starting recno,
+;        a4 = source buffer in Atari RAM.
+; Exit:  d0 = 0 on success, negative BIOS error on failure.
+acsi_write_sectors_batch:
+    move.l #ACSIEMUL_BATCH_MAX_BYTES, d7
+    divu.w d2, d7                            ; d7.w = max sectors per batch
+.acsi_write_batch_outer:
+    move.w d1, d5                            ; d5.low = remaining count
+    cmp.w d7, d5
+    bls.s .acsi_write_batch_no_clamp
+    move.w d7, d5                            ; clamp to max per batch
+.acsi_write_batch_no_clamp:
+    ; d5.w = this batch's sector count. Save outer state (NOT a4 — inner
+    ; advances it across the batch like the single-sector path).
+    movem.l d1/d2/d4/d5/d6/d7, -(sp)
+    bsr acsi_write_one_batch
+    movem.l (sp)+, d1/d2/d4/d5/d6/d7
+    tst.w d0
+    bne.s .acsi_write_batch_done
+    add.w d5, d6                             ; startRecno += batch count
+    sub.w d5, d1                             ; remaining -= batch count
+    bgt.s .acsi_write_batch_outer
+    clr.l d0
+.acsi_write_batch_done:
+    rts
+
+; Send one batch: d5.w sectors starting at recno d6.l, recsize d2.w,
+; drive d4.w, source a4. Streams the entire batch in ACSI_WRITE_CHUNK_SIZE
+; chunks; each chunk carries d3 = startRecno:drive, d4 = byte offset inside
+; the batch, d5 = totalBytes (= count × recsize). The RP flushes when the
+; last chunk arrives.
+; Exit: d0 = 0 on success, negative on error. a4 advanced by totalBytes.
+acsi_write_one_batch:
+    ; Compute totalBytes via mulu.w — produces a clean 32-bit product in
+    ; d5, wiping the garbage high word left over from the outer's move.w.
+    mulu.w d2, d5                            ; d5 = totalBytes
+    move.w d6, d3
+    swap d3
+    move.w d4, d3                            ; d3 = startRecno:drive
+    moveq #0, d4                             ; d4 = offset inside batch
+.acsi_write_batch_chunk_loop:
+    ; d6 = chunk size = min(totalBytes - offset, CHUNK_SIZE).
+    move.l d5, d6
+    sub.l d4, d6                             ; d6 = remaining in batch
+    cmp.l #ACSI_WRITE_CHUNK_SIZE, d6
+    ble.s .acsi_write_batch_chunk_custom
+    move.l #ACSI_WRITE_CHUNK_SIZE, d6
+.acsi_write_batch_chunk_custom:
+    move.w #CMD_RETRIES_COUNT, d7
+.acsi_write_batch_chunk_retry:
+    movem.l d1-d7/a4, -(sp)
+    move.w #CMD_WRITE_SECTOR_BATCH, d0
+    bsr send_sync_write_command_to_sidecart
+    movem.l (sp)+, d1-d7/a4
+    tst.w d0
+    beq.s .acsi_write_batch_chunk_ok
+    dbf d7, .acsi_write_batch_chunk_retry
+    moveq #EWRITF, d0
+    rts
+.acsi_write_batch_chunk_ok:
+    add.l d6, a4                             ; advance source pointer
+    add.l d6, d4                             ; offset += chunk
+    cmp.l d5, d4                             ; offset < totalBytes?
+    blt.s .acsi_write_batch_chunk_loop
+.acsi_write_batch_flush_done:
+    ; All chunks sent. Check RP status (set by the RP after its flush).
+    move.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_RW_STATUS * 4)), d0
+    tst.l d0
+    rts
+
 acsi_hdv_boot:
     trace_hook_word DEBUG_HDV_BOOT, _bootdev.w
     chain_saved_hdv SVAR_OLD_HDV_BOOT
@@ -767,4 +946,17 @@ acsi_hdv_mediach:
     clr.l d0
     rts
 
+; Shared functions included at the end of the file
+; Don't forget to include the macros for the shared functions at the top of file
     include "inc/sidecart_functions.s"
+
+        even
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+acsi_end:

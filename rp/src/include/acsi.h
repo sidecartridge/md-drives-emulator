@@ -114,6 +114,8 @@ _Static_assert(ACSIEMUL_IMAGE_BUFFER_SIZE >= 512u,
   (APP_ACSIEMUL << 8 | 0x00)  // Reserved for future shared variable updates
 #define ACSIEMUL_READ_SECTOR (APP_ACSIEMUL << 8 | 0x01)
 #define ACSIEMUL_READ_SECTOR_BATCH (APP_ACSIEMUL << 8 | 0x02)
+#define ACSIEMUL_WRITE_SECTOR (APP_ACSIEMUL << 8 | 0x03)
+#define ACSIEMUL_WRITE_SECTOR_BATCH (APP_ACSIEMUL << 8 | 0x04)
 #define ACSIEMUL_DEBUG (APP_ACSIEMUL << 8 | 0x0C)
 
 #define ACSIEMUL_DEBUG_HDV_INIT 0x00
@@ -202,9 +204,15 @@ FRESULT acsi_parse_fat16_geometry(AcsiImageContext *context,
                                   const AcsiPartitionEntry *partition,
                                   AcsiFat16Geometry *geometry);
 
+// Write-behind flush window for acsi_tick(). Defaults to the shared
+// DRIVES_FLUSH_INTERVAL_MS in constants.h; override here if ACSI ever
+// needs a different window from the floppy path.
+#define ACSI_FLUSH_INTERVAL_MS DRIVES_FLUSH_INTERVAL_MS
+
 void __not_in_flash_func(acsi_init)();
 void acsi_preInit(void);
 void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
                                     uint16_t *payloadPtr);
+void __not_in_flash_func(acsi_tick)(void);
 
 #endif  // ACSI_H

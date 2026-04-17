@@ -16,6 +16,10 @@ static uint32_t memorySharedAddress = 0;
 static uint32_t memoryRandomTokenAddress = 0;
 static uint32_t memoryRandomTokenSeedAddress = 0;
 static char acsiImagePath[MAX_FILENAME_LENGTH + 1] = {0};
+// Set whenever acsiImagePath is (re)written; cleared after
+// acsiEnsureRuntimeImageOpen confirms the currently-open image still
+// matches the configured path. Avoids a per-I/O strncmp on the hot path.
+static bool acsiImagePathDirty = true;
 static FATFS acsiFilesys = {0};
 static uint32_t acsiFirstVolumeDrive = 0;
 static uint32_t acsiLastVolumeDrive = 0;
@@ -34,6 +38,19 @@ static uint32_t acsiPartitionSectorCounts[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint16_t acsiLogicalSectorSizes[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint16_t acsiLogicalToPhysicalRatios[ACSI_PUN_INFO_MAXUNITS] = {0};
 static AcsiImageContext acsiRuntimeImage = {0};
+
+// Write-behind flush state. Writes mark the image dirty and record when
+// the dirty window opened; acsi_tick() flushes via f_sync once the window
+// has aged past ACSI_FLUSH_INTERVAL_MS with no further writes resetting it.
+static volatile bool acsiWriteDirty = false;
+static volatile uint32_t acsiWriteDirtyAtMs = 0;
+
+static inline void __not_in_flash_func(acsiMarkWriteDirty)(void) {
+  if (!acsiWriteDirty) {
+    acsiWriteDirtyAtMs = to_ms_since_boot(get_absolute_time());
+    acsiWriteDirty = true;
+  }
+}
 
 typedef struct {
   uint16_t recsize;
@@ -161,16 +178,24 @@ static FRESULT __not_in_flash_func(acsiEnsureRuntimeImageOpen)(void) {
     return FR_INVALID_OBJECT;
   }
 
+  // Fast path: image already open and the configured path hasn't been
+  // touched since the last successful open. Skips the per-I/O strncmp.
+  if (acsiRuntimeImage.isOpen && !acsiImagePathDirty) {
+    return FR_OK;
+  }
+
   if (acsiRuntimeImage.isOpen) {
     if (strncmp(acsiRuntimeImage.imagePath, acsiImagePath,
                 sizeof(acsiRuntimeImage.imagePath)) == 0) {
+      acsiImagePathDirty = false;
       return FR_OK;
     }
     acsi_image_close(&acsiRuntimeImage);
   }
 
-  FRESULT fr = acsi_image_open(&acsiRuntimeImage, acsiImagePath, true);
+  FRESULT fr = acsi_image_open(&acsiRuntimeImage, acsiImagePath, false);
   if (fr == FR_OK) {
+    acsiImagePathDirty = false;
     return FR_OK;
   }
 
@@ -183,7 +208,7 @@ static FRESULT __not_in_flash_func(acsiEnsureRuntimeImageOpen)(void) {
     return fr;
   }
 
-  return acsi_image_open(&acsiRuntimeImage, acsiImagePath, true);
+  return acsi_image_open(&acsiRuntimeImage, acsiImagePath, false);
 }
 
 static void acsiResetBpbCache(void) {
@@ -466,65 +491,6 @@ static const char *acsiRebindDecisionName(uint32_t decision) {
       return "skipped-memtop-zero";
     default:
       return "unknown";
-  }
-}
-
-static bool acsiShouldTraceReadSectorDump(uint16_t driveNumber,
-                                          uint32_t logicalSector) {
-  if (driveNumber != 3u) {
-    return false;
-  }
-
-  switch (logicalSector) {
-    case 39u:
-    case 40u:
-    case 77u:
-    case 78u:
-      return true;
-    default:
-      return false;
-  }
-}
-
-static void acsiDumpBytesRawHexAscii(const char *label, const uint8_t *buffer,
-                                     size_t length) {
-  if (label == NULL || buffer == NULL || length == 0u) {
-    return;
-  }
-
-  DPRINTFRAW("%s\n", label);
-
-  for (size_t offset = 0; offset < length; offset += 16u) {
-    char hexPart[16u * 3u + 1u];
-    char asciiPart[16u + 1u];
-    size_t hexPos = 0u;
-    size_t chunkLength = length - offset;
-    if (chunkLength > 16u) {
-      chunkLength = 16u;
-    }
-
-    for (size_t index = 0; index < 16u; ++index) {
-      if (index < chunkLength) {
-        uint8_t value = buffer[offset + index];
-        hexPos += (size_t)snprintf(&hexPart[hexPos], sizeof(hexPart) - hexPos,
-                                   "%02X ", (unsigned int)value);
-        asciiPart[index] = (value >= 32u && value <= 126u) ? (char)value : '.';
-      } else {
-        hexPos +=
-            (size_t)snprintf(&hexPart[hexPos], sizeof(hexPart) - hexPos, "   ");
-        asciiPart[index] = ' ';
-      }
-    }
-
-    if (hexPos > 0u && hexPos < sizeof(hexPart)) {
-      hexPart[hexPos - 1u] = '\0';
-    } else {
-      hexPart[sizeof(hexPart) - 1u] = '\0';
-    }
-    asciiPart[16u] = '\0';
-
-    DPRINTFRAW("  %04X: %-47s |%s|\n", (unsigned int)offset, hexPart,
-               asciiPart);
   }
 }
 
@@ -930,6 +896,7 @@ static void acsiTraceBpbData(uint32_t driveAndPhase, uint32_t value1,
 
 static void acsiLoadConfiguredState(bool *enabledOut, uint8_t *firstUnitOut) {
   acsiImagePath[0] = '\0';
+  acsiImagePathDirty = true;
 
   SettingsConfigEntry *image = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_IMAGE);
@@ -1816,9 +1783,9 @@ FRESULT __not_in_flash_func(acsi_image_read_sectors)(AcsiImageContext *context,
   return (bytesRead == (UINT)bytesToRead) ? FR_OK : FR_INT_ERR;
 }
 
-FRESULT acsi_image_write_sectors(AcsiImageContext *context, uint32_t lba,
-                                 uint16_t sectorCount, const void *buffer,
-                                 size_t bufferSize) {
+FRESULT __not_in_flash_func(acsi_image_write_sectors)(
+    AcsiImageContext *context, uint32_t lba, uint16_t sectorCount,
+    const void *buffer, size_t bufferSize) {
   if (context == NULL || buffer == NULL || !context->isOpen ||
       sectorCount == 0) {
     return FR_INVALID_PARAMETER;
@@ -1853,7 +1820,11 @@ FRESULT acsi_image_write_sectors(AcsiImageContext *context, uint32_t lba,
     return FR_INT_ERR;
   }
 
-  return f_sync(&context->file);
+  // f_sync is deferred to acsi_tick() so that bursts of writes pay the
+  // directory-update cost only once per idle window (~1 s) instead of once
+  // per sector. Data sits in FatFS's window buffer in the meantime; a power
+  // yank before the next tick costs the last ≤1 s of writes.
+  return FR_OK;
 }
 
 FRESULT acsi_parse_mbr(AcsiImageContext *context,
@@ -2779,6 +2750,26 @@ void __not_in_flash_func(acsi_init)() {
   DPRINTF("ACSI mediach mask init: %08lX\n", (unsigned long)mediaChangedMask);
 }
 
+void __not_in_flash_func(acsi_tick)(void) {
+  if (!acsiWriteDirty || !acsiRuntimeImage.isOpen ||
+      acsiRuntimeImage.readOnly) {
+    return;
+  }
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  if ((now - acsiWriteDirtyAtMs) < ACSI_FLUSH_INTERVAL_MS) {
+    return;
+  }
+  FRESULT fr = f_sync(&acsiRuntimeImage.file);
+  if (fr != FR_OK) {
+    DPRINTF("ACSI tick f_sync failed (%d)\n", (int)fr);
+    // Leave dirty so the next tick retries; pushing the timestamp forward
+    // avoids tight-looping on a persistent error.
+    acsiWriteDirtyAtMs = now;
+    return;
+  }
+  acsiWriteDirty = false;
+}
+
 void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
                                     uint16_t *payloadPtr) {
   if (((lastProtocol->command_id >> 8) & 0xFF) != APP_ACSIEMUL) {
@@ -2790,8 +2781,6 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
       uint16_t driveNumber = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
       uint32_t logicalSector =
           (uint32_t)TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
-      bool traceSectorDump =
-          acsiShouldTraceReadSectorDump(driveNumber, logicalSector);
 
       if (!acsiDriveIsOwned(driveNumber) ||
           logicalSector >= acsiPartitionSectorCounts[driveNumber]) {
@@ -2856,33 +2845,8 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
         break;
       }
 
-      if (traceSectorDump) {
-        char label[96];
-        snprintf(label, sizeof(label),
-                 "ACSI READ_SECTOR raw drive=%c recno=%lu lba=%lu",
-                 acsiDriveNumberToLetter(driveNumber),
-                 (unsigned long)logicalSector, (unsigned long)physicalSector);
-        acsiDumpBytesRawHexAscii(
-            label,
-            (const uint8_t *)(uintptr_t)(memorySharedAddress +
-                                         ACSIEMUL_IMAGE_BUFFER_OFFSET),
-            (recsize < 64u) ? recsize : 64u);
-      }
-
       CHANGE_ENDIANESS_BLOCK16(
           memorySharedAddress + ACSIEMUL_IMAGE_BUFFER_OFFSET, recsize);
-      if (traceSectorDump) {
-        char label[96];
-        snprintf(label, sizeof(label),
-                 "ACSI READ_SECTOR st-view drive=%c recno=%lu lba=%lu",
-                 acsiDriveNumberToLetter(driveNumber),
-                 (unsigned long)logicalSector, (unsigned long)physicalSector);
-        acsiDumpBytesRawHexAscii(
-            label,
-            (const uint8_t *)(uintptr_t)(memorySharedAddress +
-                                         ACSIEMUL_IMAGE_BUFFER_OFFSET),
-            (recsize < 64u) ? recsize : 64u);
-      }
       DPRINTF("ACSI READ_SECTOR ok drive=%c recno=%lu lba=%lu recsize=%u\n",
               acsiDriveNumberToLetter(driveNumber),
               (unsigned long)logicalSector, (unsigned long)physicalSector,
@@ -2905,9 +2869,12 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
       uint32_t totalBytes = (uint32_t)sectorCount * recsize;
       uint32_t totalPhysical = (uint32_t)sectorCount * physicalSectorCount;
 
-      if ((recsize < ACSI_IMAGE_SECTOR_SIZE) ||
-          (totalBytes > ACSIEMUL_IMAGE_BUFFER_SIZE) ||
-          (physicalSectorCount == 0u)) {
+      // recsize and physicalSectorCount are guaranteed non-zero (and recsize
+      // is a valid power of two in [512, 8192]) by acsiDriveIsOwned +
+      // the drive-table population gate, so only the batch-size ceiling
+      // needs checking here (totalBytes = sectorCount × recsize, and
+      // sectorCount comes from the wire).
+      if (totalBytes > ACSIEMUL_IMAGE_BUFFER_SIZE) {
         DPRINTF(
             "ACSI BATCH invalid drive=%c recsize=%u count=%u total=%lu "
             "buf=%u\n",
@@ -2958,6 +2925,242 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
               acsiDriveNumberToLetter(driveNumber),
               (unsigned long)logicalSector, (unsigned int)sectorCount,
               (unsigned long)totalBytes);
+      acsiSetRwStatus(0);
+    } break;
+    case ACSIEMUL_WRITE_SECTOR: {
+      // Idempotent chunk protocol. Each chunk declares its own byte offset
+      // inside the target sector via d4, so the RP never has to guess chunk
+      // order and timeout-induced retries overwrite the same IMAGE_BUFFER
+      // bytes harmlessly. When offset + chunkSize reaches recsize, the full
+      // sector is byte-swapped and written to SD.
+      uint16_t driveNumber = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t logicalSector =
+          (uint32_t)TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t offsetInSector =
+          TPROTO_GET_NEXT16_PAYLOAD_PARAM32(payloadPtr);  // d4
+      // Advance past d4.high, d5.low, d5.high to the streamed buffer.
+      TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);
+      TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);
+
+      uint16_t *chunkData = payloadPtr;
+      uint32_t chunkSize =
+          (lastProtocol->payload_size >= 16u)
+              ? (uint32_t)(lastProtocol->payload_size - 16u)
+              : 0u;
+      if (chunkSize > 1024u) {
+        chunkSize = 1024u;
+      }
+
+      if (!acsiDriveIsOwned(driveNumber)) {
+        DPRINTF("ACSI WRITE rejected: drive %u not owned\n",
+                (unsigned int)driveNumber);
+        acsiSetRwStatus(-8);
+        break;
+      }
+
+      uint32_t recsize = acsiLogicalSectorSizes[driveNumber];
+      // acsiDriveIsOwned guarantees recsize is a valid power of two in
+      // [512, 8192]; only the chunk/offset bounds (from the wire) remain.
+      if (chunkSize == 0u || offsetInSector + chunkSize > recsize) {
+        DPRINTF(
+            "ACSI WRITE invalid drive=%c recno=%lu offset=%lu chunk=%lu "
+            "recsize=%lu\n",
+            acsiDriveNumberToLetter(driveNumber),
+            (unsigned long)logicalSector, (unsigned long)offsetInSector,
+            (unsigned long)chunkSize, (unsigned long)recsize);
+        acsiSetRwStatus(-11);
+        break;
+      }
+
+      memcpy((void *)(uintptr_t)(memorySharedAddress +
+                                  ACSIEMUL_IMAGE_BUFFER_OFFSET +
+                                  offsetInSector),
+             chunkData, chunkSize);
+
+      DPRINTF(
+          "ACSI WRITE chunk drive=%c recno=%lu offset=%lu chunk=%lu "
+          "recsize=%lu\n",
+          acsiDriveNumberToLetter(driveNumber),
+          (unsigned long)logicalSector, (unsigned long)offsetInSector,
+          (unsigned long)chunkSize, (unsigned long)recsize);
+
+      if (offsetInSector + chunkSize < recsize) {
+        // Intermediate chunk — the Atari side only reads SVAR_RW_STATUS
+        // after all chunks of the sector have been acknowledged, so there
+        // is no need to stamp it here.
+        break;
+      }
+
+      // Last chunk: byte-swap the assembled sector and flush to SD.
+      CHANGE_ENDIANESS_BLOCK16(
+          memorySharedAddress + ACSIEMUL_IMAGE_BUFFER_OFFSET, recsize);
+
+      FRESULT fr = acsiEnsureRuntimeImageOpen();
+      if (fr != FR_OK) {
+        DPRINTF("ACSI WRITE open error (%d)\n", (int)fr);
+        acsiSetRwStatus(-11);
+        break;
+      }
+
+      if (acsiRuntimeImage.readOnly) {
+        DPRINTF("ACSI WRITE rejected: image is read-only\n");
+        acsiSetRwStatus(-13);
+        break;
+      }
+
+      uint32_t physicalSectorCount = acsiLogicalToPhysicalRatios[driveNumber];
+      uint64_t physicalSector =
+          (uint64_t)acsiPunInfoStartSectors[driveNumber] +
+          ((uint64_t)logicalSector * (uint64_t)physicalSectorCount);
+
+      fr = acsi_image_write_sectors(
+          &acsiRuntimeImage, (uint32_t)physicalSector,
+          (uint16_t)physicalSectorCount,
+          (void *)(uintptr_t)(memorySharedAddress +
+                               ACSIEMUL_IMAGE_BUFFER_OFFSET),
+          recsize);
+      if (fr != FR_OK) {
+        DPRINTF("ACSI WRITE error drive=%c recno=%lu (%d)\n",
+                acsiDriveNumberToLetter(driveNumber),
+                (unsigned long)logicalSector, (int)fr);
+        acsiSetRwStatus(-10);
+        break;
+      }
+
+      DPRINTF("ACSI WRITE ok drive=%c recno=%lu recsize=%lu\n",
+              acsiDriveNumberToLetter(driveNumber),
+              (unsigned long)logicalSector, (unsigned long)recsize);
+      acsiMarkWriteDirty();
+      acsiSetRwStatus(0);
+    } break;
+    case ACSIEMUL_WRITE_SECTOR_BATCH: {
+      // Batched, idempotent multi-sector write. Payload per chunk:
+      //   d3 = startRecno:drive (constant across the batch)
+      //   d4 = byte offset inside the batch (0, CHUNK, 2*CHUNK, ...)
+      //   d5 = totalBytes for the batch (= count × recsize)
+      // The RP copies each chunk directly to IMAGE_BUFFER[offset] and, when
+      // offset + chunkSize == totalBytes, flushes the full batch with a
+      // single acsi_image_write_sectors(). Retries land at the same offset
+      // so they are harmless.
+      uint16_t driveNumber = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t startLogicalSector =
+          (uint32_t)TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t offsetInBatch =
+          TPROTO_GET_NEXT16_PAYLOAD_PARAM32(payloadPtr);  // d4
+      uint32_t totalBytes =
+          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5
+      TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // past d5 to buffer
+
+      uint16_t *chunkData = payloadPtr;
+      uint32_t chunkSize =
+          (lastProtocol->payload_size >= 16u)
+              ? (uint32_t)(lastProtocol->payload_size - 16u)
+              : 0u;
+      if (chunkSize > 1024u) {
+        chunkSize = 1024u;
+      }
+
+      if (!acsiDriveIsOwned(driveNumber)) {
+        DPRINTF("ACSI WRITE_BATCH rejected: drive %u not owned\n",
+                (unsigned int)driveNumber);
+        acsiSetRwStatus(-8);
+        break;
+      }
+
+      uint32_t recsize = acsiLogicalSectorSizes[driveNumber];
+      // acsiDriveIsOwned guarantees recsize != 0; the remaining checks cover
+      // wire-supplied values (totalBytes, chunkSize, offsetInBatch).
+      if (totalBytes == 0u || (totalBytes % recsize) != 0u ||
+          totalBytes > ACSIEMUL_IMAGE_BUFFER_SIZE || chunkSize == 0u ||
+          offsetInBatch + chunkSize > totalBytes) {
+        DPRINTF(
+            "ACSI WRITE_BATCH invalid drive=%c recno=%lu offset=%lu chunk=%lu "
+            "total=%lu recsize=%lu\n",
+            acsiDriveNumberToLetter(driveNumber),
+            (unsigned long)startLogicalSector,
+            (unsigned long)offsetInBatch, (unsigned long)chunkSize,
+            (unsigned long)totalBytes, (unsigned long)recsize);
+        acsiSetRwStatus(-11);
+        break;
+      }
+
+      memcpy((void *)(uintptr_t)(memorySharedAddress +
+                                  ACSIEMUL_IMAGE_BUFFER_OFFSET +
+                                  offsetInBatch),
+             chunkData, chunkSize);
+
+      DPRINTF(
+          "ACSI WRITE_BATCH chunk drive=%c recno=%lu offset=%lu chunk=%lu "
+          "total=%lu\n",
+          acsiDriveNumberToLetter(driveNumber),
+          (unsigned long)startLogicalSector,
+          (unsigned long)offsetInBatch, (unsigned long)chunkSize,
+          (unsigned long)totalBytes);
+
+      if (offsetInBatch + chunkSize < totalBytes) {
+        // Intermediate chunk — the Atari side only reads SVAR_RW_STATUS
+        // after the last chunk of the batch is acknowledged.
+        break;
+      }
+
+      // Last chunk — byte-swap the full batch and flush in one write.
+      CHANGE_ENDIANESS_BLOCK16(
+          memorySharedAddress + ACSIEMUL_IMAGE_BUFFER_OFFSET, totalBytes);
+
+      FRESULT fr = acsiEnsureRuntimeImageOpen();
+      if (fr != FR_OK) {
+        DPRINTF("ACSI WRITE_BATCH open error (%d)\n", (int)fr);
+        acsiSetRwStatus(-11);
+        break;
+      }
+
+      if (acsiRuntimeImage.readOnly) {
+        DPRINTF("ACSI WRITE_BATCH rejected: image is read-only\n");
+        acsiSetRwStatus(-13);
+        break;
+      }
+
+      uint32_t logicalSectorCount = totalBytes / recsize;
+      uint32_t physicalSectorCount = acsiLogicalToPhysicalRatios[driveNumber];
+      uint64_t physicalSector =
+          (uint64_t)acsiPunInfoStartSectors[driveNumber] +
+          ((uint64_t)startLogicalSector * (uint64_t)physicalSectorCount);
+      uint64_t totalPhysical =
+          (uint64_t)logicalSectorCount * (uint64_t)physicalSectorCount;
+
+      if ((physicalSector + totalPhysical) > 0xFFFFFFFFu ||
+          totalPhysical > 0xFFFFu) {
+        DPRINTF(
+            "ACSI WRITE_BATCH out of range drive=%c recno=%lu count=%lu\n",
+            acsiDriveNumberToLetter(driveNumber),
+            (unsigned long)startLogicalSector,
+            (unsigned long)logicalSectorCount);
+        acsiSetRwStatus(-11);
+        break;
+      }
+
+      fr = acsi_image_write_sectors(
+          &acsiRuntimeImage, (uint32_t)physicalSector,
+          (uint16_t)totalPhysical,
+          (void *)(uintptr_t)(memorySharedAddress +
+                               ACSIEMUL_IMAGE_BUFFER_OFFSET),
+          totalBytes);
+      if (fr != FR_OK) {
+        DPRINTF(
+            "ACSI WRITE_BATCH error drive=%c recno=%lu count=%lu (%d)\n",
+            acsiDriveNumberToLetter(driveNumber),
+            (unsigned long)startLogicalSector,
+            (unsigned long)logicalSectorCount, (int)fr);
+        acsiSetRwStatus(-10);
+        break;
+      }
+
+      DPRINTF(
+          "ACSI WRITE_BATCH ok drive=%c recno=%lu count=%lu total=%lu\n",
+          acsiDriveNumberToLetter(driveNumber),
+          (unsigned long)startLogicalSector,
+          (unsigned long)logicalSectorCount, (unsigned long)totalBytes);
+      acsiMarkWriteDirty();
       acsiSetRwStatus(0);
     } break;
     case ACSIEMUL_DEBUG: {
