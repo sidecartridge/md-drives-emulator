@@ -1693,6 +1693,54 @@ static FRESULT acsiFat16FindEntry(AcsiImageContext *context,
   return findContext.found ? FR_OK : FR_NO_FILE;
 }
 
+// Build the fastseek cluster link map for an already-opened image.
+// Sets context->file.cltbl on success so subsequent f_lseek() calls skip
+// the linear FAT walk. Non-fatal on failure — the context is still usable
+// via regular lseek; only the optimisation is lost.
+static FRESULT acsiSetupFastseek(AcsiImageContext *context) {
+  DWORD *tbl = (DWORD *)malloc(ACSI_IMAGE_CLTBL_INITIAL * sizeof(DWORD));
+  if (tbl == NULL) {
+    return FR_NOT_ENOUGH_CORE;
+  }
+  tbl[0] = (DWORD)ACSI_IMAGE_CLTBL_INITIAL;
+  context->file.cltbl = tbl;
+
+  FRESULT fr = f_lseek(&context->file, CREATE_LINKMAP);
+  if (fr == FR_NOT_ENOUGH_CORE) {
+    DWORD needed = tbl[0];  // FatFS writes the required size here.
+    free(tbl);
+    context->file.cltbl = NULL;
+    if (needed == 0 || needed > ACSI_IMAGE_CLTBL_MAX) {
+      DPRINTF("ACSI fastseek skipped: image too fragmented (%lu DWORDs > %u)\n",
+              (unsigned long)needed, (unsigned)ACSI_IMAGE_CLTBL_MAX);
+      return FR_NOT_ENOUGH_CORE;
+    }
+    tbl = (DWORD *)malloc((size_t)needed * sizeof(DWORD));
+    if (tbl == NULL) {
+      return FR_NOT_ENOUGH_CORE;
+    }
+    tbl[0] = needed;
+    context->file.cltbl = tbl;
+    fr = f_lseek(&context->file, CREATE_LINKMAP);
+  }
+
+  if (fr != FR_OK) {
+    DPRINTF("ACSI fastseek setup failed (%d)\n", (int)fr);
+    context->file.cltbl = NULL;
+    free(tbl);
+    return fr;
+  }
+
+  context->cltbl = tbl;
+  context->cltblEntries = (size_t)tbl[0];
+  DPRINTF("ACSI fastseek enabled: %u DWORDs (~%u fragments)\n",
+          (unsigned)context->cltblEntries,
+          (unsigned)((context->cltblEntries > 0u)
+                         ? (context->cltblEntries - 1u) / 2u
+                         : 0u));
+  return FR_OK;
+}
+
 FRESULT acsi_image_open(AcsiImageContext *context, const char *imagePath,
                         bool readOnly) {
   if (context == NULL || imagePath == NULL || imagePath[0] == '\0') {
@@ -1729,6 +1777,10 @@ FRESULT acsi_image_open(AcsiImageContext *context, const char *imagePath,
   context->readOnly = readOnly;
   context->isOpen = true;
 
+  // Best-effort fastseek setup. Failure is non-fatal: we fall back to
+  // linear-walk lseek automatically when context->file.cltbl is NULL.
+  (void)acsiSetupFastseek(context);
+
   return FR_OK;
 }
 
@@ -1739,6 +1791,12 @@ void acsi_image_close(AcsiImageContext *context) {
 
   if (context->isOpen) {
     (void)f_close(&context->file);
+  }
+
+  if (context->cltbl != NULL) {
+    free(context->cltbl);
+    context->cltbl = NULL;
+    context->cltblEntries = 0;
   }
 
   memset(&context->file, 0, sizeof(context->file));

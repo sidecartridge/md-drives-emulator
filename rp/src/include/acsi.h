@@ -146,6 +146,15 @@ _Static_assert(ACSIEMUL_IMAGE_BUFFER_SIZE >= 512u,
 #define ACSI_ROOT_DIR_ENTRY_SIZE 32u
 #define ACSI_TEST_ROOT_ENTRY_LIMIT 64u
 
+// FatFS fastseek (FF_USE_FASTSEEK=1 in ffconf.h) replaces the linear FAT
+// walk on every f_lseek with an O(1) cluster-linkmap lookup. The table
+// is allocated per open context and holds (count, cluster) pairs plus a
+// terminator. Contiguous images need ~3 entries; fragmented ones need
+// 2*fragment_count+1. Cap the allocation so a pathologically fragmented
+// image falls back to linear lseek instead of exhausting the heap.
+#define ACSI_IMAGE_CLTBL_INITIAL 32u
+#define ACSI_IMAGE_CLTBL_MAX 512u
+
 typedef struct {
   FIL file;
   char imagePath[MAX_FILENAME_LENGTH + 1];
@@ -153,6 +162,8 @@ typedef struct {
   uint32_t totalSectors;
   bool isOpen;
   bool readOnly;
+  DWORD *cltbl;           // NULL when fastseek is unavailable for this image
+  size_t cltblEntries;    // allocated size in DWORDs (0 when cltbl is NULL)
 } AcsiImageContext;
 
 typedef struct {
