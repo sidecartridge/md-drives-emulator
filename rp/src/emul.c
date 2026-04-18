@@ -25,7 +25,9 @@ static void cmdGemdriveFolder(const char *arg);
 static void cmdGemdriveDrive(const char *arg);
 static void cmdAcsiEnabled(const char *arg);
 static void cmdAcsiImage(const char *arg);
-static void cmdAcsiFirstUnit(const char *arg);
+static void cmdAcsiId(const char *arg);
+static void cmdAcsiDrive(const char *arg);
+static void cmdToggleSdHealth(const char *arg);
 static void cmdFloppyEnabled(const char *arg);
 static void cmdFloppiesFolder(const char *arg);
 static void cmdFloppyDriveA(const char *arg);
@@ -52,7 +54,8 @@ static const Command commands[] = {
     {"d", cmdGemdriveDrive},
     {"c", cmdAcsiEnabled},
     {"i", cmdAcsiImage},
-    {"n", cmdAcsiFirstUnit},
+    {"n", cmdAcsiId},
+    {"v", cmdAcsiDrive},
     {"f", cmdFloppyEnabled},
     {"l", cmdFloppiesFolder},
     {"a", cmdFloppyDriveA},
@@ -68,6 +71,8 @@ static const Command commands[] = {
     {"h", cmdHost},
     {"p", cmdPort},
     {"?", cmdHiddenSettings},
+    {"z", cmdToggleSdHealth},
+    {"Z", cmdToggleSdHealth},
     {"print", term_cmdPrint},
     {"save", term_cmdSave},
     {"erase", term_cmdErase},
@@ -360,33 +365,29 @@ static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   return (c >= 'C' && c <= 'Z');
 }
 
-static char acsiUnitToDriveLetter(uint8_t unit) {
-  return (char)('C' + (unit & 0x7u));
-}
-
-static bool parseAcsiUnit(const char *value, uint8_t *unitOut) {
+static bool parseAcsiId(const char *value, uint8_t *idOut) {
   char *endptr = NULL;
-  long unit = strtol((value != NULL) ? value : "", &endptr, 10);
-  if ((value == NULL) || (value == endptr) || (*endptr != '\0') || (unit < 0) ||
-      (unit > 7)) {
+  long id = strtol((value != NULL) ? value : "", &endptr, 10);
+  if ((value == NULL) || (value == endptr) || (*endptr != '\0') || (id < 0) ||
+      (id > 7)) {
     return false;
   }
 
-  if (unitOut != NULL) {
-    *unitOut = (uint8_t)unit;
+  if (idOut != NULL) {
+    *idOut = (uint8_t)id;
   }
 
   return true;
 }
 
-static uint8_t getConfiguredAcsiUnit(void) {
-  SettingsConfigEntry *acsiFirstUnit = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_FIRST_UNIT);
-  uint8_t unit = 0;
-  if ((acsiFirstUnit != NULL) && parseAcsiUnit(acsiFirstUnit->value, &unit)) {
-    return unit;
+static uint8_t getConfiguredAcsiId(void) {
+  SettingsConfigEntry *acsiId = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID);
+  uint8_t id = 7;
+  if ((acsiId != NULL) && parseAcsiId(acsiId->value, &id)) {
+    return id;
   }
-  return 0;
+  return 7;
 }
 
 static bool isGemdriveEnabledConfigured(void) {
@@ -410,15 +411,35 @@ static char getConfiguredGemdriveDriveLetter(void) {
   return 'C';
 }
 
+static bool isValidAcsiDriveLetter(char c) {
+  char up = (char)toupper((unsigned char)c);
+  return (up >= 'C') && (up <= 'P');
+}
+
+static char getConfiguredAcsiDriveLetter(void) {
+  SettingsConfigEntry *entry = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_DRIVE);
+  if ((entry != NULL) && (entry->value[0] != '\0') &&
+      isValidAcsiDriveLetter(entry->value[0])) {
+    return (char)toupper((unsigned char)entry->value[0]);
+  }
+  return 'C';
+}
+
+// Conflict detection is now between the two configured drive letters
+// (GEMDRIVE's single slot vs ACSI's starting slot). ACSI_ID is the
+// physical ACSI ID and is independent of drive letters, so it does not
+// factor into overlap checking.
 static bool wouldGemdriveAcsiConflict(bool gemdriveEnabled,
                                       char gemdriveDriveLetter,
-                                      bool acsiEnabled, uint8_t acsiUnit) {
+                                      bool acsiEnabled,
+                                      char acsiDriveLetter) {
   if (!gemdriveEnabled || !acsiEnabled) {
     return false;
   }
 
   return (char)toupper((unsigned char)gemdriveDriveLetter) ==
-         acsiUnitToDriveLetter(acsiUnit);
+         (char)toupper((unsigned char)acsiDriveLetter);
 }
 
 static void seedFolderPathFromStoredFile(
@@ -593,6 +614,7 @@ static void refreshSetupInfoLine(void) {
 
 static bool sdHealthDone = false;
 static bool sdHealthOk = false;
+static bool sdHealthShow = false;
 static uint32_t sdHealthWriteKBPerS = 0;
 static uint32_t sdHealthReadKBPerS = 0;
 
@@ -684,10 +706,12 @@ static void __not_in_flash_func(menu)(void) {
 
   showTitle();
 
-  // SD speed sample on the second line — run once at first menu entry,
-  // cached thereafter so repeat renders are free.
-  ensureSdHealthRun();
-  printSdHealthLine();
+  // SD speed sample on the second line — hidden by default, toggled by Z.
+  // Runs once on first reveal, cached thereafter.
+  if (sdHealthShow) {
+    ensureSdHealthRun();
+    printSdHealthLine();
+  }
 
   // Configurable options
   vt52Cursor(2, 0);
@@ -713,15 +737,15 @@ static void __not_in_flash_func(menu)(void) {
       free(acsiImageTail);
     }
 
-    uint8_t acsiFirstUnit = getConfiguredAcsiUnit();
-    char acsiUnitBuffer[16];
-    snprintf(acsiUnitBuffer, sizeof(acsiUnitBuffer), "%u (%c:)", acsiFirstUnit,
-             acsiUnitToDriveLetter(acsiFirstUnit));
-    term_printString("\n  First u[n]it: ");
-    term_printString(acsiUnitBuffer);
-    term_printString("\n\n");
+    uint8_t acsiId = getConfiguredAcsiId();
+    char acsiDriveLetter = getConfiguredAcsiDriveLetter();
+    char acsiIdDriveLine[64];
+    snprintf(acsiIdDriveLine, sizeof(acsiIdDriveLine),
+             "\n  U[n]it (ACSI ID): %u  Dri[v]e: %c:\n\n", acsiId,
+             acsiDriveLetter);
+    term_printString(acsiIdDriveLine);
   } else {
-    term_printString("No\n\n\n\n");
+    term_printString("No\n\n\n\n\n");
   }
 
   // Display GEMDRIVE options
@@ -956,9 +980,11 @@ void cmdGemdriveEnabled(const char *arg) {
   bool newEnabled = (gemDrive != NULL) ? !isTrue(gemDrive->value) : true;
   if (newEnabled && wouldGemdriveAcsiConflict(
                         true, getConfiguredGemdriveDriveLetter(),
-                        isAcsiEnabledConfigured(), getConfiguredAcsiUnit())) {
+                        isAcsiEnabledConfigured(),
+                        getConfiguredAcsiDriveLetter())) {
     showSetupMessageScreen(
-        "Cannot enable GEMDRIVE: it conflicts with the current ACSI unit.");
+        "Cannot enable GEMDRIVE: its drive letter conflicts with the "
+        "current ACSI drive.");
     return;
   }
 
@@ -1358,10 +1384,10 @@ void cmdGemdriveDrive(const char *arg) {
         }
         if (wouldGemdriveAcsiConflict(true, driveBuffer[0],
                                       isAcsiEnabledConfigured(),
-                                      getConfiguredAcsiUnit())) {
+                                      getConfiguredAcsiDriveLetter())) {
           showSetupMessageScreen(
               "Cannot save GEMDRIVE drive: it conflicts with the current "
-              "ACSI unit.");
+              "ACSI drive letter.");
           return;
         }
         settings_put_string(aconfig_getContext(),
@@ -1397,9 +1423,9 @@ void cmdAcsiEnabled(const char *arg) {
   if (newEnabled &&
       wouldGemdriveAcsiConflict(isGemdriveEnabledConfigured(),
                                 getConfiguredGemdriveDriveLetter(), true,
-                                getConfiguredAcsiUnit())) {
+                                getConfiguredAcsiDriveLetter())) {
     showSetupMessageScreen(
-        "Cannot enable ACSI: its first unit conflicts with the current "
+        "Cannot enable ACSI: its drive letter conflicts with the current "
         "GEMDRIVE drive.");
     return;
   }
@@ -1465,12 +1491,12 @@ void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
   }
 }
 
-void cmdAcsiFirstUnit(const char *arg) {
+void cmdAcsiId(const char *arg) {
   (void)arg;
   if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
     showTitle();
     term_printString("\n\n");
-    term_printString("Enter the first ACSI unit (0 to 7):\n");
+    term_printString("Enter the ACSI ID (0 to 7):\n");
     term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
     haltCountdown = true;
     display_refresh();
@@ -1479,25 +1505,73 @@ void cmdAcsiFirstUnit(const char *arg) {
 
   term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
 
-  uint8_t firstUnit = 0;
-  if (!parseAcsiUnit(term_getInputBuffer(), &firstUnit)) {
-    showSetupMessageScreen("Invalid ACSI unit. Use a value from 0 to 7.");
+  uint8_t acsiId = 0;
+  if (!parseAcsiId(term_getInputBuffer(), &acsiId)) {
+    showSetupMessageScreen("Invalid ACSI ID. Use a value from 0 to 7.");
     return;
   }
+
+  // ACSI ID is the physical-unit tag stored in pun_info; it is independent
+  // of the ACSI drive-letter slot, so no conflict check against GEMDRIVE
+  // is needed here — that check lives in cmdAcsiDrive.
+
+  char idBuffer[4];
+  snprintf(idBuffer, sizeof(idBuffer), "%u", acsiId);
+  settings_put_string(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID,
+                      idBuffer);
+  settings_save(aconfig_getContext(), true);
+  menu();
+  display_refresh();
+}
+
+void cmdToggleSdHealth(const char *arg) {
+  (void)arg;
+  sdHealthShow = !sdHealthShow;
+  haltCountdown = true;
+  menu();
+  display_refresh();
+}
+
+void cmdAcsiDrive(const char *arg) {
+  (void)arg;
+  if (!isAcsiEnabledConfigured()) {
+    return;
+  }
+
+  if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
+    showTitle();
+    term_printString("\n\n");
+    term_printString("Enter the ACSI starting drive letter (C to P):\n");
+    term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
+    haltCountdown = true;
+    display_refresh();
+    return;
+  }
+
+  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
+
+  const char *input = term_getInputBuffer();
+  if ((input == NULL) || (input[0] == '\0') ||
+      !isValidAcsiDriveLetter(input[0])) {
+    showSetupMessageScreen(
+        "Invalid ACSI drive letter. Use a single letter from C to P.");
+    return;
+  }
+
+  char letter = (char)toupper((unsigned char)input[0]);
 
   if (wouldGemdriveAcsiConflict(isGemdriveEnabledConfigured(),
-                                getConfiguredGemdriveDriveLetter(),
-                                isAcsiEnabledConfigured(), firstUnit)) {
+                                getConfiguredGemdriveDriveLetter(), true,
+                                letter)) {
     showSetupMessageScreen(
-        "Cannot save the ACSI unit: it conflicts with the current GEMDRIVE "
-        "drive.");
+        "Cannot save the ACSI drive: it conflicts with the current "
+        "GEMDRIVE drive letter.");
     return;
   }
 
-  char unitBuffer[4];
-  snprintf(unitBuffer, sizeof(unitBuffer), "%u", firstUnit);
-  settings_put_string(aconfig_getContext(),
-                      ACONFIG_PARAM_DRIVES_ACSI_FIRST_UNIT, unitBuffer);
+  char letterBuffer[2] = {letter, '\0'};
+  settings_put_string(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_DRIVE,
+                      letterBuffer);
   settings_save(aconfig_getContext(), true);
   menu();
   display_refresh();
