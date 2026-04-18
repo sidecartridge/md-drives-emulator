@@ -32,7 +32,11 @@
 
 // ACSI configuration
 #define ACONFIG_PARAM_DRIVES_ACSI_ENABLED "ACSI_ENABLED"
-#define ACONFIG_PARAM_DRIVES_ACSI_FIRST_UNIT "ACSI_FIRST_UNIT"
+#define ACONFIG_PARAM_DRIVES_ACSI_ID "ACSI_ID"
+// Starting drive letter ('C'..'P'). Decoupled from ACSI ID so the user can
+// e.g. declare ACSI ID 0 but map partitions at K:, L:, M: to avoid clashes
+// with a real ACSI driver that already owns C:/D:/...
+#define ACONFIG_PARAM_DRIVES_ACSI_DRIVE "ACSI_DRIVE"
 #define ACONFIG_PARAM_DRIVES_ACSI_IMAGE "ACSI_IMAGE"
 
 // FLOPPY configuration
