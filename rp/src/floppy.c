@@ -131,6 +131,13 @@ static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
 static volatile bool floppyDirty[2] = {false, false};
 static volatile uint32_t floppyDirtyAtMs[2] = {0, 0};
 
+// Bounded retry counter for floppy_tick's deferred f_sync. A wedged SD card
+// would otherwise cause floppy_tick to call the slow f_sync on every poll
+// forever; after FLOPPY_FLUSH_FAIL_MAX consecutive failures we mark the
+// drive as errored and stop retrying.
+#define FLOPPY_FLUSH_FAIL_MAX 5u
+static uint8_t floppyFlushFailCount[2] = {0u, 0u};
+
 static inline void __not_in_flash_func(floppyMarkWriteDirty)(uint8_t drive) {
   if (drive > 1) return;
   if (!floppyDirty[drive]) {
@@ -184,8 +191,19 @@ static inline void floppyResetMediaChangeClearOnRootRead(FloppyDrive drive) {
 }
 
 static inline void floppyArmMediaChangeClearOnRootRead(FloppyDrive drive) {
-  floppyMediaChangeClearSector[drive] =
+  uint16_t rootSector =
       floppyGetRootDirStartSector(floppyGetBPBData(drive));
+  if (rootSector == 0u) {
+    // Malformed BPB (datrec < rdlen, or NULL). If we armed with sector 0,
+    // the very common "read boot sector" that happens early in TOS's
+    // media-change detection would clear MED_CHANGED prematurely, before
+    // TOS has refreshed its cached directory state. Leave the flag set
+    // and let the Atari-side state machine deal with it.
+    floppyMediaChangeClearPending[drive] = false;
+    floppyMediaChangeClearSector[drive] = 0u;
+    return;
+  }
+  floppyMediaChangeClearSector[drive] = rootSector;
   floppyMediaChangeClearPending[drive] = true;
 }
 
@@ -1354,6 +1372,7 @@ void __not_in_flash_func(floppy_tick)(void) {
       // Image not writable (RO mount, unmounted, error): clear the dirty
       // flag so we don't loop here once the drive is swapped out.
       floppyDirty[drive] = false;
+      floppyFlushFailCount[drive] = 0u;
       continue;
     }
     if ((now - floppyDirtyAtMs[drive]) < FLOPPY_FLUSH_INTERVAL_MS) continue;
@@ -1362,8 +1381,23 @@ void __not_in_flash_func(floppy_tick)(void) {
       DPRINTF("Floppy tick f_sync %c failed (%d)\n",
               (drive == 0) ? 'A' : 'B', (int)fr);
       floppyDirtyAtMs[drive] = now;
+      if (++floppyFlushFailCount[drive] >= FLOPPY_FLUSH_FAIL_MAX) {
+        // SD card / image likely wedged. Stop retrying so we don't burn
+        // the main loop on repeated slow f_sync calls.
+        DPRINTF("Floppy %c: %u consecutive f_sync failures, marking errored\n",
+                (drive == 0) ? 'A' : 'B',
+                (unsigned)floppyFlushFailCount[drive]);
+        if (drive == 0) {
+          floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;
+        } else {
+          floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
+        }
+        floppyDirty[drive] = false;
+        floppyFlushFailCount[drive] = 0u;
+      }
       continue;
     }
     floppyDirty[drive] = false;
+    floppyFlushFailCount[drive] = 0u;
   }
 }
