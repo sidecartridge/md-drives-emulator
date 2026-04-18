@@ -82,7 +82,7 @@ ACSIEMUL_BPB_DATA_TOTAL_SIZE    equ 640
 ACSIEMUL_IMAGE_BUFFER           equ (ACSIEMUL_BPB_PTR_TABLE + ACSIEMUL_BPB_PTR_TABLE_SIZE + ACSIEMUL_BPB_DATA_TOTAL_SIZE)
 
 SVAR_ENABLED            equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 0)
-SVAR_FIRST_UNIT         equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 1)
+; slot 1 (ACSI ID) is RP-written only; no Atari-side reader.
 SVAR_HOOKS_INSTALLED    equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 2)
 SVAR_OLD_HDV_INIT       equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 3)
 SVAR_OLD_HDV_BPB        equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 4)
@@ -96,9 +96,7 @@ SVAR_RW_STATUS          equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 11)
 SVAR_MEDIA_CHANGED_MASK equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 12)
 
 MED_NOCHANGE            equ 0
-MED_UNKNOWN             equ 1
 MED_CHANGED             equ 2
-BCON_DEVICE_CONSOLE     equ 2
 
 _hdv_init               equ $46A                            ; Address of the HDV_INIT structure
 _hdv_bpb                equ $472                            ; Address of the HDV_BPB structure
@@ -106,13 +104,12 @@ _hdv_rw                 equ $476                            ; Address of the HDV
 _hdv_boot               equ $47a                            ; Address of the HDV_BOOT structure
 _hdv_mediach            equ $47e                            ; Address of the HDV_MEDIACH structure
 _bootdev                equ $446                            ; BIOS boot device number
-_dskbufp                equ $4c6                            ; Address of the disk buffer pointer
+_dskbufp                equ $4c6                            ; Disk buffer pointer (used by sidecart_functions.s)
 
 PUN_INFO_P_MAX_SECTOR   equ 94
 
 BCB_LINK                equ 0
 BCB_BUFDRV              equ 4
-BCB_BUFTYP              equ 6
 BCB_BUFREC              equ 8
 BCB_DIRTY               equ 10
 BCB_DM                  equ 12
