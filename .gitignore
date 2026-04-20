@@ -57,3 +57,6 @@ upload_s3.sh
 build/
 dist/
 .cache/
+settings.local.json
+*.pyc
+__pycache__/
