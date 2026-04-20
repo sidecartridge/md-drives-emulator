@@ -612,6 +612,10 @@ static void refreshSetupInfoLine(void) {
 #define SDHEALTH_BLOCK_BYTES 4096u
 #define SDHEALTH_ITERATIONS 5
 
+// How long the ACSI boot-info summary stays on screen before emulation
+// kicks in, so the user can read the partition list.
+#define ACSI_BOOT_INFO_HOLD_MS 2500u
+
 static bool sdHealthDone = false;
 static bool sdHealthOk = false;
 static bool sdHealthShow = false;
@@ -2425,7 +2429,18 @@ void __not_in_flash_func(emul_start)() {
         // tud_disconnect();
 
         DPRINTF("Running ACSI pre-init...\n");
+        if (isAcsiEnabledConfigured()) {
+          showTitle();
+          term_printString("\nInitializing ACSI emulation...\n\n");
+          display_refresh();
+        }
         acsi_preInit();
+        if (isAcsiEnabledConfigured()) {
+          acsi_printBootInfo(ntpProgressPrint);
+          term_printString("\n");
+          display_refresh();
+          sleep_ms(ACSI_BOOT_INFO_HOLD_MS);
+        }
 
         // Initialize Command Handler init
         DPRINTF("Initializing the command handler...\n");

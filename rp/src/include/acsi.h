@@ -226,4 +226,15 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
                                     uint16_t *payloadPtr);
 void __not_in_flash_func(acsi_tick)(void);
 
+// Boot-time summary callback signature. Called with user-visible lines
+// describing the loaded ACSI image and its detected partitions, so the
+// caller can route the output to the setup screen (or anywhere else).
+typedef void (*AcsiBootInfoPrint)(const char *message);
+
+// Emit a human-readable summary of the currently configured ACSI image:
+// image path, ACSI ID, detected partitions and their sizes. Must be called
+// after acsi_preInit() so the partition cache is populated. Safe to call
+// when ACSI is disabled — it will just print a one-line notice.
+void acsi_printBootInfo(AcsiBootInfoPrint print);
+
 #endif  // ACSI_H

@@ -24,6 +24,12 @@ static FATFS acsiFilesys = {0};
 static uint32_t acsiFirstVolumeDrive = 0;
 static uint32_t acsiLastVolumeDrive = 0;
 static bool acsiVolumeDriveRangeValid = false;
+// Largest logical sector size we saw during the most recent partition scan
+// that was rejected because it exceeds what the BCB rebind pool can back
+// (currently 8192 bytes — see ACSIEMUL_BCB_POOL_BYTES in acsi.s / main.s).
+// Surfaced in the boot summary so the user gets a clear "this image is too
+// big for the current build" message instead of a silent empty drive list.
+static uint16_t acsiScanOversizedSectorSize = 0;
 static uint32_t acsiLastLoggedHooksInstalled = 0;
 static uint32_t acsiLastLoggedOldHdvInit = 0;
 static uint32_t acsiLastLoggedOldHdvBpb = 0;
@@ -37,6 +43,10 @@ static uint32_t acsiPunInfoStartSectors[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint32_t acsiPartitionSectorCounts[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint16_t acsiLogicalSectorSizes[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint16_t acsiLogicalToPhysicalRatios[ACSI_PUN_INFO_MAXUNITS] = {0};
+// Per-drive layout metadata captured during acsiBuildAnnouncedVolumeData,
+// surfaced to the setup-screen boot summary via acsi_printBootInfo.
+static uint8_t acsiPartitionStyle[ACSI_PUN_INFO_MAXUNITS] = {0};
+static bool acsiPartitionViewIsTos[ACSI_PUN_INFO_MAXUNITS] = {0};
 static AcsiImageContext acsiRuntimeImage = {0};
 
 // Write-behind flush state. Writes mark the image dirty and record when
@@ -115,6 +125,7 @@ static bool acsiIsEnabledSetting(void);
 static uint8_t acsiGetIdSetting(void);
 static uint8_t acsiGetStartDriveSetting(void);
 static char acsiDriveNumberToLetter(uint32_t driveNumber);
+static inline uint16_t acsiReadLe16(const BYTE *buffer, size_t offset);
 static void acsiTestLog(const char *fmt, ...);
 static void acsiFormatSize(uint64_t bytes, char *output, size_t outputSize);
 static AcsiTosDosStyle acsiDetectTosDosStyle(
@@ -125,6 +136,8 @@ static void acsiResetPartitionSectorCounts(void) {
   memset(acsiPartitionSectorCounts, 0, sizeof(acsiPartitionSectorCounts));
   memset(acsiLogicalSectorSizes, 0, sizeof(acsiLogicalSectorSizes));
   memset(acsiLogicalToPhysicalRatios, 0, sizeof(acsiLogicalToPhysicalRatios));
+  memset(acsiPartitionStyle, 0, sizeof(acsiPartitionStyle));
+  memset(acsiPartitionViewIsTos, 0, sizeof(acsiPartitionViewIsTos));
 }
 
 static void __not_in_flash_func(acsiSetRwStatus)(int32_t status) {
@@ -575,6 +588,7 @@ static void acsiBuildAnnouncedVolumeData(
   acsiResetVolumeDriveRange();
   acsiResetPunInfoCache();
   acsiResetBpbCache();
+  acsiScanOversizedSectorSize = 0;
 
   if (context == NULL || usablePartitions == NULL ||
       usablePartitionCount == 0u) {
@@ -618,6 +632,21 @@ static void acsiBuildAnnouncedVolumeData(
     }
 
     if (acsi_parse_fat16_geometry(context, partition, &geometry) != FR_OK) {
+      // If the BPB is otherwise sane but its logical sector size is bigger
+      // than our BCB pool can back (> 8192 bytes, e.g. Hatari 512 MB images
+      // that use 16384-byte sectors), peek at the raw bytesPerSec so the
+      // setup screen can explain the failure instead of showing an empty
+      // partition list.
+      BYTE probeSector[ACSI_IMAGE_SECTOR_SIZE] = {0};
+      if (acsi_image_read_sectors(context, partition->firstLBA, 1, probeSector,
+                                  sizeof(probeSector)) == FR_OK) {
+        uint16_t probeBytesPerSec = acsiReadLe16(probeSector, 11);
+        if (probeBytesPerSec > 8192u && probeBytesPerSec <= 65536u &&
+            (probeBytesPerSec & (probeBytesPerSec - 1u)) == 0u &&
+            probeBytesPerSec > acsiScanOversizedSectorSize) {
+          acsiScanOversizedSectorSize = probeBytesPerSec;
+        }
+      }
       DPRINTF("ACSI drive %c skipped: invalid FAT16 geometry at LBA %lu\n",
               acsiDriveNumberToLetter(driveNumber),
               (unsigned long)partition->firstLBA);
@@ -627,7 +656,10 @@ static void acsiBuildAnnouncedVolumeData(
     tosDosStyle =
         acsiDetectTosDosStyle(context, partition, &geometry, &tosInfo);
     physicalStartSector = partition->firstLBA;
-    logicalSectorCount = partition->sectorCount;
+    // geometry.totalSectors is already in logical units; match it with the
+    // logical sector size so downstream sector-count math (announced size,
+    // per-sector reads/writes) works when bytesPerSector > 512.
+    logicalSectorCount = geometry.totalSectors;
     logicalSectorSize = geometry.bytesPerSector;
     logicalToPhysicalRatio =
         acsiGetLogicalToPhysicalRatio((uint32_t)geometry.bytesPerSector);
@@ -677,6 +709,8 @@ static void acsiBuildAnnouncedVolumeData(
     acsiPartitionSectorCounts[driveNumber] = logicalSectorCount;
     acsiLogicalSectorSizes[driveNumber] = logicalSectorSize;
     acsiLogicalToPhysicalRatios[driveNumber] = logicalToPhysicalRatio;
+    acsiPartitionStyle[driveNumber] = (uint8_t)tosDosStyle;
+    acsiPartitionViewIsTos[driveNumber] = (strcmp(viewName, "TOS") == 0);
     DPRINTF(
         "ACSI drive %c view=%s start=%lu recsize=%u logical_sectors=%lu "
         "ratio=%u\n",
@@ -1318,6 +1352,136 @@ static FRESULT acsiAppendExtendedPartitions(
   return FR_OK;
 }
 
+// AHDI (Atari Hard Disk Interface) partition table. Four 12-byte entries
+// packed into the root sector starting at 0x1C6. Each entry is:
+//   +0: flag (bit 0 = existent, bit 7 = bootable)
+//   +1..+3: 3-char ASCII id ("GEM"/"BGM" = FAT, "XGM" = extended link,
+//           others like "RAW"/"F32"/"MIX" are not mounted by the emulator).
+//   +4..+7: start LBA, big-endian
+//   +8..+11: sector count, big-endian
+enum {
+  ACSI_AHDI_ENTRY_SIZE = 12,
+  ACSI_AHDI_SLOT0_OFFSET = 0x01C6,
+  ACSI_AHDI_SLOT1_OFFSET = 0x01D2,
+  ACSI_AHDI_SLOT2_OFFSET = 0x01DE,
+  ACSI_AHDI_SLOT3_OFFSET = 0x01EA,
+  ACSI_AHDI_FLAG_EXISTENT = 0x01,
+};
+
+static bool acsiAhdiIdIsFat(const BYTE *id3) {
+  // GEM = partition ≤ 16 MB; BGM = big partition. Both are FAT-style volumes
+  // we can try to mount.
+  return (id3[0] == 'G' && id3[1] == 'E' && id3[2] == 'M') ||
+         (id3[0] == 'B' && id3[1] == 'G' && id3[2] == 'M');
+}
+
+static bool acsiAhdiIdIsExtended(const BYTE *id3) {
+  return id3[0] == 'X' && id3[1] == 'G' && id3[2] == 'M';
+}
+
+static void acsiParseAhdiEntry(const BYTE *sector, size_t offset,
+                               uint32_t lbaBase,
+                               AcsiPartitionEntry *partition) {
+  if (sector == NULL || partition == NULL) {
+    return;
+  }
+
+  memset(partition, 0, sizeof(*partition));
+
+  uint8_t flag = sector[offset];
+  if ((flag & ACSI_AHDI_FLAG_EXISTENT) == 0u) {
+    return;
+  }
+
+  const BYTE *id3 = sector + offset + 1u;
+  bool isFat = acsiAhdiIdIsFat(id3);
+  bool isExtended = acsiAhdiIdIsExtended(id3);
+  if (!isFat && !isExtended) {
+    // Unknown id (RAW/F32/MIX/etc.) — not mountable by this driver.
+    return;
+  }
+
+  uint32_t start = acsiReadBe32(sector, offset + 4u);
+  uint32_t size = acsiReadBe32(sector, offset + 8u);
+  if (size == 0u) {
+    return;
+  }
+
+  uint64_t absoluteLBA = (uint64_t)lbaBase + (uint64_t)start;
+  if (absoluteLBA > 0xFFFFFFFFu) {
+    return;
+  }
+
+  partition->bootIndicator = flag;
+  // Synthesize an MBR-style type byte so the downstream code has something
+  // meaningful in partitionType: FAT16 (>=32 MB) for BGM/GEM, MS extended
+  // for XGM. The real partition-type info is carried by isFat16/isExtended.
+  partition->partitionType = isExtended ? 0x05u : 0x06u;
+  partition->firstLBA = (uint32_t)absoluteLBA;
+  partition->sectorCount = size;
+  partition->isPresent = true;
+  partition->isFat16 = isFat;
+  partition->isExtended = isExtended;
+}
+
+static FRESULT acsiAppendAhdiExtendedPartitions(
+    AcsiImageContext *context, const AcsiPartitionEntry *extendedPartition,
+    AcsiPartitionEntry partitions[ACSI_MAX_PARTITIONS],
+    uint8_t *partitionCount) {
+  if (context == NULL || extendedPartition == NULL || partitions == NULL ||
+      partitionCount == NULL || !extendedPartition->isPresent ||
+      !extendedPartition->isExtended) {
+    return FR_INVALID_PARAMETER;
+  }
+
+  uint32_t xgmBaseLBA = extendedPartition->firstLBA;
+  uint32_t currentDescriptorLBA = xgmBaseLBA;
+
+  for (uint8_t linkIndex = 0; linkIndex < ACSI_MAX_PARTITIONS; ++linkIndex) {
+    BYTE sector[ACSI_IMAGE_SECTOR_SIZE] = {0};
+    FRESULT fr = acsi_image_read_sectors(context, currentDescriptorLBA, 1,
+                                         sector, sizeof(sector));
+    if (fr != FR_OK) {
+      return fr;
+    }
+
+    // Sub-descriptor layout: slot 0 holds the actual partition (its start
+    // is RELATIVE to this descriptor's LBA); slot 1 holds the XGM link to
+    // the next descriptor (its start is RELATIVE to the XGM base — the
+    // root's original XGM start LBA). Other slots are ignored.
+    AcsiPartitionEntry logicalPartition = {0};
+    AcsiPartitionEntry nextLink = {0};
+    acsiParseAhdiEntry(sector, ACSI_AHDI_SLOT0_OFFSET, currentDescriptorLBA,
+                       &logicalPartition);
+    acsiParseAhdiEntry(sector, ACSI_AHDI_SLOT1_OFFSET, xgmBaseLBA, &nextLink);
+
+    if (logicalPartition.isPresent) {
+      if (logicalPartition.isExtended ||
+          !acsiPartitionRangeIsValid(context, &logicalPartition)) {
+        return FR_INVALID_OBJECT;
+      }
+      fr = acsiAppendPartition(&logicalPartition, partitions, partitionCount);
+      if (fr != FR_OK) {
+        return fr;
+      }
+    }
+
+    if (!nextLink.isPresent) {
+      break;
+    }
+
+    if (!nextLink.isExtended ||
+        !acsiPartitionRangeIsValid(context, &nextLink) ||
+        nextLink.firstLBA == currentDescriptorLBA) {
+      return FR_INVALID_OBJECT;
+    }
+
+    currentDescriptorLBA = nextLink.firstLBA;
+  }
+
+  return FR_OK;
+}
+
 static void acsiFormat83Name(const BYTE *entry, char *output,
                              size_t outputSize) {
   size_t out = 0;
@@ -1952,6 +2116,66 @@ FRESULT acsi_parse_mbr(AcsiImageContext *context,
   return FR_OK;
 }
 
+// Scan the root sector as an Atari AHDI partition table. Walks all four
+// AHDI slots at 0x1C6/0x1D2/0x1DE/0x1EA, follows any XGM extended chains,
+// and produces FAT-compatible AcsiPartitionEntry records. Used as a
+// fallback when the image has no valid MBR (pure Atari-native images such
+// as those written by ICD, HDDRIVER's AHDI-only mode, etc.).
+static FRESULT acsiEnumerateAhdiPartitions(
+    AcsiImageContext *context,
+    AcsiPartitionEntry partitions[ACSI_MAX_PARTITIONS],
+    uint8_t *partitionCountOut) {
+  if (context == NULL || partitions == NULL) {
+    return FR_INVALID_PARAMETER;
+  }
+
+  BYTE sector[ACSI_IMAGE_SECTOR_SIZE] = {0};
+  FRESULT fr = acsi_image_read_sectors(context, 0, 1, sector, sizeof(sector));
+  if (fr != FR_OK) {
+    return fr;
+  }
+
+  memset(partitions, 0, sizeof(AcsiPartitionEntry) * ACSI_MAX_PARTITIONS);
+  uint8_t foundPartitions = 0;
+
+  static const size_t slotOffsets[4] = {
+      ACSI_AHDI_SLOT0_OFFSET, ACSI_AHDI_SLOT1_OFFSET, ACSI_AHDI_SLOT2_OFFSET,
+      ACSI_AHDI_SLOT3_OFFSET};
+
+  for (uint8_t index = 0; index < 4u; ++index) {
+    AcsiPartitionEntry primary = {0};
+    // Root AHDI entries carry absolute LBAs, so lbaBase = 0.
+    acsiParseAhdiEntry(sector, slotOffsets[index], 0u, &primary);
+    if (!primary.isPresent) {
+      continue;
+    }
+
+    if (primary.isExtended) {
+      fr = acsiAppendAhdiExtendedPartitions(context, &primary, partitions,
+                                            &foundPartitions);
+      if (fr != FR_OK) {
+        return fr;
+      }
+      continue;
+    }
+
+    if (!acsiPartitionRangeIsValid(context, &primary)) {
+      return FR_INVALID_OBJECT;
+    }
+
+    fr = acsiAppendPartition(&primary, partitions, &foundPartitions);
+    if (fr != FR_OK) {
+      return fr;
+    }
+  }
+
+  if (partitionCountOut != NULL) {
+    *partitionCountOut = foundPartitions;
+  }
+
+  return (foundPartitions > 0u) ? FR_OK : FR_INVALID_OBJECT;
+}
+
 FRESULT acsi_enumerate_partitions(
     AcsiImageContext *context,
     AcsiPartitionEntry partitions[ACSI_MAX_PARTITIONS],
@@ -1963,7 +2187,11 @@ FRESULT acsi_enumerate_partitions(
   AcsiPartitionEntry primaryPartitions[ACSI_PARTITION_COUNT] = {0};
   FRESULT fr = acsi_parse_mbr(context, primaryPartitions, NULL);
   if (fr != FR_OK) {
-    return fr;
+    // No usable MBR (signature missing or unreadable). Try the Atari AHDI
+    // layout as a fallback — pure Atari-native images (ICD, HDDRIVER in
+    // AHDI-only mode, etc.) don't carry a 0x55AA MBR signature.
+    DPRINTF("ACSI MBR parse failed (%d); trying AHDI fallback.\n", (int)fr);
+    return acsiEnumerateAhdiPartitions(context, partitions, partitionCountOut);
   }
 
   memset(partitions, 0, sizeof(AcsiPartitionEntry) * ACSI_MAX_PARTITIONS);
@@ -1994,6 +2222,14 @@ FRESULT acsi_enumerate_partitions(
     }
   }
 
+  // If the MBR is valid but it describes no usable FAT partitions, give the
+  // AHDI layout a chance — some hybrid images keep a dummy MBR header while
+  // the real partition table lives in the AHDI slots.
+  if (foundPartitions == 0u) {
+    DPRINTF("ACSI MBR parsed but no FAT partitions; trying AHDI fallback.\n");
+    return acsiEnumerateAhdiPartitions(context, partitions, partitionCountOut);
+  }
+
   if (partitionCountOut != NULL) {
     *partitionCountOut = foundPartitions;
   }
@@ -2016,12 +2252,19 @@ FRESULT acsi_parse_fat16_geometry(AcsiImageContext *context,
     return fr;
   }
 
-  if (sector[510] != 0x55 || sector[511] != 0xAA) {
+  // Native Atari boot sectors often lack the 0x55AA signature at physical
+  // byte 510 — the checksum lives at logical byte (bytesPerSector - 2) so
+  // for a ≥1024-byte logical sector the physical byte 510 is inside the
+  // boot code, not the signature. Only require 0x55AA when the logical
+  // sector is the same as the physical one (512 bytes).
+  uint16_t rawBytesPerSector = acsiReadLe16(sector, 11);
+  if (rawBytesPerSector == ACSI_IMAGE_SECTOR_SIZE &&
+      (sector[510] != 0x55 || sector[511] != 0xAA)) {
     return FR_INVALID_OBJECT;
   }
 
   AcsiFat16Geometry tmp = {0};
-  tmp.bytesPerSector = acsiReadLe16(sector, 11);
+  tmp.bytesPerSector = rawBytesPerSector;
   tmp.sectorsPerCluster = sector[13];
   tmp.reservedSectorCount = acsiReadLe16(sector, 14);
   tmp.fatCount = sector[16];
@@ -2036,9 +2279,15 @@ FRESULT acsi_parse_fat16_geometry(AcsiImageContext *context,
     tmp.totalSectors = acsiReadLe32(sector, 32);
   }
 
-  if (tmp.bytesPerSector != ACSI_IMAGE_SECTOR_SIZE ||
-      tmp.sectorsPerCluster == 0 || tmp.reservedSectorCount == 0 ||
-      tmp.fatCount == 0 || tmp.rootEntryCount == 0 || tmp.totalSectors == 0 ||
+  // bytesPerSector must be a supported power-of-two multiple of the physical
+  // 512-byte block size. The supported set is anchored by
+  // acsiGetLogicalToPhysicalRatio; sizes outside that set (e.g. 16384) would
+  // overflow the 22 KB image buffer and the 4 KB BCB pool slot size.
+  uint16_t logicalToPhysicalRatio =
+      acsiGetLogicalToPhysicalRatio((uint32_t)tmp.bytesPerSector);
+  if (logicalToPhysicalRatio == 0u || tmp.sectorsPerCluster == 0 ||
+      tmp.reservedSectorCount == 0 || tmp.fatCount == 0 ||
+      tmp.rootEntryCount == 0 || tmp.totalSectors == 0 ||
       tmp.sectorsPerFat == 0) {
     return FR_INVALID_OBJECT;
   }
@@ -2057,9 +2306,15 @@ FRESULT acsi_parse_fat16_geometry(AcsiImageContext *context,
     return FR_INVALID_OBJECT;
   }
 
-  if (partition->sectorCount != 0 &&
-      tmp.totalSectors > partition->sectorCount) {
-    return FR_INVALID_OBJECT;
+  // partition->sectorCount is in physical 512-byte units; the BPB's
+  // totalSectors is in logical sectors. Normalize to the same (physical)
+  // yardstick before comparing.
+  if (partition->sectorCount != 0) {
+    uint64_t physicalTotal =
+        (uint64_t)tmp.totalSectors * (uint64_t)logicalToPhysicalRatio;
+    if (physicalTotal > (uint64_t)partition->sectorCount) {
+      return FR_INVALID_OBJECT;
+    }
   }
 
   tmp.dataSectorCount = tmp.totalSectors - nonDataSectors;
@@ -2068,10 +2323,17 @@ FRESULT acsi_parse_fat16_geometry(AcsiImageContext *context,
     return FR_INVALID_OBJECT;
   }
 
-  tmp.fatStartLBA = partition->firstLBA + (uint32_t)tmp.reservedSectorCount;
+  // All LBA offsets live in the physical 512-byte sector namespace, so scale
+  // the BPB's logical offsets by the ratio before adding to firstLBA.
+  tmp.fatStartLBA = partition->firstLBA +
+                    ((uint32_t)tmp.reservedSectorCount *
+                     (uint32_t)logicalToPhysicalRatio);
   tmp.rootDirStartLBA =
-      tmp.fatStartLBA + ((uint32_t)tmp.fatCount * (uint32_t)tmp.sectorsPerFat);
-  tmp.dataStartLBA = tmp.rootDirStartLBA + tmp.rootDirSectorCount;
+      tmp.fatStartLBA + ((uint32_t)tmp.fatCount * (uint32_t)tmp.sectorsPerFat *
+                         (uint32_t)logicalToPhysicalRatio);
+  tmp.dataStartLBA =
+      tmp.rootDirStartLBA +
+      (tmp.rootDirSectorCount * (uint32_t)logicalToPhysicalRatio);
 
   *geometry = tmp;
   return FR_OK;
@@ -2771,6 +3033,100 @@ void acsi_preInit(void) {
   acsiRunImageTests();
 
   (void)f_mount(NULL, "0:", 1);
+}
+
+void acsi_printBootInfo(AcsiBootInfoPrint print) {
+  if (print == NULL) {
+    return;
+  }
+
+  if (!acsiIsEnabledSetting()) {
+    print("ACSI emulation is disabled.\n");
+    return;
+  }
+
+  if (acsiImagePath[0] == '\0') {
+    print("ACSI: no image configured.\n");
+    return;
+  }
+
+  char line[96];
+
+  // Image path — trim to the last 30 chars so long paths still fit.
+  const char *shortPath = acsiImagePath;
+  size_t pathLen = strlen(acsiImagePath);
+  const size_t maxPathChars = 30u;
+  if (pathLen > maxPathChars) {
+    shortPath = acsiImagePath + (pathLen - maxPathChars);
+    snprintf(line, sizeof(line), "Image: ..%s\n", shortPath);
+  } else {
+    snprintf(line, sizeof(line), "Image: %s\n", shortPath);
+  }
+  print(line);
+
+  uint8_t acsiId = acsiGetIdSetting();
+  snprintf(line, sizeof(line), "ACSI ID: %u\n", (unsigned int)acsiId);
+  print(line);
+
+  if (!acsiVolumeDriveRangeValid) {
+    if (acsiScanOversizedSectorSize > 0u) {
+      snprintf(line, sizeof(line),
+               "Unsupported logical sector size: %u bytes.\n",
+               (unsigned int)acsiScanOversizedSectorSize);
+      print(line);
+      print("Max supported is 8192 (e.g. 256 MB Hatari images).\n");
+      print("Rebuild the image at a smaller size to mount it.\n");
+    } else {
+      print("No usable FAT16 partitions found.\n");
+    }
+    return;
+  }
+
+  // Summarize the disk layout by looking at the first partition's style.
+  AcsiTosDosStyle imageStyle =
+      (AcsiTosDosStyle)acsiPartitionStyle[acsiFirstVolumeDrive];
+  const char *imageTypeLabel = "Atari ST / FAT16";
+  if (imageStyle == ACSI_TOSDOS_STYLE_PPDRIVER) {
+    imageTypeLabel = "TOS&DOS (PPDRIVER)";
+  } else if (imageStyle == ACSI_TOSDOS_STYLE_HDDRIVER) {
+    imageTypeLabel = "TOS&DOS (HDDRIVER)";
+  }
+  snprintf(line, sizeof(line), "Disk type: %s\n", imageTypeLabel);
+  print(line);
+
+  uint32_t partitionCount =
+      (acsiLastVolumeDrive - acsiFirstVolumeDrive) + 1u;
+  snprintf(line, sizeof(line), "Partitions: %lu  (%c: to %c:)\n",
+           (unsigned long)partitionCount,
+           acsiDriveNumberToLetter(acsiFirstVolumeDrive),
+           acsiDriveNumberToLetter(acsiLastVolumeDrive));
+  print(line);
+
+  for (uint32_t drive = acsiFirstVolumeDrive; drive <= acsiLastVolumeDrive;
+       ++drive) {
+    uint32_t sectors = acsiPartitionSectorCounts[drive];
+    uint16_t sectorSize = acsiLogicalSectorSizes[drive];
+    if ((sectors == 0u) || (sectorSize == 0u)) {
+      continue;
+    }
+    uint64_t bytes = (uint64_t)sectors * (uint64_t)sectorSize;
+    uint32_t megabytes = (uint32_t)(bytes / (1024u * 1024u));
+
+    AcsiTosDosStyle style = (AcsiTosDosStyle)acsiPartitionStyle[drive];
+    const char *typeLabel = "Atari/FAT16";
+    if (style == ACSI_TOSDOS_STYLE_PPDRIVER) {
+      typeLabel = "TOS&DOS PP";
+    } else if (style == ACSI_TOSDOS_STYLE_HDDRIVER) {
+      typeLabel = "TOS&DOS HD";
+    }
+    const char *viewLabel = acsiPartitionViewIsTos[drive] ? "TOS" : "DOS";
+
+    snprintf(line, sizeof(line),
+             "  %c: %4lu MB  %s [%s view]\n",
+             acsiDriveNumberToLetter(drive), (unsigned long)megabytes,
+             typeLabel, viewLabel);
+    print(line);
+  }
 }
 
 void __not_in_flash_func(acsi_init)() {
