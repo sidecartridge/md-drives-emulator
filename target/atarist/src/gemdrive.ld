@@ -20,4 +20,9 @@ SECTIONS
     .text_rtc 0x003400 : {
         rtc.o(.text)
     }
+
+    /* Place acsi.s .text at 0x005400 */
+    .text_acsi 0x005400 : {
+        acsi.o(.text)
+    }
 }

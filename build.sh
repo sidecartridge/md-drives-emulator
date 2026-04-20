@@ -27,6 +27,14 @@ echo "Board type: $BOARD_TYPE"
 export BUILD_TYPE=$2
 echo "Build type: $BUILD_TYPE"
 
+# Keep Atari and RP debug settings aligned.
+if [ "$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')" = "release" ]; then
+    export DEBUG_MODE=0
+else
+    export DEBUG_MODE=1
+fi
+echo "Debug mode: $DEBUG_MODE"
+
 # Set the APP_UUID_KEY of the app to be built
 export APP_UUID_KEY=$3
 echo "App UUID Key: $APP_UUID_KEY"
@@ -39,7 +47,7 @@ mkdir dist
 # Build the project in the target architecture
 echo "Building target project"
 cd target/atarist
-./build.sh "$SCRIPT_DIR/target/atarist" release
+./build.sh "$SCRIPT_DIR/target/atarist" release "$DEBUG_MODE"
 cd ../..
 echo "Done building target project"
 

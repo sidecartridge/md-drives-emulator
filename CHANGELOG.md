@@ -1,7 +1,7 @@
 # Changelog
 
 ## v1.1.0 (2026-03-30)
-This release focuses on RP2040 memory layout cleanup, splitting ROM emulation from command capture, removing obsolete DMA-era plumbing, and tightening several hot paths and board-support subsystems.
+This release focuses on RP2040 memory layout cleanup, splitting ROM emulation from command capture, removing obsolete DMA-era plumbing, and tightening several hot paths and board-support subsystems. It also adds experimental **ACSI hard disk emulation** at the BIOS level and a companion `scripts/atari-hd/atari_hd.py` image creator.
 
 ### Changes
 - **Single RP linker script**: The RP build now uses a single linker script, simplifying the memory layout and build configuration.
@@ -13,6 +13,12 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **GPIO tuning**: GPIO drive strength was adjusted to improve signal stability on the cartridge bus.
 - **SDK pin update**: The RP build scripts and pinned submodules were updated to Pico SDK / Pico Extras `2.2.0`.
 - **On-demand RTC networking**: WiFi STA bring-up for RTC/NTP no longer happens on every boot. The network stack now starts only when the RTC flow is about to fetch NTP time and is deinitialized immediately afterward.
+- **Batched ACSI reads/writes**: `CMD_READ_SECTOR_BATCH` / `CMD_WRITE_SECTOR_BATCH` pack multiple sectors per RP round-trip. Idempotent chunk-write protocol carries an in-batch offset so retries after transient timeouts don't corrupt the image.
+- **Write-behind image flush**: ACSI and floppy write paths now defer `f_sync` via `acsi_tick()` / `floppy_tick()` after `DRIVES_FLUSH_INTERVAL_MS` (3 s) of inactivity instead of flushing per sector.
+- **Fastseek on ACSI image context**: random-access reads skip the FAT walk via FatFS cluster linkmaps.
+- **BCB buffer rebind**: on ACSI-enabled boots the Atari side reassigns TOS's BCB `BUFR` pointers to a 34 KB pool carved from `_membot` (via a CA_INIT bit-26 cart header), so ≥4 KB logical sectors don't overflow TOS's default 1 KB buffers. A warm reset releases the pool when ACSI is turned off.
+- **Separate ACSI ID and drive letter**: the physical ACSI bus ID and the starting drive-letter slot are now configured independently. Config key renamed `ACSI_FIRST_UNIT` → `ACSI_ID`; default ID is now 7.
+- **FatFS tuning**: `ffconf.h` `FF_VOLUMES` typo fix; `FF_FS_LOCK` lowered from 16 to 8 to free heap.
 - **RTC boot feedback**: The setup exit flow now shows WiFi/NTP progress on screen, including connection attempts, failure reasons, and the assigned IP address when available.
 - **Lean lwIP profile**: `lwipopts.h` was trimmed for the current RTC use case, focusing on DHCP, DNS, and UDP/NTP instead of carrying the previous broader TCP-oriented profile.
 - **USB Mass Storage cleanup**: The USB device now exposes only the MSC interface, dropping the unused CDC composite path and simplifying enumeration.
@@ -25,6 +31,14 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Floppy A multi-image cycling**: Drive A can now persist up to 10 configured images and cycle to the next configured slot with a short SELECT press during runtime.
 - **Multi-image slot setup menu**: The setup UI now includes a dedicated `CTRL+A` menu to configure extra floppy A slots, browse images for slots `2..10`, and clear a slot directly with `SHIFT + 2..9` or `0`.
 - **Slot index LED feedback**: When cycling floppy A images, the Pico W LED now flashes the active slot number so the selected image index is visible without opening the setup menu.
+- **ACSI block-level hard disk emulation (EXPERIMENTAL)**: hooks the BIOS hdv vectors and announces a real partition table with up to 14 FAT16 partitions (`C:`..`P:`) from a raw image on the microSD. Coexists with a real ACSI drive under PPDRIVER / HDDRIVER. Tested on TOS 1.04–2.06; not supported on EmuTOS.
+- **Dual-BPB image support**: detects PPDRIVER and HDDRIVER TOS&DOS hybrid layouts and labels them on the boot summary (`TOS&DOS PP` / `TOS&DOS HD` / `Atari/FAT16`, plus `[TOS view]` / `[DOS view]`).
+- **AHDI fallback partition parsing**: when no MBR signature is present the driver parses the Atari AHDI table at sector 0 and walks XGM extended chains, so native ICD / HDDRIVER AHDI-only images enumerate correctly.
+- **Larger logical sector sizes**: FAT16 parser accepts `bytesPerSec ∈ {512, 1024, 2048, 4096, 8192}`.
+- **ACSI boot-info summary**: when ACSI is enabled the setup exit flow prints image path, ACSI ID, disk type, partition count, and a per-partition row before handing off to TOS.
+- **Setup-menu ACSI section**: new `[C]` toggle, `[I]mage` picker, `U[n]it (ACSI ID)` (0..7, default 7), and `Dri[v]e` fields. ACSI ID and drive letter are independent, with conflict detection against the GEMDRIVE drive letter.
+- **SD-card speed indicator**: hidden by default; toggle with `[Z]` on the setup screen.
+- **Atari HD image creator**: new `scripts/atari-hd/atari_hd.py` — Python 3.10 stdlib-only CLI that builds AHDI / PPDRIVER / HDDRIVER images with up to 14 partitions (primary + MBR/XGM extended chain), Hatari-style auto sector sizing, auto-alignment of partition size when the TOS companion's `spfat` divisibility would break, and an interactive TOS <1.04 compatibility mode. Shells out to `mkfs.vfat` / `mkdosfs`.
 
 ### Fixes
 - **Memory allocation fixes**: Multiple allocation-related bugs were fixed.
@@ -39,6 +53,9 @@ This release focuses on RP2040 memory layout cleanup, splitting ROM emulation fr
 - **Floppy activity LED timeout**: The Pico W LED no longer gets stuck on after floppy or command activity; it now emits a short activity pulse and turns off reliably when access finishes.
 - **Faster boot when RTC is disabled**: The emulator now skips the blocking WiFi connection path entirely unless RTC/NTP actually needs it.
 - **General dead-code cleanup**: Several unused commands, stale helpers, and other dead code paths were removed.
+- **ACSI FAT16 / write-path fixes**: Correct `bflags = 1` in the ACSI BPB (was causing TOS to interpret the FAT as FAT12 and garble large files); `$DEAD0000` disabled-sentinel so the BCB pool hook can distinguish "explicitly off" from "cold boot uninitialized"; `acsi.s` closing `even / nop × 8 / acsi_end:` tail block to prevent `firmware.py`'s trailing-zero strip from turning over-reads into 4-bomb bus errors on writes; `moveq`/`move.w` high-word fixes in the write loop.
+- **GEMDRIVE fixes**: `Dsetdrv` / `Dsetpath` / `_bootdev` are only set when GEMDRIVE is mapped to `C:`, so non-C: drives no longer auto-run `AUTO/` programs; `f_closedir` before `free` on FSFIRST defensive cleanup; SEEK_END positive offsets clamp to file size; `ext.l d0` removed from `Fread_core`; per-file `COMMAND_TIMEOUT` raised to `$6FFF`+ in `gemdrive.s` (avoids fd leaks from retransmits during slow directory scans).
+- **Floppy write-behind retry cap**: `floppy_tick()` now caps flush retries at 5 and raises `FLOPPY_DISK_ERROR` instead of spinning forever; media-change arming skips malformed images with `rootSector = 0`.
 
 ### Removed
 - **Format Image**: The old setup-menu floppy image formatter was removed. Image formatting is now expected to be done through the File Manager microfirmware.

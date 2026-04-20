@@ -35,6 +35,17 @@ TRANSTABLE			equ $FA0800	; Translation table for high resolution
 GEMDRIVE			equ $FA1000 ; GEMDRIVE address
 FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
 RTCEMUL 			equ $FA3400 ; RTC emulation address
+ACSIEMUL 			equ $FA5400 ; ACSI emulation address
+
+; Reservation carved below _membot before GEMDOS init so TOS never hands
+; this region out as TPA. Holds the BCB pool (8 BCBs × 4096 B on stock
+; TOS 2.06 / 1.62, plus a 2 KB safety margin). Must match the same
+; constant on the ACSI side (acsi.s).
+ACSIEMUL_BCB_POOL_BYTES		equ (32*1024+2*1024)
+ACSIEMUL_SVAR_ENABLED_ADDR	equ $FAA408
+ACSIEMUL_SVAR_ENABLED_VALUE	equ $FFFFFFFF
+ACSIEMUL_SVAR_DISABLED_VALUE equ $DEAD0000
+ACSIEMUL_BCB_MAGIC			equ $AC514BCB
 
 ; If 1, the display will not use the framebuffer and will write directly to the
 ; display memory. This is useful to reduce the memory usage in the rp2040
@@ -54,8 +65,8 @@ _conterm			equ $484	; Conterm device number
 RANDOM_TOKEN_ADDR:        equ (ROM4_ADDR + $F000) 	      ; Random token address at $FAF000
 RANDOM_TOKEN_SEED_ADDR    equ (RANDOM_TOKEN_ADDR + 4) 	  ; RANDOM_TOKEN_ADDR + 4 bytes
 RANDOM_TOKEN_POST_WAIT    equ $1                          ; Wait this cycles after the random number generator is ready
-COMMAND_TIMEOUT        	  equ $00000FFF ; Timeout for the simple command
-COMMAND_WRITE_TIMEOUT     equ $00001FFF ; Timeout for the command with large payload
+COMMAND_TIMEOUT        	  equ $00006FFF ; Timeout for commands (must cover batch SD reads)
+COMMAND_WRITE_TIMEOUT     equ $00006FFF ; Timeout for the command with large payload
 
 SHARED_VARIABLES:     	  equ (RANDOM_TOKEN_ADDR + (16 * 4)); random token + 16*4 bytes to the shared variables area
 
@@ -162,8 +173,7 @@ check_commands		macro
 
 	dc.l $abcdef42 					; magic number
 first:
-;	dc.l second
-	dc.l 0
+	dc.l cart_early_header			; CA_NEXT -> pre-GEMDOS reservation header
 	dc.l $08000000 + pre_auto		; After GEMDOS init (before booting from disks)
 	dc.l 0
 	dc.w GEMDOS_TIME 				;time
@@ -175,9 +185,6 @@ first:
 pre_auto:
 ; Wait for one second to allow the system to initialize
 	print start_msg
-	wait_sec
-	wait_sec
-	wait_sec
 	wait_sec
 	wait_sec
 
@@ -310,9 +317,32 @@ boot_gem:
     rts
 
 rom_function:
+	; Check if the pool reservation matches the ACSI config:
+	; - ACSI enabled ($FFFFFFFF) → pool should be reserved → proceed.
+	; - ACSI disabled ($DEAD0000) + pool reserved → wasted 34 KB → warm reset
+	;   so bit 26 sees the disabled sentinel and skips the reservation.
+	; - ACSI disabled + pool not reserved → already correct → proceed.
+	; - Cold boot unknown + pool reserved → proceed (ACSI config TBD was
+	;   reserved speculatively and we just confirmed ACSI is on).
+	cmp.l #ACSIEMUL_SVAR_ENABLED_VALUE, ACSIEMUL_SVAR_ENABLED_ADDR
+	beq.s .rom_function_no_reset		; ACSI enabled — pool needed, proceed
+	; ACSI not enabled. Check if pool was reserved unnecessarily.
+	move.l $432.w, d0					; d0 = current _membot
+	sub.l #ACSIEMUL_BCB_POOL_BYTES, d0	; d0 = expected pool base
+	movea.l d0, a0
+	cmp.l #ACSIEMUL_BCB_MAGIC, (a0)
+	bne.s .rom_function_no_reset		; no pool reserved — proceed without ACSI
+	; Pool reserved but ACSI disabled — warm reset to reclaim the 34 KB.
+	clr.l $420.w						; memvalid
+	clr.l $43A.w						; memval2
+	clr.l $51A.w						; memval3
+	move.l $4.w, a0
+	jmp (a0)
+.rom_function_no_reset:
 	; Place here your driver code
 	jsr GEMDRIVE		; Jump to the GEMDRIVE code
 	jsr FLOPPYEMUL		; Call the floppy emulation code
+	jsr ACSIEMUL		; Call the ACSI placeholder code
 	jmp RTCEMUL 		; Call the RTC emulation code
 
 ; Shared functions included at the end of the file
@@ -325,3 +355,40 @@ end_rom_code:
 end_pre_auto:
 	even
 	dc.l 0
+
+; ---------------------------------------------------------------------------
+; Second cart header: pre-GEMDOS memory reservation for ACSI BCB buffers.
+; Fires on CA_INIT bit 26 (after resolution set, before GEMDOS init) so the
+; reserved region never enters TOS's free pool. Placed OUTSIDE the
+; start_rom_code..end_rom_code span so it isn't copied to screen RAM.
+;
+; Raises _membot only. _memtop and _phystop are untouched.
+; ---------------------------------------------------------------------------
+cart_early_header:
+	dc.l 0								; CA_NEXT (end of chain)
+	dc.l $04000000 + cart_early_init	; CA_INIT = bit 26 only
+	dc.l 0								; CA_RUN
+	dc.w GEMDOS_TIME
+	dc.w GEMDOS_DATE
+	dc.l end_cart_early_init - cart_early_init
+	dc.b "ACSIRES",0
+	even
+
+cart_early_init:
+	cmp.l #ACSIEMUL_SVAR_DISABLED_VALUE, ACSIEMUL_SVAR_ENABLED_ADDR
+	beq.s .cart_early_done			; RP explicitly disabled ACSI — skip reservation
+	move.l $432.w, d0					; d0 = _membot
+	beq.s .cart_early_done
+	move.l memtop.w, d1					; require pool room after shift
+	sub.l d0, d1						; d1 = current pool size
+	cmp.l #(ACSIEMUL_BCB_POOL_BYTES+$10000), d1
+	bls.s .cart_early_done
+	add.l #3, d0						; long-align pool base upward
+	and.l #$FFFFFFFC, d0
+	move.l d0, a0						; a0 = aligned pool base
+	move.l #ACSIEMUL_BCB_MAGIC, (a0)	; stamp magic at aligned pool base
+	add.l #ACSIEMUL_BCB_POOL_BYTES, d0	; d0 = aligned base + pool
+	move.l d0, $432.w					; _membot raised (POOL is 4-aligned, so d0 stays aligned)
+.cart_early_done:
+	rts
+end_cart_early_init:

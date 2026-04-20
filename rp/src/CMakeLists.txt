@@ -80,6 +80,7 @@ add_subdirectory(u8g2)
 add_subdirectory($ENV{FATFS_SDK_PATH}/src build)
 
 set(RP_SOURCES
+    acsi.c
     main.c
     aconfig.c
     blink.c
@@ -201,6 +202,7 @@ endif()
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 # Workaround to disable USB output in release builds
 if(${_DEBUG} STREQUAL "0")
+
     pico_enable_stdio_uart(${PROJECT_NAME} 0)
 else()
     pico_enable_stdio_uart(${PROJECT_NAME} 1)

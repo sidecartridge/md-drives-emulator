@@ -125,6 +125,27 @@ static uint8_t currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
 static bool floppyMediaChangeClearPending[2] = {false, false};
 static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
 
+// Write-behind flush state per drive. FLOPPYEMUL_WRITE_SECTORS marks the
+// drive dirty; floppy_tick() issues a deferred f_sync once no writes have
+// arrived for FLOPPY_FLUSH_INTERVAL_MS.
+static volatile bool floppyDirty[2] = {false, false};
+static volatile uint32_t floppyDirtyAtMs[2] = {0, 0};
+
+// Bounded retry counter for floppy_tick's deferred f_sync. A wedged SD card
+// would otherwise cause floppy_tick to call the slow f_sync on every poll
+// forever; after FLOPPY_FLUSH_FAIL_MAX consecutive failures we mark the
+// drive as errored and stop retrying.
+#define FLOPPY_FLUSH_FAIL_MAX 5u
+static uint8_t floppyFlushFailCount[2] = {0u, 0u};
+
+static inline void __not_in_flash_func(floppyMarkWriteDirty)(uint8_t drive) {
+  if (drive > 1) return;
+  if (!floppyDirty[drive]) {
+    floppyDirtyAtMs[drive] = to_ms_since_boot(get_absolute_time());
+    floppyDirty[drive] = true;
+  }
+}
+
 static inline bool floppyStateIsMounted(FloppyDiskState state) {
   return state == FLOPPY_DISK_MOUNTED_RW || state == FLOPPY_DISK_MOUNTED_RO;
 }
@@ -170,8 +191,19 @@ static inline void floppyResetMediaChangeClearOnRootRead(FloppyDrive drive) {
 }
 
 static inline void floppyArmMediaChangeClearOnRootRead(FloppyDrive drive) {
-  floppyMediaChangeClearSector[drive] =
+  uint16_t rootSector =
       floppyGetRootDirStartSector(floppyGetBPBData(drive));
+  if (rootSector == 0u) {
+    // Malformed BPB (datrec < rdlen, or NULL). If we armed with sector 0,
+    // the very common "read boot sector" that happens early in TOS's
+    // media-change detection would clear MED_CHANGED prematurely, before
+    // TOS has refreshed its cached directory state. Leave the flag set
+    // and let the Atari-side state machine deal with it.
+    floppyMediaChangeClearPending[drive] = false;
+    floppyMediaChangeClearSector[drive] = 0u;
+    return;
+  }
+  floppyMediaChangeClearSector[drive] = rootSector;
   floppyMediaChangeClearPending[drive] = true;
 }
 
@@ -604,7 +636,7 @@ static void printPayload(uint8_t *payloadShowBytesPtr) {
   }
 }
 
-static FRESULT floppyUnmountDrive(FloppyDrive drive) {
+static FRESULT __not_in_flash_func(floppyUnmountDrive)(FloppyDrive drive) {
   FIL *fobj = floppyGetFileObject(drive);
   FloppyDiskState *state = floppyGetStatePtr(drive);
   char *fullPath = floppyGetFullPath(drive);
@@ -628,7 +660,7 @@ static FRESULT floppyUnmountDrive(FloppyDrive drive) {
   return FR_OK;
 }
 
-static FRESULT floppyMountDrivePath(FloppyDrive drive, const char *fname) {
+static FRESULT __not_in_flash_func(floppyMountDrivePath)(FloppyDrive drive, const char *fname) {
   if (fname == NULL || fname[0] == '\0') {
     *floppyGetStatePtr(drive) = FLOPPY_DISK_ERROR;
     return FR_INVALID_NAME;
@@ -1321,9 +1353,51 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         }
         return;
       }
+      floppyMarkWriteDirty((uint8_t)diskNum);
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);
       break;
     }
+  }
+}
+
+void __not_in_flash_func(floppy_tick)(void) {
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  for (uint8_t drive = 0; drive < 2; ++drive) {
+    if (!floppyDirty[drive]) continue;
+    FIL *fobj = (drive == 0) ? &fobjA : &fobjB;
+    FloppyDiskState state =
+        (drive == 0) ? floppyDiskStatus.stateA : floppyDiskStatus.stateB;
+    if (state != FLOPPY_DISK_MOUNTED_RW) {
+      // Image not writable (RO mount, unmounted, error): clear the dirty
+      // flag so we don't loop here once the drive is swapped out.
+      floppyDirty[drive] = false;
+      floppyFlushFailCount[drive] = 0u;
+      continue;
+    }
+    if ((now - floppyDirtyAtMs[drive]) < FLOPPY_FLUSH_INTERVAL_MS) continue;
+    FRESULT fr = f_sync(fobj);
+    if (fr != FR_OK) {
+      DPRINTF("Floppy tick f_sync %c failed (%d)\n",
+              (drive == 0) ? 'A' : 'B', (int)fr);
+      floppyDirtyAtMs[drive] = now;
+      if (++floppyFlushFailCount[drive] >= FLOPPY_FLUSH_FAIL_MAX) {
+        // SD card / image likely wedged. Stop retrying so we don't burn
+        // the main loop on repeated slow f_sync calls.
+        DPRINTF("Floppy %c: %u consecutive f_sync failures, marking errored\n",
+                (drive == 0) ? 'A' : 'B',
+                (unsigned)floppyFlushFailCount[drive]);
+        if (drive == 0) {
+          floppyDiskStatus.stateA = FLOPPY_DISK_ERROR;
+        } else {
+          floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
+        }
+        floppyDirty[drive] = false;
+        floppyFlushFailCount[drive] = 0u;
+      }
+      continue;
+    }
+    floppyDirty[drive] = false;
+    floppyFlushFailCount[drive] = 0u;
   }
 }

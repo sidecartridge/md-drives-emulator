@@ -226,9 +226,15 @@ extern int lookup_data_rom_dma_channel;
 void __not_in_flash_func(floppy_dma_irq_handler_lookup_callback)(void);
 void __not_in_flash_func(floppy_dma_irq_handler_lookup)(void);
 
+// Write-behind flush window for floppy_tick(). Defaults to the shared
+// DRIVES_FLUSH_INTERVAL_MS in constants.h; override here if floppy ever
+// needs a different window from the ACSI path.
+#define FLOPPY_FLUSH_INTERVAL_MS DRIVES_FLUSH_INTERVAL_MS
+
 // Function Prototypes
 void __not_in_flash_func(floppy_init)();
 void __not_in_flash_func(floppy_loop)();
+void __not_in_flash_func(floppy_tick)(void);
 bool floppy_canCycleDriveA(void);
 FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex);
 

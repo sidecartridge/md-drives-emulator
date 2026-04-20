@@ -69,6 +69,42 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
+### ACSI Hard Disk Emulation (Experimental)
+
+#### What is ACSI Emulation?
+
+In addition to GEMDrive, the Multi-device can emulate **ACSI** hard disks at the block-device level, driven by a raw disk image file on the microSD card. Unlike GEMDrive — which intercepts GEMDOS calls and presents a folder as a drive — the ACSI path emulates the disk at the BIOS level (`hdv_init` / `hdv_bpb` / `hdv_rw` / `hdv_boot` / `hdv_mediach`) and hands TOS a real partition table plus BPBs. Disk images are standard hard disk images compatible with Peter Putnik's **PPDRIVER** (TOS&DOS dual-BPB) and **HDDRIVER** layouts.
+
+This feature is currently marked **EXPERIMENTAL**. It is disabled by default.
+
+- **Advantages**:
+  - Works with software that talks to the hard disk at the BIOS level rather than through GEMDOS.
+  - Announces a real partition table with up to 14 FAT16 partitions (drive letters `C:`..`P:`).
+  - Carries a dual-BPB view so the same image is readable from both TOS and MS-DOS style tools.
+  - Does not consume a folder per partition on the microSD card — a single image file is mounted.
+
+- **Disadvantages**:
+  - Maximum partition/image size is bounded by the FAT16 limits of the image format.
+  - Transferring files in and out of the image requires either USB Mass Storage at the setup screen or a host-side image editor.
+  - Less battle-tested than GEMDrive; some corner cases may still trigger regressions.
+
+**TOS compatibility.** This release has been tested from **TOS 1.04 through TOS 2.06**. It does **not** currently work under **EmuTOS** — the embedded EmuTOS hard disk driver conflicts with the ACSI hooks installed by the emulator and prevents the emulated volumes from coming up. Running ACSI emulation on EmuTOS is not supported in this version.
+
+**Coexistence with real ACSI hardware.** The emulator is designed to live on the same ACSI bus as a real hard disk controlled by Peter Putnik's **PPDRIVER** or **HDDRIVER**. Give the emulated unit a free ACSI ID (the real drive typically sits at `0`) and pick a starting drive letter outside the range already owned by the real driver, and both should appear together in TOS.
+
+When ACSI is **enabled** in the setup screen, the emulator also reserves a small RAM pool (~34 KB) under `_membot` on boot so TOS can rebind its buffer control blocks to the larger logical sector sizes used by the image. If you later **disable** ACSI from the setup menu, the emulator triggers a warm reset so that reservation is released.
+
+The ACSI ID and the starting drive letter are **independent**. You can, for example, declare ACSI ID `0` but map partitions starting at `K:` so they don't clash with a real ACSI driver that already owns `C:`/`D:`/... The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
+
+#### ACSI Related Setup Screen Commands
+
+| Command | Description |
+|---------|-------------|
+| **A[C]SI Enabled** | Enable or disable ACSI block-device emulation. Toggling this setting from the setup menu may trigger a warm reset to reclaim or reserve the BCB RAM pool. |
+| **[I]mage** | Select the hard disk image file on the microSD card to mount. The internal browser navigates the microSD card so you can pick any regular file. |
+| **U[n]it (ACSI ID)** | Choose the ACSI bus ID reported to TOS (`0` to `7`). Default is `7`. This is only the physical unit tag stored in `pun_info`; it does not affect which drive letters the partitions land on. |
+| **Dri[v]e** | Choose the starting drive letter for the first announced partition (`C:` to `P:`). Subsequent partitions take consecutive letters. Must not overlap with the GEMDrive drive letter when both are enabled. |
+
 ### Floppy Drive Emulation
 
 The Floppies Emulation represents a significant enhancement to the Multi-device. With this, the Atari ST can interface with floppy images on a microSD card as though they were actual floppy disks. Here's how to get started with Floppies Emulation.

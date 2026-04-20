@@ -84,6 +84,17 @@ bool sdcard_dirExist(const char *dir);
 sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName);
 
 /**
+ * @brief Ensure a folder exists on the mounted filesystem.
+ *
+ * Creates the folder when it is missing. Empty and root folder names are
+ * treated as no-ops.
+ *
+ * @param folderName Name of the folder to be created or verified.
+ * @return sdcard_status_t Status code indicating the result.
+ */
+sdcard_status_t sdcard_ensureFolder(const char *folderName);
+
+/**
  * @brief Adjust the SPI communication speed.
  *
  * Alters the SPI baud rate using a configuration entry. Verifies the provided

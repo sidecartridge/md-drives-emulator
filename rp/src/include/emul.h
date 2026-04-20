@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "acsi.h"
 #include "aconfig.h"
 #include "chandler.h"
 #include "constants.h"
