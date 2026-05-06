@@ -228,8 +228,9 @@ def _partition_ident(part, index: int, format_id: str) -> str:
     `ahdi_ident` attribute when story 004 starts setting one; otherwise
     derives a v1 value from the format and slot index.
 
-    For AHDI: slot 0 is forced GEM (boot rule); later slots flip to BGM
-    above the 32 MB threshold.
+    For AHDI: slot 0 is clamped to GEM (legacy-driver compatibility
+    default; see atari_hd.ahdi_partition_id() for the rationale);
+    later slots flip to BGM above the 32 MB threshold.
     For PPDRIVER / HDDRIVER: every partition is FAT16 in the MBR table
     (the EBR-chain "extended" type is the chain header, not a partition
     the user listed).
@@ -345,6 +346,10 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         verb = "violates" if n == 1 else "violate"
         return (f"{n} partition{plural} {verb} the new format's "
                 "rules. Discard? (y/N)")
+    if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE_WRITE:
+        return f"Overwrite {state.image_path}? (y/N)"
+    if state.prompt_mode == PromptMode.CONFIRM_DISCARD_UNSAVED:
+        return "Discard unsaved changes? (y/N)"
     if state.status_message:
         return state.status_message
     return ""

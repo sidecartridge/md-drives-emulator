@@ -89,7 +89,12 @@ BPB_ROOT_ENTRIES_OFFSET = 17
 BPB_TOTAL_SEC16_OFFSET = 19
 BPB_SEC_PER_FAT_OFFSET = 22
 
-# Canonical CHS geometry used by Hatari's script
+# CHS geometry baked into MBR partition entries. CHS is vestigial on
+# AHDI disks (which are LBA-only) and only present in MBR slots for
+# PC / DOS compatibility -- real Atari drivers ignore it. The 16x32
+# pair is the Hatari atari-hd-image.sh tooling convention, not a TOS
+# spec. Validated against the Atari Compendium notebook; see
+# CLAUDE.md.
 CHS_HEADS = 16
 CHS_SECTORS_PER_TRACK = 32
 
@@ -371,7 +376,18 @@ def build_root_sector_hddriver(plan: "ImagePlan") -> bytes:
     HDDRIVER convention: ONE primary (MBR P0) plus, when needed, an MBR
     extended container (next slot). AHDI slot 2 holds the TOS-view overlap
     marker for the primary partition -- one AHDI marker is all the
-    emulator's detector needs to classify the image as HDDRIVER."""
+    emulator's detector needs to classify the image as HDDRIVER.
+
+    The Atari Compendium describes HDDRIVER's hybrid trick as: place AHDI
+    partition info into MBR slot 2 with an MBR `part_type` of 0 so PC OSes
+    skip it, while the AHDI driver is told to look at 0x1DE specifically.
+    We achieve the type-0 byte *implicitly*: the AHDI entry's start-LBA
+    is stored big-endian at offset 0x1E2, which is exactly where MBR slot
+    2's `part_type` byte lives. For LBAs below 16 M (8 GiB at 512 B per
+    sector) the BE high byte is 0, so PC OSes correctly see no partition
+    in slot 2. Above that range the implicit type byte starts taking
+    non-zero values; not a concern within this tool's <= 2 GB envelope,
+    but worth knowing if the plan ever grows."""
     buf = bytearray(SECTOR_SIZE)
 
     # The one primary partition (always present).
@@ -937,10 +953,15 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
                      partition_index: int) -> int:
     """Per-slot partition-size cap.
 
-    On AHDI the first partition is the TOS boot partition: it must be a
-    GEM entry, which TOS caps at 16 MB (< 1.04) or 32 MB (1.04+). Slots
-    2..N can be GEM (within the same threshold) or BGM (up to 256/512).
-    Hybrid formats have no per-slot distinction."""
+    On AHDI we conservatively treat the first partition as the boot
+    partition and clamp it to the GEM cap (16 MB strict / 32 MB
+    permissive) for legacy-driver compatibility. This is *not* a TOS
+    rule per se -- TOS itself only checks the boot flag, and modern
+    drivers boot from BGM up to 512 MB -- but the original AHDI and
+    early SCSI Tools required the GEM clamp, so we keep it. See
+    ahdi_partition_id() for the full rationale. Slots 2..N can be GEM
+    (within the same threshold) or BGM (up to 256/512). Hybrid formats
+    have no per-slot distinction."""
     if format_id == FORMAT_AHDI and partition_index == 0:
         return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
     return format_max_partition_mb(format_id, strict_tos)
@@ -968,8 +989,16 @@ def cap_mb_for_type(format_id: str, strict_tos: bool,
 
 
 def first_partition_start_lba(format_id: str) -> int:
-    """AHDI leaves LBA 1 as padding (matches HDDRIVER tooling); hybrid
-    layouts put the DOS BPB at LBA 1 directly."""
+    """AHDI: physical LBA 1 is reserved for the Bad Sector List (BSL).
+    The root sector carries `bst_st` / `bst_cnt` pointers to it; we
+    don't emit a BSL on generated images (those fields stay at 0 = no
+    BSL), but we still leave LBA 1 vacant so a real driver writing a
+    BSL later doesn't have to relocate partition 0. The first
+    partition therefore starts at LBA 2.
+
+    Hybrid layouts (PPDRIVER / HDDRIVER): no AHDI BSL is involved; the
+    DOS BPB sits at LBA 1 directly. Validated against the Atari
+    Compendium notebook; see CLAUDE.md."""
     return 2 if format_id == FORMAT_AHDI else 1
 
 
@@ -1147,9 +1176,12 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
     )
     plan.image_sectors = mb_to_sectors_512(image_mb)
 
-    # AHDI-only: enforce the TOS per-slot caps. Slot 0 is the boot (GEM)
-    # partition with a tighter 16/32 MB cap; slots 2..N follow the BGM
-    # 256/512 MB cap. Hybrid formats have no per-slot distinction.
+    # AHDI-only: enforce per-slot caps. Slot 0 is conservatively
+    # treated as the boot partition and clamped to the GEM cap (16/32
+    # MB) for legacy-driver compatibility -- not a hard TOS rule but a
+    # defensive default; see ahdi_partition_id() for the rationale.
+    # Slots 2..N follow the BGM 256/512 MB cap. Hybrid formats have no
+    # per-slot distinction.
     if format_id == FORMAT_AHDI:
         mode_label = "TOS < 1.04" if strict_tos else "TOS 1.04+"
         for i, part in enumerate(partitions):
@@ -1216,23 +1248,50 @@ def ahdi_partition_id(partition_mb: int, strict_tos: bool = False,
                       is_first: bool = False) -> bytes:
     """Pick the AHDI partition-id bytes for a partition of `partition_mb` MB.
 
-    The first AHDI partition is the TOS boot partition and must always be
-    GEM (TOS boots only from GEM entries). `is_first=True` forces GEM
-    regardless of size. Later partitions use the usual threshold: GEM when
-    the partition is <= the TOS-version GEM cap, BGM otherwise.
+    `is_first=True` forces b"GEM" regardless of size. This is a
+    *defensive compatibility* choice rather than a hard TOS requirement:
+    TOS itself only checks the boot flag (bit 7 of the partition-entry
+    flag byte), not the ident; modern drivers (HDDRIVER, PPDRIVER, ICD
+    Pro) happily boot from BGM up to 512 MB. But the original AHDI and
+    early SCSI Tools required ident == GEM and size <= 16 MB on the
+    boot slot, so emitting GEM at slot 0 is the broadest-compatibility
+    pick. Removing this clamp would let the user set up a 512 MB BGM
+    boot partition that works on modern drivers but fails on legacy
+    ones; revisit if a workflow actually wants that.
+
+    Later partitions use the usual threshold: GEM when partition_mb is
+    <= the TOS-version GEM cap, BGM otherwise. Note that the underlying
+    distinction is sector-size driven (GEM = bps 512, BGM = bps > 512);
+    the size threshold is what causes choose_logical_sector_size() to
+    flip bps, so size and ident move together.
 
     The GEM/BGM threshold differs between TOS versions: original TOS
-    (< 1.04) accepts GEM only up to 16 MB, while TOS 1.04+ extends that to
-    32 MB. `strict_tos=True` requests the conservative pre-1.04 rule."""
+    (< 1.04) accepts GEM only up to 16 MB, while TOS 1.04+ extends that
+    to 32 MB. `strict_tos=True` requests the conservative pre-1.04
+    rule."""
     if is_first:
         return b"GEM"
     threshold = AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
     return b"GEM" if partition_mb <= threshold else b"BGM"
 
 
-def build_image(plan: ImagePlan) -> None:
+def build_image(plan: ImagePlan, progress=None) -> None:
+    """Materialise `plan` to disk at `plan.image_path`.
+
+    `progress`, when not None, is invoked with a single string argument
+    at each major step of the pipeline (allocation, per-partition
+    format, BPB synthesis, root-sector write, extended-chain write).
+    Useful for surfacing progress in interactive callers (TUI). The
+    callback runs in the same thread as the writer; raising from it
+    aborts the build.
+    """
+    def _emit(msg):
+        if progress is not None:
+            progress(msg)
+
     # Step 1: allocate the image file (sparse where possible).
     image_bytes = plan.image_sectors * SECTOR_SIZE
+    _emit(f"Allocating {image_bytes // MIB} MB image...")
     try:
         with open(plan.image_path, "wb") as f:
             f.truncate(image_bytes)
@@ -1241,7 +1300,10 @@ def build_image(plan: ImagePlan) -> None:
 
     # Step 2: for each partition, format a temp file as FAT16 and splice
     # the bytes into the main image at the partition's physical offset.
-    for part in plan.partitions:
+    n = len(plan.partitions)
+    for i, part in enumerate(plan.partitions):
+        _emit(f"Writing partition {i + 1}/{n}: {part.name} "
+              f"({part.size_mb} MB)...")
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="atari_hd_",
                                             suffix=".fatpart")
         os.close(tmp_fd)
@@ -1270,6 +1332,7 @@ def build_image(plan: ImagePlan) -> None:
     # the DOS BPB mkfs just wrote has bps=512, spc=2*ratio, res=ratio+1 so
     # the TOS companion's FAT/root/data LBAs align physically.
     if plan.format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER):
+        _emit("Stamping TOS BPBs...")
         oem = b"PPGDODBC" if plan.format_id == FORMAT_PPDRIVER else None
         for part in plan.partitions:
             dos_bpb = read_sector(plan.image_path, part.start_lba)
@@ -1282,6 +1345,7 @@ def build_image(plan: ImagePlan) -> None:
             write_sector(plan.image_path, part.start_lba + 1, tos_bpb)
 
     # Step 4: write the root sector (sector 0) describing all partitions.
+    _emit("Writing partition table...")
     if plan.format_id == FORMAT_AHDI:
         root = build_root_sector_ahdi(plan)
     elif plan.format_id == FORMAT_PPDRIVER:
@@ -1299,6 +1363,7 @@ def build_image(plan: ImagePlan) -> None:
     # the next-link slot references the next descriptor (relative to the
     # chain's base = the first descriptor's LBA).
     if plan.has_extended:
+        _emit("Writing extended-chain descriptors...")
         logicals = plan.partitions[plan.primary_count:]
         chain_base = logicals[0].ebr_lba
         for i, part in enumerate(logicals):

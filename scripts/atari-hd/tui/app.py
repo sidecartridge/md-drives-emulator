@@ -10,12 +10,16 @@ confirm prompt; the main-screen handler dispatches A / D / E / T to
 those, and W remains a story-006 stub.
 """
 
+import os
+import shutil
 import sys
+import tempfile
 
 import atari_hd
 
 from .input import Key, read_key
-from .render import is_legal_label_char, validate_edit_dialog
+from .render import (MIN_COLS, MIN_ROWS,
+                      is_legal_label_char, validate_edit_dialog)
 from .state import (EditDialogState, EditField, EditMode, PromptMode,
                     State)
 from .terminal import terminal_session
@@ -54,6 +58,10 @@ def handle_key(state: State, key) -> State:
         return _handle_ask_strict_tos(state, key)
     if state.prompt_mode == PromptMode.CONFIRM_DROP_PARTITIONS:
         return _handle_drop_confirm(state, key)
+    if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE_WRITE:
+        return _handle_write_overwrite_confirm(state, key)
+    if state.prompt_mode == PromptMode.CONFIRM_DISCARD_UNSAVED:
+        return _handle_discard_unsaved_confirm(state, key)
     return state
 
 
@@ -77,8 +85,7 @@ def _handle_main(state: State, key) -> State:
         return state
     k = key.lower()
     if k == "q":
-        state.exit_requested = True
-        return state
+        return _request_exit(state)
 
     # File-management actions are only available before an image is
     # loaded; once the user has an image, the keybindings switch to
@@ -139,11 +146,7 @@ def _handle_partition_action(state: State, k: str) -> State:
     if k == "f":
         return _open_format_chooser(state)
     if k == "w":
-        # Real handler lands in story 006.
-        if _has_real_partitions(state):
-            state.status_message = "story 006 implements Write"
-            state.dirty = True
-        return state
+        return _start_write(state)
     return state
 
 
@@ -204,8 +207,10 @@ def _open_edit_dialog(state: State) -> State:
 
 def _auto_ident(state: State, slot: int, size_mb: int) -> str:
     """Initial type pick when the user hasn't chosen one. AHDI slot 0
-    is forced GEM by the boot rule; later slots flip at the GEM
-    threshold; hybrid formats don't use the field."""
+    is clamped to GEM as a legacy-driver compatibility default (not a
+    hard TOS rule -- see atari_hd.ahdi_partition_id() for the
+    rationale); later slots flip at the GEM threshold; hybrid formats
+    don't use the field."""
     if state.format_id != "AHDI":
         return "GEM"
     if slot == 0:
@@ -227,7 +232,8 @@ def _toggle_type_inline(state: State) -> State:
         state.dirty = True
         return state
     if state.selected_slot == 0:
-        state.status_message = "slot 0 is locked to GEM (boot rule)"
+        state.status_message = ("slot 0 is locked to GEM "
+                                 "(legacy-driver compatibility)")
         state.dirty = True
         return state
     part = state.partitions[state.selected_slot]
@@ -243,6 +249,7 @@ def _toggle_type_inline(state: State) -> State:
         state.dirty = True
         return state
     part.ahdi_ident = new_ident
+    state.unsaved_changes = True
     state.status_message = f"slot {state.selected_slot}: {current} -> {new_ident}"
     state.dirty = True
     return state
@@ -268,6 +275,7 @@ def _handle_delete_confirm(state: State, key) -> State:
         if slot is not None and 0 <= slot < len(state.partitions):
             state.partitions[slot] = None
             state.status_message = f"deleted partition #{slot}"
+            state.unsaved_changes = True
         state.pending_delete_slot = None
         state.prompt_mode = PromptMode.OFF
         state.dirty = True
@@ -366,11 +374,16 @@ def _handle_drop_confirm(state: State, key) -> State:
 def _apply_pending_format(state: State, drop_slots) -> State:
     new_format = state.pending_format
     new_strict = state.pending_strict_tos or False
+    actually_changed = (new_format != state.format_id
+                        or new_strict != state.strict_tos
+                        or bool(drop_slots))
     for slot in drop_slots:
         if 0 <= slot < len(state.partitions):
             state.partitions[slot] = None
     state.format_id = new_format
     state.strict_tos = new_strict
+    if actually_changed:
+        state.unsaved_changes = True
     msg = f"format -> {new_format}"
     if new_format == "AHDI":
         msg += f" (TOS<1.04: {'on' if new_strict else 'off'})"
@@ -408,10 +421,11 @@ def _find_violator_slots(state: State, candidate_format: str,
 
 def _effective_ident(state: State, slot: int, part, format_id: str) -> str:
     """The ident the new format would assign this partition. AHDI
-    slot 0 is forced GEM; later AHDI slots honor an existing
-    ahdi_ident if set, else auto-pick by the GEM threshold (slot
-    threshold uses the *candidate* strict_tos, not the current state,
-    so the violation check is honest about the new regime)."""
+    slot 0 is clamped to GEM (legacy-driver compatibility default);
+    later AHDI slots honor an existing ahdi_ident if set, else
+    auto-pick by the GEM threshold (using the *candidate* strict_tos,
+    not the current state, so the violation check is honest about the
+    new regime)."""
     if format_id != "AHDI":
         return "FAT16"
     if slot == 0:
@@ -443,7 +457,8 @@ def _handle_edit_dialog(state: State, key) -> State:
         return _commit_edit_dialog(state)
 
     # Tab cycles fields. Skip TYPE on hybrid formats (it's hidden) and
-    # on AHDI slot 0 (locked to GEM, can't be edited).
+    # on AHDI slot 0 (clamped to GEM for legacy-driver compatibility,
+    # not user-editable in v1).
     if isinstance(key, str) and key == "\t":
         return _cycle_edit_field(state)
 
@@ -560,6 +575,7 @@ def _commit_edit_dialog(state: State) -> State:
     state.partitions[d.slot] = part
     state.selected_slot = d.slot
     state.edit_dialog = None
+    state.unsaved_changes = True
     state.status_message = (f"slot {d.slot}: {label} {size_mb} MB"
                             + (f" {ident}" if state.format_id == "AHDI" else ""))
     state.dirty = True
@@ -652,6 +668,166 @@ def _handle_overwrite_confirm(state: State, key) -> State:
     state.pending_path = None
     state.prompt_mode = PromptMode.OFF
     state.status_message = "overwrite cancelled"
+    state.dirty = True
+    return state
+
+
+# -------------------------------------------------------------------
+# W: commit / write flow (story 006)
+# -------------------------------------------------------------------
+
+def _start_write(state: State) -> State:
+    """Run the pre-flight checks; if the target file already exists,
+    open the overwrite-confirm prompt; otherwise proceed straight to
+    the write."""
+    err = _preflight_check(state)
+    if err is not None:
+        state.status_message = f"cannot write: {err}"
+        state.dirty = True
+        return state
+    if os.path.exists(state.image_path):
+        state.prompt_mode = PromptMode.CONFIRM_OVERWRITE_WRITE
+        state.dirty = True
+        return state
+    return _do_write(state)
+
+
+def _preflight_check(state: State):
+    """Return None when every pre-flight rule passes, otherwise a
+    short reason string. Doesn't mutate state."""
+    real = [p for p in state.partitions if p is not None]
+    if not real:
+        return "no partitions to write"
+    for i, part in enumerate(real):
+        ident = _effective_ident(state, i, part, state.format_id)
+        cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+                                        ident)
+        if part.size_mb > cap:
+            return (f"partition {part.name!r} ({part.size_mb} MB) "
+                    f"exceeds {cap} MB cap")
+    return None
+
+
+def _handle_write_overwrite_confirm(state: State, key) -> State:
+    if isinstance(key, str) and key.lower() == "y":
+        state.prompt_mode = PromptMode.OFF
+        return _do_write(state)
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    state.prompt_mode = PromptMode.OFF
+    state.status_message = "write cancelled"
+    state.dirty = True
+    return state
+
+
+def _do_write(state: State) -> State:
+    """Build the plan and call atari_hd.build_image() into a temp
+    file in the same directory, then os.replace into the target.
+    Atomic so a partial write never overwrites the existing file."""
+    target = state.image_path
+    target_dir = os.path.dirname(os.path.abspath(target)) or "."
+    real_partitions = [p for p in state.partitions if p is not None]
+
+    # Compute a generous initial image size; plan_image will bump it
+    # if the partitions need more headroom (root sector + EBR / XGM
+    # chain overhead).
+    total_partition_mb = sum(p.size_mb for p in real_partitions)
+    image_mb = max(total_partition_mb + 1, 2)
+
+    tmp_path = None
+    try:
+        # tempfile in the same directory so os.replace() is atomic
+        # (same filesystem). delete=False -> we own cleanup.
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="atari_hd_write_", suffix=".img.tmp",
+            dir=target_dir, delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        # Fresh Partition objects so plan_image's mutations
+        # (size_sectors / start_lba / etc.) don't leak back into our
+        # in-memory list.
+        plan_partitions = []
+        for src in real_partitions:
+            new = atari_hd.Partition(name=src.name, size_mb=src.size_mb)
+            # Preserve the user's explicit ident so XGM-chain logicals
+            # render the right type if the user picked one. (Currently
+            # ahdi_partition_id ignores this for XGM logicals; a
+            # follow-up could thread it through. v1 is OK.)
+            ident = getattr(src, "ahdi_ident", None)
+            if ident is not None:
+                new.ahdi_ident = ident
+            plan_partitions.append(new)
+
+        plan = atari_hd.plan_image(
+            state.format_id, image_path=tmp_path, image_mb=image_mb,
+            partitions=plan_partitions, strict_tos=state.strict_tos)
+
+        atari_hd.build_image(plan, progress=_make_progress_callback())
+
+        os.replace(tmp_path, target)
+        tmp_path = None  # successfully consumed
+    except KeyboardInterrupt:
+        # Don't swallow; let the terminal_session restore + propagate.
+        if tmp_path is not None:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+        raise
+    except Exception as e:
+        if tmp_path is not None:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+        state.status_message = f"write failed: {e}"
+        state.dirty = True
+        return state
+
+    state.status_message = (f"Written {len(real_partitions)} "
+                            f"partition(s) to {target}")
+    state.unsaved_changes = False
+    state.dirty = True
+    return state
+
+
+def _make_progress_callback():
+    """Build a callback that overwrites the bottom row in place
+    during the write. The callback is invoked synchronously from
+    inside build_image while terminal_session holds the alt screen,
+    so direct stdout writes are safe."""
+    def emit(message):
+        size = shutil.get_terminal_size((MIN_COLS, MIN_ROWS))
+        cols, rows = size.columns, size.lines
+        line = message[:cols].ljust(cols)
+        # Move to last row, clear it, write, no newline.
+        sys.stdout.write(f"\x1b[{rows};1H\x1b[2K{line}")
+        sys.stdout.flush()
+    return emit
+
+
+# -------------------------------------------------------------------
+# Q: exit (with unsaved-changes guard, story 006)
+# -------------------------------------------------------------------
+
+def _request_exit(state: State) -> State:
+    """Q at the main screen: guard against quitting with unsaved
+    in-memory changes. ESC follows the same path."""
+    if state.unsaved_changes:
+        state.prompt_mode = PromptMode.CONFIRM_DISCARD_UNSAVED
+        state.dirty = True
+        return state
+    state.exit_requested = True
+    return state
+
+
+def _handle_discard_unsaved_confirm(state: State, key) -> State:
+    if isinstance(key, str) and key.lower() == "y":
+        state.exit_requested = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    state.prompt_mode = PromptMode.OFF
+    state.status_message = "exit cancelled"
     state.dirty = True
     return state
 

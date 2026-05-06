@@ -39,6 +39,9 @@ class PromptMode(Enum):
     ASK_FORMAT = "ask_format"
     ASK_STRICT_TOS = "ask_strict_tos"
     CONFIRM_DROP_PARTITIONS = "confirm_drop_partitions"
+    # Commit / write flow (story 006)
+    CONFIRM_OVERWRITE_WRITE = "confirm_overwrite_write"
+    CONFIRM_DISCARD_UNSAVED = "confirm_discard_unsaved"
 
 
 class EditField(Enum):
@@ -119,6 +122,11 @@ class State:
     pending_format: Optional[str] = None
     pending_strict_tos: Optional[bool] = None
     pending_drop_slots: Optional[List[int]] = None
+
+    # Story 006: True when the in-memory plan has changed since the
+    # last successful write. Set by every mutating handler; cleared
+    # on successful write and on image_path change (load / new).
+    unsaved_changes: bool = False
     # Index of the highlighted row in the partition list.
     selected_slot: int = 0
     # First visible row when the list is taller than the body. With

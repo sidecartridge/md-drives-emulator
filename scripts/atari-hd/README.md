@@ -88,10 +88,13 @@ Say yes to the compat prompt if you're writing an image for a 520ST /
 1040ST / Mega ST still running the original TOS; otherwise leave it at
 the default. The choice:
 
-- **Forces partition 1 (the TOS boot partition) to be a GEM entry**
-  capped at the GEM size (16 or 32 MB). TOS only boots from GEM, so this
-  is a hard constraint regardless of your answer to the compat prompt —
-  the cap just changes with the mode.
+- **Forces partition 1 to be a GEM entry**, capped at the GEM size
+  (16 or 32 MB). This is a defensive compatibility default for the
+  legacy boot path — original AHDI and early SCSI Tools required GEM
+  on the boot slot. TOS itself only checks the boot flag, and modern
+  drivers (HDDRIVER, PPDRIVER, ICD Pro) accept BGM boot up to 512 MB,
+  but emitting GEM at slot 0 is what works everywhere. The cap just
+  changes with the strict-vs-permissive mode.
 - Caps subsequent partitions at the BGM size (256 or 512 MB). Slots
   2..N can still be GEM (within the GEM cap) or BGM.
 - Is surfaced in the summary (`TOS compat : ...`) so you can verify

@@ -7,10 +7,13 @@ prevent re-discovering them the hard way.
 
 Covered:
   - partition_cap_mb: AHDI per-slot caps, hybrid no-per-slot caps.
-  - ahdi_partition_id: first slot always GEM; threshold pick for slots 1+.
+  - ahdi_partition_id: first slot always emitted as GEM (defensive
+    legacy-driver-compatibility clamp; not a hard TOS rule -- see
+    atari_hd.ahdi_partition_id() docstring); threshold pick for
+    slots 1+.
   - partition_layout: primary/extended split per format for representative N.
   - Rejection paths: out-of-range N, AHDI strict caps, AHDI permissive caps,
-    HDDRIVER primary cap (always 1), first-AHDI-must-be-GEM invariant.
+    HDDRIVER primary cap (always 1), first-AHDI-always-GEM invariant.
 """
 
 import unittest
@@ -119,8 +122,11 @@ class TestAhdiPartitionId(unittest.TestCase):
     """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')."""
 
     def test_first_partition_is_always_gem(self):
-        # Hard rule: TOS only boots from a GEM entry, so slot 0 must be
-        # GEM regardless of size or strict mode.
+        # Defensive clamp: legacy drivers (original AHDI / SCSI Tools)
+        # required GEM on the boot slot. TOS itself only checks the
+        # boot flag, but emitting GEM at slot 0 is the broadest-
+        # compatibility pick. See atari_hd.ahdi_partition_id() for the
+        # full rationale.
         for size in (1, 16, 17, 32, 33, 100, 256, 257, 512, 1024):
             for strict in (True, False):
                 with self.subTest(size=size, strict=strict):
