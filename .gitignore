@@ -60,3 +60,4 @@ dist/
 settings.local.json
 *.pyc
 __pycache__/
+epics/
