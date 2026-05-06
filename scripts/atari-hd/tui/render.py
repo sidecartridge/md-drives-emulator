@@ -282,9 +282,11 @@ def _selected_is_real(state: State) -> bool:
 def _render_status_keys(state: State, cols: int) -> str:
     """Keybinding row. Morphs by state:
        - no image: file actions (N=New L=Load Q=Quit)
-       - image set: partition actions (A/D/E/T/W/Q), with D/E/T
+       - image set: partition actions (A/D/E/T/W/F/Q), with D/E/T
          dimmed when the selected slot is empty (no real partition
          to act on); W dimmed when there are zero real partitions.
+         F (format selector) is always enabled when an image is set
+         so the user can pick the format before adding partitions.
     """
     if state.image_path is None:
         line = "N=New   L=Load   Q=Quit"
@@ -300,6 +302,7 @@ def _render_status_keys(state: State, cols: int) -> str:
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
+    items.append("F=Format")
     items.append("Q=Quit")
     line = "  ".join(items)
     # Dimming escapes don't take visible space; right-pad to cols by
@@ -331,6 +334,17 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
     if state.prompt_mode == PromptMode.CONFIRM_DELETE:
         slot = state.pending_delete_slot
         return f"Delete partition #{slot}? (y/N)"
+    if state.prompt_mode == PromptMode.ASK_FORMAT:
+        return ("Format: [A]HDI  [P]PDRIVER  [H]DDRIVER  "
+                "(Esc cancel)")
+    if state.prompt_mode == PromptMode.ASK_STRICT_TOS:
+        return "Compatibility with TOS < 1.04? (y/N)"
+    if state.prompt_mode == PromptMode.CONFIRM_DROP_PARTITIONS:
+        n = len(state.pending_drop_slots or [])
+        plural = "" if n == 1 else "s"
+        verb = "violates" if n == 1 else "violate"
+        return (f"{n} partition{plural} {verb} the new format's "
+                "rules. Discard? (y/N)")
     if state.status_message:
         return state.status_message
     return ""

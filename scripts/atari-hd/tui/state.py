@@ -35,6 +35,10 @@ class PromptMode(Enum):
     ASK_LOAD_PATH = "ask_load_path"
     CONFIRM_OVERWRITE = "confirm_overwrite"
     CONFIRM_DELETE = "confirm_delete"
+    # Format selector (story 005)
+    ASK_FORMAT = "ask_format"
+    ASK_STRICT_TOS = "ask_strict_tos"
+    CONFIRM_DROP_PARTITIONS = "confirm_drop_partitions"
 
 
 class EditField(Enum):
@@ -104,6 +108,17 @@ class State:
     # Slot index pending deletion -- carried through CONFIRM_DELETE so
     # the confirm dialog knows which partition the y/n applies to.
     pending_delete_slot: Optional[int] = None
+
+    # Format-selector pending state (story 005). pending_format is set
+    # when the user picks a format but the change hasn't been applied
+    # yet (might still need ASK_STRICT_TOS or CONFIRM_DROP_PARTITIONS
+    # before commit). pending_strict_tos likewise. pending_drop_slots
+    # is the list of partition indices that would violate the pending
+    # format's caps; the user is asked to discard them via
+    # CONFIRM_DROP_PARTITIONS.
+    pending_format: Optional[str] = None
+    pending_strict_tos: Optional[bool] = None
+    pending_drop_slots: Optional[List[int]] = None
     # Index of the highlighted row in the partition list.
     selected_slot: int = 0
     # First visible row when the list is taller than the body. With

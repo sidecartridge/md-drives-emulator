@@ -48,6 +48,12 @@ def handle_key(state: State, key) -> State:
         return _handle_overwrite_confirm(state, key)
     if state.prompt_mode == PromptMode.CONFIRM_DELETE:
         return _handle_delete_confirm(state, key)
+    if state.prompt_mode == PromptMode.ASK_FORMAT:
+        return _handle_ask_format(state, key)
+    if state.prompt_mode == PromptMode.ASK_STRICT_TOS:
+        return _handle_ask_strict_tos(state, key)
+    if state.prompt_mode == PromptMode.CONFIRM_DROP_PARTITIONS:
+        return _handle_drop_confirm(state, key)
     return state
 
 
@@ -130,6 +136,8 @@ def _handle_partition_action(state: State, k: str) -> State:
         return _open_edit_dialog(state)
     if k == "t":
         return _toggle_type_inline(state)
+    if k == "f":
+        return _open_format_chooser(state)
     if k == "w":
         # Real handler lands in story 006.
         if _has_real_partitions(state):
@@ -273,6 +281,148 @@ def _handle_delete_confirm(state: State, key) -> State:
     state.status_message = "delete cancelled"
     state.dirty = True
     return state
+
+
+# -------------------------------------------------------------------
+# F: format selector + AHDI strict-TOS toggle (story 005)
+# -------------------------------------------------------------------
+
+def _open_format_chooser(state: State) -> State:
+    state.prompt_mode = PromptMode.ASK_FORMAT
+    state.status_message = None
+    state.dirty = True
+    return state
+
+
+def _handle_ask_format(state: State, key) -> State:
+    if key == Key.ESC:
+        _reset_format_pending(state)
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if not isinstance(key, str):
+        return state
+    chosen = {"a": "AHDI", "p": "PPDRIVER", "h": "HDDRIVER"}.get(key.lower())
+    if chosen is None:
+        return state
+    state.pending_format = chosen
+    if chosen == "AHDI":
+        # Need the strict-TOS answer before we can revalidate.
+        state.prompt_mode = PromptMode.ASK_STRICT_TOS
+        state.dirty = True
+        return state
+    # Hybrid formats don't honor strict_tos.
+    state.pending_strict_tos = False
+    return _resolve_pending_format(state)
+
+
+def _handle_ask_strict_tos(state: State, key) -> State:
+    if key == Key.ESC:
+        _reset_format_pending(state)
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    # y -> strict on; anything else (including N, Enter, others) -> off.
+    state.pending_strict_tos = (
+        isinstance(key, str) and key.lower() == "y")
+    return _resolve_pending_format(state)
+
+
+def _resolve_pending_format(state: State) -> State:
+    """We have pending_format and pending_strict_tos. Compute which
+    existing partitions would violate the new caps; if any, ask for
+    confirmation before dropping. If none, apply directly."""
+    violators = _find_violator_slots(state, state.pending_format,
+                                      state.pending_strict_tos)
+    if not violators:
+        _apply_pending_format(state, drop_slots=())
+        return state
+    state.pending_drop_slots = violators
+    state.prompt_mode = PromptMode.CONFIRM_DROP_PARTITIONS
+    state.dirty = True
+    return state
+
+
+def _handle_drop_confirm(state: State, key) -> State:
+    if isinstance(key, str) and key.lower() == "y":
+        _apply_pending_format(state, drop_slots=state.pending_drop_slots or ())
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    # Anything else cancels the format change entirely (no partitions
+    # dropped; format unchanged).
+    fmt = state.pending_format
+    _reset_format_pending(state)
+    state.status_message = f"format change to {fmt} cancelled"
+    state.dirty = True
+    return state
+
+
+def _apply_pending_format(state: State, drop_slots) -> State:
+    new_format = state.pending_format
+    new_strict = state.pending_strict_tos or False
+    for slot in drop_slots:
+        if 0 <= slot < len(state.partitions):
+            state.partitions[slot] = None
+    state.format_id = new_format
+    state.strict_tos = new_strict
+    msg = f"format -> {new_format}"
+    if new_format == "AHDI":
+        msg += f" (TOS<1.04: {'on' if new_strict else 'off'})"
+    if drop_slots:
+        msg += f"; dropped {len(drop_slots)} partition(s)"
+    _reset_format_pending(state)
+    state.status_message = msg
+    state.dirty = True
+    return state
+
+
+def _reset_format_pending(state: State) -> None:
+    state.prompt_mode = PromptMode.OFF
+    state.pending_format = None
+    state.pending_strict_tos = None
+    state.pending_drop_slots = None
+
+
+def _find_violator_slots(state: State, candidate_format: str,
+                         candidate_strict: bool):
+    """Return a list of slot indices whose existing partition would
+    exceed the candidate format's per-type cap. Empty list means the
+    format change is cap-safe."""
+    violators = []
+    for i, part in enumerate(state.partitions):
+        if part is None:
+            continue
+        ident = _effective_ident(state, i, part, candidate_format)
+        cap = atari_hd.cap_mb_for_type(candidate_format, candidate_strict,
+                                        ident)
+        if part.size_mb > cap:
+            violators.append(i)
+    return violators
+
+
+def _effective_ident(state: State, slot: int, part, format_id: str) -> str:
+    """The ident the new format would assign this partition. AHDI
+    slot 0 is forced GEM; later AHDI slots honor an existing
+    ahdi_ident if set, else auto-pick by the GEM threshold (slot
+    threshold uses the *candidate* strict_tos, not the current state,
+    so the violation check is honest about the new regime)."""
+    if format_id != "AHDI":
+        return "FAT16"
+    if slot == 0:
+        return "GEM"
+    explicit = getattr(part, "ahdi_ident", None)
+    if explicit in ("GEM", "BGM", b"GEM", b"BGM"):
+        return explicit if isinstance(explicit, str) else explicit.decode()
+    threshold = (atari_hd.AHDI_GEM_MAX_MB_STRICT
+                 if state.pending_strict_tos
+                 else atari_hd.AHDI_GEM_MAX_MB)
+    return "GEM" if part.size_mb <= threshold else "BGM"
 
 
 # -------------------------------------------------------------------
