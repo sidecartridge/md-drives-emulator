@@ -23,6 +23,7 @@ extended with the hybrid layouts used by real Atari hard disk drivers.
 Usage: interactive. Run with no arguments.
 """
 
+import hashlib
 import os
 import shutil
 import struct
@@ -545,6 +546,340 @@ def overwrite_oem(bpb: bytes, oem: bytes) -> bytes:
     out[BPB_OEM_OFFSET:BPB_OEM_OFFSET + BPB_OEM_LENGTH] = oem.ljust(
         BPB_OEM_LENGTH, b" ")
     return bytes(out)
+
+
+# --------------------------------------------------------------------------
+# Pure-Python FAT16 formatter
+# --------------------------------------------------------------------------
+#
+# Produces a freshly formatted FAT16 image using only the Python standard
+# library, replacing the dependency on `mkfs.vfat` / `mkdosfs`. See
+# scripts/atari-hd/epics/epic-001-pure-python-fat16/ for design notes.
+
+# FAT16 cluster-count limits. The FAT12/FAT16/FAT32 boundary is encoded
+# entirely in the cluster count (Microsoft FATGEN103.DOC, "Determination
+# of FAT type when mounting the volume").
+FAT16_MIN_CLUSTERS = 4085
+FAT16_MAX_CLUSTERS = 65524
+
+# Logical sector sizes the writer accepts.
+FAT16_VALID_SECTOR_SIZES = (512, 1024, 2048, 4096, 8192)
+
+# Fixed structural choices that match mkfs.vfat -F 16 defaults.
+FAT16_ROOT_ENTRIES = 512
+FAT16_DIR_ENTRY_BYTES = 32
+FAT16_NUM_FATS = 2
+FAT16_MEDIA_DESCRIPTOR = 0xF8
+FAT16_SECTORS_PER_TRACK = 32
+FAT16_NUM_HEADS = 64
+FAT16_OEM_NAME = b"MSWIN4.1"
+FAT16_FS_TYPE = b"FAT16   "
+FAT16_BOOT_SIGNATURE = bytes((0x55, 0xAA))
+FAT16_EXTENDED_BOOT_SIG = 0x29
+FAT16_DRIVE_NUMBER = 0x80
+FAT16_VOLUME_LABEL_ATTR = 0x08
+
+# Boot-code stub fill: HLT (0xF4). mkfs.vfat ships its own x86 stub that
+# prints "Non-system disk"; we never boot x86 from these images, so a
+# one-byte HLT pattern is fine. The byte-parity harness in epic-001 /
+# story 003 may mask this region if mkfs.vfat drift is observed.
+FAT16_BOOT_CODE_FILL = 0xF4
+
+# Boot-sector field offsets not covered by the BPB_* constants above.
+FAT16_BS_MEDIA_OFFSET = 0x15
+FAT16_BS_SPT_OFFSET = 0x18
+FAT16_BS_HEADS_OFFSET = 0x1A
+FAT16_BS_HIDDEN_OFFSET = 0x1C
+FAT16_BS_TOTAL32_OFFSET = 0x20
+FAT16_BS_DRIVE_OFFSET = 0x24
+FAT16_BS_RESERVED1_OFFSET = 0x25
+FAT16_BS_BOOTSIG_OFFSET = 0x26
+FAT16_BS_VOLID_OFFSET = 0x27
+FAT16_BS_LABEL_OFFSET = 0x2B
+FAT16_BS_FSTYPE_OFFSET = 0x36
+FAT16_BS_BOOTCODE_OFFSET = 0x3E
+FAT16_BS_SIGNATURE_OFFSET = 0x1FE
+
+
+def _fat16_normalize_label(label: str) -> bytes:
+    """Encode a volume label per FAT16 short-name rules: ASCII upper-case,
+    11 bytes, space-padded. Raises RuntimeError if the input is not
+    representable."""
+    try:
+        upper = label.upper().encode("ascii")
+    except UnicodeEncodeError:
+        raise RuntimeError(f"volume label is not ASCII: {label!r}")
+    if len(upper) > 11:
+        raise RuntimeError(f"volume label too long: {label!r} (max 11 chars)")
+    forbidden = set(b'*?<>|":+,./;=[]\\\x7f')
+    for b in upper:
+        if b < 0x20 or b in forbidden:
+            raise RuntimeError(
+                f"volume label contains illegal byte 0x{b:02X}: {label!r}")
+    return upper
+
+
+def _fat16_seed_volume_id(label: bytes, partition_sectors_512: int,
+                          sector_size: int, sectors_per_cluster: int,
+                          reserved_sectors: int) -> int:
+    """Deterministic 32-bit volume serial seeded from the formatter inputs.
+    Same inputs always produce the same output -- no wall-clock reads, no
+    OS-dependent randomness. Story 008 of epic-002 is the canary for this
+    contract."""
+    seed = label.ljust(11, b" ") + struct.pack(
+        "<IIII",
+        partition_sectors_512 & 0xFFFFFFFF,
+        sector_size,
+        sectors_per_cluster,
+        reserved_sectors,
+    )
+    digest = hashlib.sha256(seed).digest()
+    return struct.unpack_from("<I", digest, 0)[0]
+
+
+def _fat16_compute_spfat(partition_sectors_512: int, sector_size: int,
+                         sectors_per_cluster: int,
+                         reserved_sectors: int) -> int:
+    """Compute sectors-per-FAT for an arbitrary (sector_size, spc, res)
+    tuple, mirroring dosfstools' fixed-point iteration. For sector_size=512
+    the output matches predict_mkfs_spfat(); the latter is the source of
+    truth for the dual-BPB hybrid layout. Raises RuntimeError if the
+    layout cannot be produced."""
+    ratio = sector_size // SECTOR_SIZE
+    partition_total_logical = partition_sectors_512 // ratio
+    root_dir_bytes = FAT16_ROOT_ENTRIES * FAT16_DIR_ENTRY_BYTES
+    root_dir_sectors = (root_dir_bytes + sector_size - 1) // sector_size
+    spfat = 1
+    for _ in range(64):
+        overhead = (reserved_sectors
+                    + FAT16_NUM_FATS * spfat
+                    + root_dir_sectors)
+        if overhead >= partition_total_logical:
+            raise RuntimeError(
+                f"FAT16 layout: reserved+FATs+root ({overhead}) exceeds "
+                f"partition ({partition_total_logical} logical sectors)")
+        data_logical = partition_total_logical - overhead
+        clusters = data_logical // sectors_per_cluster
+        # The "+2" reserves FAT[0] (media descriptor) and FAT[1] (EOF);
+        # see predict_mkfs_spfat() for the rationale.
+        fat_bytes = (clusters + 2) * 2
+        spfat_needed = (fat_bytes + sector_size - 1) // sector_size
+        if spfat_needed == spfat:
+            return spfat
+        spfat = spfat_needed
+    raise RuntimeError("FAT16 spfat iteration failed to converge")
+
+
+def _fat16_validate_and_compute_spfat(partition_sectors_512: int,
+                                      sector_size: int,
+                                      sectors_per_cluster: int,
+                                      reserved_sectors: int) -> int:
+    """Validate every FAT16 invariant the writer needs; return spfat."""
+    if sector_size not in FAT16_VALID_SECTOR_SIZES:
+        raise RuntimeError(
+            f"sector_size {sector_size} not in {FAT16_VALID_SECTOR_SIZES}")
+    if (sectors_per_cluster < 1 or sectors_per_cluster > 128
+            or (sectors_per_cluster & (sectors_per_cluster - 1)) != 0):
+        raise RuntimeError(
+            f"sectors_per_cluster {sectors_per_cluster} must be a power of "
+            "two between 1 and 128")
+    if reserved_sectors < 1:
+        raise RuntimeError(
+            f"reserved_sectors {reserved_sectors} must be >= 1")
+    if partition_sectors_512 < 1:
+        raise RuntimeError(
+            f"partition_sectors_512 {partition_sectors_512} must be > 0")
+    ratio = sector_size // SECTOR_SIZE
+    if partition_sectors_512 % ratio != 0:
+        raise RuntimeError(
+            f"partition_sectors_512 {partition_sectors_512} not divisible "
+            f"by ratio {ratio} (sector_size={sector_size})")
+
+    spfat = _fat16_compute_spfat(partition_sectors_512, sector_size,
+                                 sectors_per_cluster, reserved_sectors)
+
+    # Cluster-count check confirms we're in the FAT16 range. Has to come
+    # after the iteration so it sees the final spfat.
+    partition_total_logical = partition_sectors_512 // ratio
+    root_dir_bytes = FAT16_ROOT_ENTRIES * FAT16_DIR_ENTRY_BYTES
+    root_dir_sectors = (root_dir_bytes + sector_size - 1) // sector_size
+    overhead = reserved_sectors + FAT16_NUM_FATS * spfat + root_dir_sectors
+    data_logical = partition_total_logical - overhead
+    clusters = data_logical // sectors_per_cluster
+    if clusters < FAT16_MIN_CLUSTERS:
+        raise RuntimeError(
+            f"FAT16 requires >= {FAT16_MIN_CLUSTERS} clusters; got "
+            f"{clusters} -- partition too small or sectors_per_cluster "
+            "too large")
+    if clusters > FAT16_MAX_CLUSTERS:
+        raise RuntimeError(
+            f"FAT16 supports at most {FAT16_MAX_CLUSTERS} clusters; got "
+            f"{clusters} -- increase sectors_per_cluster")
+    return spfat
+
+
+def _fat16_build_boot_sector(sector_size: int, sectors_per_cluster: int,
+                             reserved_sectors: int, spfat: int,
+                             total_sectors_logical: int, label: bytes,
+                             volume_id: int) -> bytes:
+    """Assemble the 512-byte FAT16 boot sector. When sector_size > 512 the
+    rest of logical sector 0 is zero-filled separately by the caller."""
+    bs = bytearray(SECTOR_SIZE)
+    bs[0:3] = b"\xEB\x3C\x90"  # jmp 0x3E ; nop
+    bs[BPB_OEM_OFFSET:BPB_OEM_OFFSET + BPB_OEM_LENGTH] = FAT16_OEM_NAME
+
+    struct.pack_into("<H", bs, BPB_BYTES_PER_SEC_OFFSET, sector_size)
+    bs[BPB_SEC_PER_CLUS_OFFSET] = sectors_per_cluster
+    struct.pack_into("<H", bs, BPB_RESERVED_OFFSET, reserved_sectors)
+    bs[BPB_FAT_COUNT_OFFSET] = FAT16_NUM_FATS
+    struct.pack_into("<H", bs, BPB_ROOT_ENTRIES_OFFSET, FAT16_ROOT_ENTRIES)
+    if total_sectors_logical < 0x10000:
+        struct.pack_into("<H", bs, BPB_TOTAL_SEC16_OFFSET,
+                         total_sectors_logical)
+        # FAT16_BS_TOTAL32_OFFSET stays at 0
+    else:
+        struct.pack_into("<H", bs, BPB_TOTAL_SEC16_OFFSET, 0)
+        struct.pack_into("<I", bs, FAT16_BS_TOTAL32_OFFSET,
+                         total_sectors_logical)
+    bs[FAT16_BS_MEDIA_OFFSET] = FAT16_MEDIA_DESCRIPTOR
+    struct.pack_into("<H", bs, BPB_SEC_PER_FAT_OFFSET, spfat)
+    struct.pack_into("<H", bs, FAT16_BS_SPT_OFFSET, FAT16_SECTORS_PER_TRACK)
+    struct.pack_into("<H", bs, FAT16_BS_HEADS_OFFSET, FAT16_NUM_HEADS)
+    # FAT16_BS_HIDDEN_OFFSET stays at 0; partition offset lives in the
+    # caller's partition table, not in this BPB.
+
+    bs[FAT16_BS_DRIVE_OFFSET] = FAT16_DRIVE_NUMBER
+    bs[FAT16_BS_RESERVED1_OFFSET] = 0
+    bs[FAT16_BS_BOOTSIG_OFFSET] = FAT16_EXTENDED_BOOT_SIG
+    struct.pack_into("<I", bs, FAT16_BS_VOLID_OFFSET,
+                     volume_id & 0xFFFFFFFF)
+    bs[FAT16_BS_LABEL_OFFSET:FAT16_BS_LABEL_OFFSET + 11] = \
+        label.ljust(11, b" ")
+    bs[FAT16_BS_FSTYPE_OFFSET:FAT16_BS_FSTYPE_OFFSET + 8] = FAT16_FS_TYPE
+
+    bs[FAT16_BS_BOOTCODE_OFFSET:FAT16_BS_SIGNATURE_OFFSET] = \
+        bytes((FAT16_BOOT_CODE_FILL,)) * \
+        (FAT16_BS_SIGNATURE_OFFSET - FAT16_BS_BOOTCODE_OFFSET)
+    bs[FAT16_BS_SIGNATURE_OFFSET:FAT16_BS_SIGNATURE_OFFSET + 2] = \
+        FAT16_BOOT_SIGNATURE
+    return bytes(bs)
+
+
+def _fat16_volume_label_dir_entry(label: bytes) -> bytes:
+    """The single 32-byte root-dir entry for the volume label. Date/time
+    fields are zeroed for reproducibility (mkfs.vfat populates them from
+    the wall clock; the byte-parity harness in story 003 will mask them)."""
+    entry = bytearray(FAT16_DIR_ENTRY_BYTES)
+    entry[0:11] = label.ljust(11, b" ")
+    entry[11] = FAT16_VOLUME_LABEL_ATTR
+    return bytes(entry)
+
+
+def _fat16_write_zeros(f, n_bytes: int) -> None:
+    """Stream n_bytes of zeros to f in 1 MiB chunks."""
+    if n_bytes <= 0:
+        return
+    chunk_size = 1024 * 1024
+    chunk = b"\x00" * min(n_bytes, chunk_size)
+    while n_bytes >= len(chunk):
+        f.write(chunk)
+        n_bytes -= len(chunk)
+    if n_bytes > 0:
+        f.write(b"\x00" * n_bytes)
+
+
+def format_fat16(out_path: str,
+                 partition_sectors_512: int,
+                 sector_size: int,
+                 sectors_per_cluster: int,
+                 reserved_sectors: int,
+                 label: str,
+                 disable_fat_align: bool) -> None:
+    """Write a freshly formatted, empty FAT16 image to `out_path`.
+
+    Reproduces the on-disk layout that mkfs.vfat -F 16 produces for the
+    same inputs (modulo volume serial and creation timestamp; both are
+    seeded deterministically from inputs to keep the output byte-stable
+    across hosts and runs).
+
+    Total file size is exactly partition_sectors_512 * 512 bytes.
+
+    `disable_fat_align` is currently a no-op: this writer always honors
+    `reserved_sectors` literally, which is what the dual-BPB hybrid layout
+    requires (DOS_res = ratio + 1). The parameter is kept for forward
+    compatibility -- a future single-BPB image type may want a different
+    alignment policy; today, both branches behave identically.
+    """
+    _ = disable_fat_align  # see docstring; both branches behave identically
+
+    label_bytes = _fat16_normalize_label(label)
+    spfat = _fat16_validate_and_compute_spfat(
+        partition_sectors_512, sector_size,
+        sectors_per_cluster, reserved_sectors)
+
+    ratio = sector_size // SECTOR_SIZE
+    total_sectors_logical = partition_sectors_512 // ratio
+    root_dir_bytes = FAT16_ROOT_ENTRIES * FAT16_DIR_ENTRY_BYTES
+    root_dir_sectors = (root_dir_bytes + sector_size - 1) // sector_size
+    volume_id = _fat16_seed_volume_id(
+        label_bytes, partition_sectors_512, sector_size,
+        sectors_per_cluster, reserved_sectors)
+
+    boot_sector = _fat16_build_boot_sector(
+        sector_size=sector_size,
+        sectors_per_cluster=sectors_per_cluster,
+        reserved_sectors=reserved_sectors,
+        spfat=spfat,
+        total_sectors_logical=total_sectors_logical,
+        label=label_bytes,
+        volume_id=volume_id,
+    )
+
+    # First sector of each FAT: F8 FF FF FF (FAT[0]=media descriptor,
+    # FAT[1]=end-of-chain), remainder zero. Both FAT copies are identical.
+    fat_first_buf = bytearray(sector_size)
+    fat_first_buf[0:4] = bytes((FAT16_MEDIA_DESCRIPTOR, 0xFF, 0xFF, 0xFF))
+    fat_first_sector = bytes(fat_first_buf)
+
+    # First sector of the root directory: just the volume-label entry,
+    # rest zero. Subsequent root-dir sectors are all zero.
+    root_first_buf = bytearray(sector_size)
+    root_first_buf[0:FAT16_DIR_ENTRY_BYTES] = \
+        _fat16_volume_label_dir_entry(label_bytes)
+    root_first_sector = bytes(root_first_buf)
+
+    out_path_str = os.fspath(out_path)
+    with open(out_path_str, "wb") as f:
+        # Sector 0: 512-byte boot sector. If the logical sector is larger
+        # than 512 bytes, zero-pad the rest of logical sector 0.
+        f.write(boot_sector)
+        if sector_size > SECTOR_SIZE:
+            _fat16_write_zeros(f, sector_size - SECTOR_SIZE)
+
+        # Reserved area: zero-fill sectors 1 .. reserved_sectors - 1.
+        _fat16_write_zeros(f, (reserved_sectors - 1) * sector_size)
+
+        # FATs: spfat sectors each, two byte-identical copies.
+        for _ in range(FAT16_NUM_FATS):
+            f.write(fat_first_sector)
+            _fat16_write_zeros(f, (spfat - 1) * sector_size)
+
+        # Root directory: root_dir_sectors sectors total.
+        f.write(root_first_sector)
+        _fat16_write_zeros(f, (root_dir_sectors - 1) * sector_size)
+
+        # Data area: zero-fill the remainder of the partition.
+        overhead_logical = (
+            1                            # sector 0 (boot + reserved start)
+            + (reserved_sectors - 1)     # rest of reserved
+            + FAT16_NUM_FATS * spfat
+            + root_dir_sectors)
+        data_logical = total_sectors_logical - overhead_logical
+        if data_logical < 0:
+            raise RuntimeError(
+                f"FAT16 layout overflow: overhead {overhead_logical} "
+                f"exceeds total {total_sectors_logical}")
+        _fat16_write_zeros(f, data_logical * sector_size)
 
 
 # --------------------------------------------------------------------------
