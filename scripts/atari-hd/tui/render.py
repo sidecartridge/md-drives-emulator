@@ -12,7 +12,9 @@ afterwards, with D / E / T / W dimmed when the list is empty).
 
 import shutil
 
-from .state import PromptMode, Screen, State
+import atari_hd
+
+from .state import EditField, EditMode, PromptMode, Screen, State
 
 
 # ANSI escape sequences shared across screens.
@@ -54,7 +56,10 @@ def render(state: State) -> str:
     if cols < MIN_COLS or rows < MIN_ROWS:
         return _render_too_small(cols, rows)
     if state.screen == Screen.MAIN:
-        return _render_main(state, cols, rows)
+        frame = _render_main(state, cols, rows)
+        if state.edit_dialog is not None:
+            frame += _render_edit_dialog_overlay(state, cols, rows)
+        return frame
     raise ValueError(f"unknown screen: {state.screen!r}")
 
 
@@ -187,8 +192,21 @@ def _render_partition_list_header(cols: int) -> str:
 
 def _render_partition_row(part, index: int, cols: int,
                           format_id: str, selected: bool) -> str:
-    """One partition row. `part` duck-types atari_hd.Partition --
-    requires .name, .size_mb, .start_lba, .size_sectors."""
+    """One partition row. `part` may be None (a hole left by Delete);
+    set partitions duck-type atari_hd.Partition (.name, .size_mb,
+    .start_lba, .size_sectors)."""
+    if part is None:
+        parts = [
+            " " * LIST_LEFT_MARGIN,
+            f"{index:>{COL_SLOT}}", " " * COL_GAP,
+            "(empty)".ljust(COL_TYPE + COL_GAP + COL_START
+                            + COL_GAP + COL_SIZE + COL_GAP + COL_LABEL),
+        ]
+        body = "".join(parts)
+        body = _pad_to(body, cols)
+        if selected:
+            return INVERSE_ON + body + INVERSE_OFF
+        return body
     ident = _partition_ident(part, index, format_id)
     parts = [
         " " * LIST_LEFT_MARGIN,
@@ -244,20 +262,44 @@ def _render_format_hint(state: State, cols: int) -> str:
     return _pad_to(line, cols)
 
 
+def _has_real_partitions(state: State) -> bool:
+    """True iff state.partitions has at least one non-None entry.
+    Holes (None) left by Delete don't count toward the dim policy."""
+    return any(p is not None for p in state.partitions)
+
+
+def _selected_is_real(state: State) -> bool:
+    """True iff selected_slot points at a real (non-None) partition.
+    D / E require this; T also (since type only applies to AHDI
+    partitions on a real slot)."""
+    if not state.partitions:
+        return False
+    if not 0 <= state.selected_slot < len(state.partitions):
+        return False
+    return state.partitions[state.selected_slot] is not None
+
+
 def _render_status_keys(state: State, cols: int) -> str:
     """Keybinding row. Morphs by state:
        - no image: file actions (N=New L=Load Q=Quit)
-       - image set: partition actions (A/D/E/T/W/Q), with D/E/T/W
-         dimmed when the list is empty.
+       - image set: partition actions (A/D/E/T/W/Q), with D/E/T
+         dimmed when the selected slot is empty (no real partition
+         to act on); W dimmed when there are zero real partitions.
     """
     if state.image_path is None:
         line = "N=New   L=Load   Q=Quit"
         return _pad_to(line, cols)
-    has_partitions = bool(state.partitions)
     items = ["A=Add"]
-    cond = ["D=Delete", "E=Edit", "T=Type", "W=Write"]
-    for k in cond:
-        items.append(k if has_partitions else f"{DIM_ON}{k}{DIM_OFF}")
+    selected_real = _selected_is_real(state)
+    has_real = _has_real_partitions(state)
+    cond = [
+        ("D=Delete", selected_real),
+        ("E=Edit",   selected_real),
+        ("T=Type",   selected_real),
+        ("W=Write",  has_real),
+    ]
+    for label, enabled in cond:
+        items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
     items.append("Q=Quit")
     line = "  ".join(items)
     # Dimming escapes don't take visible space; right-pad to cols by
@@ -286,6 +328,9 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         path = state.pending_path or "(unknown)"
         return (f"{path} exists. Press O to overwrite, "
                 "anything else to cancel.")
+    if state.prompt_mode == PromptMode.CONFIRM_DELETE:
+        slot = state.pending_delete_slot
+        return f"Delete partition #{slot}? (y/N)"
     if state.status_message:
         return state.status_message
     return ""
@@ -329,3 +374,173 @@ def _truncate_middle(s: str, max_width: int) -> str:
     head = (max_width - 3) // 2
     tail = max_width - 3 - head
     return s[:head] + "..." + s[-tail:]
+
+
+# -------------------------------------------------------------------
+# Edit dialog overlay (story 004)
+# -------------------------------------------------------------------
+
+DIALOG_WIDTH = 56
+DIALOG_HEIGHT = 13
+
+
+def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
+    """Centered modal dialog drawn on top of the partition list.
+    Uses absolute cursor positioning so we don't have to redraw the
+    background; the caller composes this after the main frame."""
+    d = state.edit_dialog
+    box_top = max(1, (rows - DIALOG_HEIGHT) // 2 + 1)
+    box_left = max(1, (cols - DIALOG_WIDTH) // 2 + 1)
+
+    title = "Add Partition" if d.mode == EditMode.ADD else f"Edit Partition #{d.slot}"
+    cap_mb = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+                                       d.type_choice)
+    size_label = f"Size (<= {cap_mb} MB):"
+    size_value = d.size_buffer if d.size_buffer else "_"
+    if d.field == EditField.SIZE:
+        size_value = INVERSE_ON + size_value.ljust(8) + INVERSE_OFF
+    else:
+        size_value = size_value.ljust(8)
+
+    type_locked = (state.format_id == "AHDI" and d.slot == 0)
+    type_visible = state.format_id == "AHDI"
+    if type_visible:
+        if type_locked:
+            type_value = f"GEM (locked)"
+        else:
+            gem = "[GEM]" if d.type_choice == "GEM" else " GEM "
+            bgm = "[BGM]" if d.type_choice == "BGM" else " BGM "
+            type_value = f"{gem}  {bgm}"
+        if d.field == EditField.TYPE and not type_locked:
+            type_value = INVERSE_ON + type_value + INVERSE_OFF
+
+    label_value = d.label_buffer if d.label_buffer else "_"
+    label_value = label_value.ljust(11)
+    if d.field == EditField.LABEL:
+        label_value = INVERSE_ON + label_value + INVERSE_OFF
+
+    error = validate_edit_dialog(state)
+    status_line = "OK" if error is None else error
+
+    # Build the lines that go inside the box. The width budget is
+    # DIALOG_WIDTH - 4 (border + 1 padding each side).
+    inner = DIALOG_WIDTH - 4
+    body_lines = [
+        title.ljust(inner),
+        "",
+        f"  {size_label.ljust(20)} {size_value}",
+    ]
+    if type_visible:
+        body_lines.append(f"  {'Type:'.ljust(20)} {type_value}")
+    body_lines.append(f"  {'Label:'.ljust(20)} {label_value}")
+    body_lines.append("")
+    body_lines.append(_truncate_middle(f"Status: {status_line}", inner))
+    body_lines.append("")
+    body_lines.append(_truncate_middle(
+        "[Tab] field  [t] type  [Enter] save  [Esc] cancel", inner))
+
+    # Pad body to DIALOG_HEIGHT - 2 (top + bottom border rows).
+    while len(body_lines) < DIALOG_HEIGHT - 2:
+        body_lines.append("")
+
+    # Compose the framed box with absolute positioning.
+    out = []
+    # Top border
+    out.append(_cursor_to(box_top, box_left) + "┌" + "─" * (DIALOG_WIDTH - 2) + "┐")
+    # Body
+    for i, body in enumerate(body_lines):
+        # Strip ANSI for length measurement
+        visible = _strip_ansi(body)
+        pad = max(0, (DIALOG_WIDTH - 2) - len(visible))
+        line = "│ " + body + (" " * (pad - 1 if pad >= 1 else 0)) + "│"
+        out.append(_cursor_to(box_top + 1 + i, box_left) + line)
+    # Bottom border
+    out.append(_cursor_to(box_top + DIALOG_HEIGHT - 1, box_left)
+               + "└" + "─" * (DIALOG_WIDTH - 2) + "┘")
+    return "".join(out)
+
+
+def _cursor_to(row: int, col: int) -> str:
+    return f"\x1b[{row};{col}H"
+
+
+def _strip_ansi(s: str) -> str:
+    """Remove ANSI escape sequences for visible-length measurement.
+    Cheap and good-enough for our usage; we only emit \\x1b[<digits>m
+    style sequences from this module."""
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\x1b" and i + 1 < len(s) and s[i + 1] == "[":
+            # Skip until letter
+            j = i + 2
+            while j < len(s) and not s[j].isalpha():
+                j += 1
+            i = j + 1
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+# -------------------------------------------------------------------
+# Validation (story 004)
+# -------------------------------------------------------------------
+
+LABEL_FORBIDDEN_CHARS = set('*?<>|":+,./;=[]\\\x7f')
+
+
+def is_legal_label_char(ch: str) -> bool:
+    """True if `ch` can be entered into a FAT16 volume label.
+    Mirrors the filter atari_hd._fat16_normalize_label() applies on
+    commit; doing it at input time avoids accumulating illegal chars
+    that would only fail validation later."""
+    if len(ch) != 1:
+        return False
+    if not (32 <= ord(ch) < 127):
+        return False
+    return ch.upper() not in LABEL_FORBIDDEN_CHARS
+
+
+def validate_edit_dialog(state: State):
+    """Return None when the dialog state passes every rule, otherwise
+    a short message naming the *first* failure. The Save action is
+    enabled iff this returns None."""
+    d = state.edit_dialog
+    if d is None:
+        return None
+
+    # Size must be a positive integer.
+    if not d.size_buffer:
+        return "size required"
+    try:
+        size_mb = int(d.size_buffer)
+    except ValueError:
+        return "size must be a number"
+    if size_mb < 1:
+        return "size must be >= 1 MB"
+
+    # Cap depends on the user-chosen type via cap_mb_for_type. For
+    # AHDI slot 0 the dialog locks type to GEM, so cap is the GEM
+    # cap; for hybrid formats type is moot and the cap is the FAT16
+    # ceiling.
+    cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+                                    d.type_choice)
+    if size_mb > cap:
+        kind = (f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
+                if state.format_id == "AHDI" and d.type_choice == "GEM"
+                else "BGM" if state.format_id == "AHDI"
+                else "FAT16")
+        return f"size exceeds {cap} MB cap for {kind}"
+
+    # Label validation -- empty is OK (we'll default to a generated
+    # name on commit), otherwise must be uppercase ASCII per the
+    # FAT16 short-name rules. is_legal_label_char already filters
+    # at input time so this check should normally pass.
+    if d.label_buffer and len(d.label_buffer) > 11:
+        return "label too long (max 11 chars)"
+    for ch in d.label_buffer:
+        if not is_legal_label_char(ch):
+            return f"label has illegal character: {ch!r}"
+
+    return None

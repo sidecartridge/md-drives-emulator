@@ -34,6 +34,34 @@ class PromptMode(Enum):
     ASK_NEW_PATH = "ask_new_path"
     ASK_LOAD_PATH = "ask_load_path"
     CONFIRM_OVERWRITE = "confirm_overwrite"
+    CONFIRM_DELETE = "confirm_delete"
+
+
+class EditField(Enum):
+    """Focused field inside the add/edit dialog."""
+    SIZE = "size"
+    TYPE = "type"
+    LABEL = "label"
+
+
+class EditMode(Enum):
+    ADD = "add"
+    EDIT = "edit"
+
+
+@dataclass
+class EditDialogState:
+    """In-flight state of the modal partition-edit dialog. Lives on
+    State.edit_dialog while the dialog is open; cleared on cancel /
+    commit."""
+    mode: EditMode
+    # For ADD: the slot index the partition will land in (first hole
+    # or len(partitions)). For EDIT: the slot being edited.
+    slot: int
+    field: EditField = EditField.SIZE
+    size_buffer: str = ""           # digits only
+    type_choice: str = "GEM"        # "GEM" / "BGM"; ignored on hybrid formats
+    label_buffer: str = ""          # accumulated uppercase ASCII, <= 11 chars
 
 
 @dataclass
@@ -64,11 +92,18 @@ class State:
     format_id: str = "AHDI"
     # AHDI-only: TOS<1.04 strict caps. Ignored on the hybrid formats.
     strict_tos: bool = False
-    # In-memory partition list. Items are atari_hd.Partition instances,
-    # but render.py only depends on duck-typed attribute access
-    # (.name / .size_mb / .start_lba / .size_sectors), so this module
-    # doesn't import atari_hd.
+    # In-memory partition list. Items are atari_hd.Partition instances
+    # *or* None (sparse holes left by Delete; the next Add fills the
+    # first hole). render.py only depends on duck-typed attribute access
+    # (.name / .size_mb / .start_lba / .size_sectors / .ahdi_ident on
+    # set partitions; None entries are rendered as "(empty)"), so this
+    # module doesn't import atari_hd.
     partitions: List = field(default_factory=list)
+    # Open edit dialog (None when no dialog is up).
+    edit_dialog: Optional[EditDialogState] = None
+    # Slot index pending deletion -- carried through CONFIRM_DELETE so
+    # the confirm dialog knows which partition the y/n applies to.
+    pending_delete_slot: Optional[int] = None
     # Index of the highlighted row in the partition list.
     selected_slot: int = 0
     # First visible row when the list is taller than the body. With

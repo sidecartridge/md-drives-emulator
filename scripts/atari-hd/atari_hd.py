@@ -946,6 +946,27 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
     return format_max_partition_mb(format_id, strict_tos)
 
 
+def cap_mb_for_type(format_id: str, strict_tos: bool,
+                    ident) -> int:
+    """Cap (MB) for a partition given its on-disk type ident.
+
+    Used by interactive callers (the TUI dialog) where the user picks
+    the type explicitly and we need the cap for *that* type, not the
+    auto-pick that partition_cap_mb() implies from the slot index.
+
+    AHDI: ident b"GEM" / "GEM" -> GEM cap; b"BGM" / "BGM" -> BGM cap;
+          unknown -> BGM cap (the more permissive default).
+    Hybrid formats (PPDRIVER / HDDRIVER): ident is ignored, returns
+          the FAT16 ceiling. The DOS view doesn't honor the TOS BGM
+          rules.
+    """
+    if format_id == FORMAT_AHDI:
+        if ident in (b"GEM", "GEM"):
+            return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
+        return AHDI_MAX_PARTITION_MB_STRICT if strict_tos else AHDI_MAX_PARTITION_MB
+    return MAX_PARTITION_MB
+
+
 def first_partition_start_lba(format_id: str) -> int:
     """AHDI leaves LBA 1 as padding (matches HDDRIVER tooling); hybrid
     layouts put the DOS BPB at LBA 1 directly."""

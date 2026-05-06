@@ -66,6 +66,55 @@ class TestPartitionCapMb(unittest.TestCase):
                             atari_hd.MAX_PARTITION_MB)
 
 
+class TestCapMbForType(unittest.TestCase):
+    """cap_mb_for_type returns the cap for a partition based on the
+    user-chosen type ident. Used by interactive callers (TUI edit
+    dialog) where slot 1+ might be GEM-typed by the user."""
+
+    def test_ahdi_gem_cap_regardless_of_slot(self):
+        # User picks GEM on any slot -> GEM cap (16 strict, 32 perm).
+        for ident in (b"GEM", "GEM"):
+            with self.subTest(ident=ident):
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, True, ident),
+                    16)
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
+                    32)
+
+    def test_ahdi_bgm_cap_regardless_of_slot(self):
+        # User picks BGM -> BGM cap (256 strict, 512 perm).
+        for ident in (b"BGM", "BGM"):
+            with self.subTest(ident=ident):
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, True, ident),
+                    256)
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
+                    512)
+
+    def test_unknown_ahdi_ident_falls_back_to_bgm_cap(self):
+        # Defensive: anything other than GEM uses the BGM cap.
+        self.assertEqual(
+            atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, b"XGM"),
+            512)
+        self.assertEqual(
+            atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, None),
+            512)
+
+    def test_hybrid_ignores_ident(self):
+        # PPDRIVER / HDDRIVER use the FAT16 ceiling regardless.
+        for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
+            for ident in (b"GEM", b"BGM", None, "FAT16"):
+                with self.subTest(format=fmt, ident=ident):
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, False, ident),
+                        atari_hd.MAX_PARTITION_MB)
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, True, ident),
+                        atari_hd.MAX_PARTITION_MB)
+
+
 class TestAhdiPartitionId(unittest.TestCase):
     """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')."""
 
