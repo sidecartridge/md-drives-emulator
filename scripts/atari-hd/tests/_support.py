@@ -103,10 +103,46 @@ def parse_xgm_descriptor(buf):
 
 
 def parse_bpb(buf, offset):
-    """Parse a 512-byte FAT16 boot sector / BPB starting at `offset` in
-    `buf`. Returns a dict keyed by field name. Real implementation lands
-    in epic-002 / story 006."""
-    raise NotImplementedError("parse_bpb is not implemented yet")
+    """Parse the BPB / extended boot record at `offset` in a FAT16 boot
+    sector buffer. Returns every documented field as a plain int or bytes
+    value.
+
+    Layout follows the Microsoft / mkfs.fat convention; multi-byte fields
+    are little-endian. Pure struct.unpack_from for the integer fields.
+    """
+    base = offset
+    return {
+        "jump":                    bytes(buf[base + 0x00:base + 0x03]),
+        "oem":                     bytes(buf[base + 0x03:base + 0x0B]),
+        "bytes_per_sector":        struct.unpack_from(
+                                       "<H", buf, base + 0x0B)[0],
+        "sectors_per_cluster":     buf[base + 0x0D],
+        "reserved_sectors":        struct.unpack_from(
+                                       "<H", buf, base + 0x0E)[0],
+        "num_fats":                buf[base + 0x10],
+        "root_entries":            struct.unpack_from(
+                                       "<H", buf, base + 0x11)[0],
+        "total_sectors_16":        struct.unpack_from(
+                                       "<H", buf, base + 0x13)[0],
+        "media_descriptor":        buf[base + 0x15],
+        "sectors_per_fat_16":      struct.unpack_from(
+                                       "<H", buf, base + 0x16)[0],
+        "sectors_per_track":       struct.unpack_from(
+                                       "<H", buf, base + 0x18)[0],
+        "num_heads":               struct.unpack_from(
+                                       "<H", buf, base + 0x1A)[0],
+        "hidden_sectors":          struct.unpack_from(
+                                       "<I", buf, base + 0x1C)[0],
+        "total_sectors_32":        struct.unpack_from(
+                                       "<I", buf, base + 0x20)[0],
+        "drive_number":            buf[base + 0x24],
+        "extended_boot_signature": buf[base + 0x26],
+        "volume_id":               struct.unpack_from(
+                                       "<I", buf, base + 0x27)[0],
+        "volume_label":            bytes(buf[base + 0x2B:base + 0x36]),
+        "fs_type":                 bytes(buf[base + 0x36:base + 0x3E]),
+        "signature":               bytes(buf[base + 0x1FE:base + 0x200]),
+    }
 
 
 # 512-byte physical sector. Used by the chain walker; copied here rather
