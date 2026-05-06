@@ -22,7 +22,15 @@ class Key(Enum):
     ESC = "ESC"
     CTRL_C = "CTRL_C"
     ENTER = "ENTER"
+    BACKSPACE = "BACKSPACE"
+    RESIZE = "RESIZE"
     UNKNOWN = "UNKNOWN"
+
+
+# Set by the SIGWINCH handler installed in terminal.py (POSIX only).
+# read_key checks and clears it after an interrupted os.read; if set,
+# returns Key.RESIZE so the event loop can refresh the layout.
+resize_pending = False
 
 
 if os.name == "posix":
@@ -37,7 +45,19 @@ if os.name == "posix":
             os.read(sys.stdin.fileno(), 1)
 
     def read_key():
-        b = os.read(sys.stdin.fileno(), 1)
+        global resize_pending
+        while True:
+            try:
+                b = os.read(sys.stdin.fileno(), 1)
+                break
+            except InterruptedError:
+                # SIGWINCH fired during the read. If our handler set
+                # the resize flag, surface it to the event loop;
+                # otherwise retry the read.
+                if resize_pending:
+                    resize_pending = False
+                    return Key.RESIZE
+                continue
         if not b:
             return Key.UNKNOWN
         if b == b"\x1b":
@@ -53,6 +73,8 @@ if os.name == "posix":
             return Key.CTRL_C
         if b in (b"\r", b"\n"):
             return Key.ENTER
+        if b in (b"\x7f", b"\x08"):
+            return Key.BACKSPACE
         try:
             return b.decode("utf-8", errors="replace")
         except Exception:
@@ -82,6 +104,8 @@ elif os.name == "nt":
             return Key.CTRL_C
         if b in (b"\r", b"\n"):
             return Key.ENTER
+        if b in (b"\x7f", b"\x08"):
+            return Key.BACKSPACE
         try:
             return b.decode("utf-8", errors="replace")
         except Exception:

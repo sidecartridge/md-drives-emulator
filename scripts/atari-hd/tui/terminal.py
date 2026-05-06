@@ -27,15 +27,30 @@ def _emit(seq: str) -> None:
 
 
 if os.name == "posix":
+    import signal
     import termios
     import tty
+
+    from . import input as _tui_input
+
+    def _on_sigwinch(_signum, _frame):
+        # Set a module-level flag that read_key() in input.py drains
+        # after an interrupted os.read. The event loop then redraws
+        # with the new terminal size on the next iteration.
+        _tui_input.resize_pending = True
 
     @contextmanager
     def terminal_session():
         """Raw mode + alt screen + hidden cursor for the duration of
-        the block. Restores everything on any exit path."""
+        the block. Restores everything on any exit path. Installs a
+        SIGWINCH handler so terminal resizes wake up read_key() with
+        Key.RESIZE; uninstalls on exit."""
         fd = sys.stdin.fileno()
         old_attrs = termios.tcgetattr(fd)
+        old_winch = signal.signal(signal.SIGWINCH, _on_sigwinch)
+        # siginterrupt(True) makes os.read return EINTR on signal
+        # delivery instead of being auto-restarted.
+        signal.siginterrupt(signal.SIGWINCH, True)
         try:
             tty.setraw(fd)
             _emit(ENTER_ALT_SCREEN + HIDE_CURSOR)
@@ -43,6 +58,7 @@ if os.name == "posix":
         finally:
             _emit(SHOW_CURSOR + EXIT_ALT_SCREEN)
             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+            signal.signal(signal.SIGWINCH, old_winch)
 
 elif os.name == "nt":
     import ctypes

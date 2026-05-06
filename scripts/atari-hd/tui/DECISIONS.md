@@ -45,6 +45,13 @@ three target OSes.
 - **Minimum terminal size: 80×24.** Enforced by story 002 (the main
   screen layout). Below that, the TUI shows "terminal too small" and
   refuses to proceed. v1 does not graceful-degrade.
+- **Resize redraw — POSIX yes, Windows on next keypress.** Story 002
+  installs a `SIGWINCH` handler on POSIX that surfaces a synthetic
+  `Key.RESIZE` to the event loop, triggering an immediate redraw at
+  the new size. Windows has no `SIGWINCH` equivalent and adding a
+  polling thread would violate the "no threads / no async" guideline,
+  so on Windows the layout updates on the next keypress instead.
+  Acceptable v1 behavior; revisit if it bites.
 
 ## 3. State management: single `@dataclass`, no globals
 
