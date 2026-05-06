@@ -85,6 +85,19 @@ ready. `handle_key()` dispatches based on the current screen. No
 threads, no async, no signal handlers — keep the model boring so
 debugging on a misbehaving terminal is straightforward.
 
+## 5. List navigation: hard-stop at bounds (no wrap)
+
+**Chosen.** Up / Down arrows (and `j` / `k`) move the highlighted row
+in the partition list, but selection does **not** wrap from the last
+row to the first. At the bounds the keypress is silently ignored.
+
+**Rationale:** partition lists are short (≤14 rows); wrapping is more
+likely to surprise the user than to help them. Every list this epic
+introduces (partition list in story 003, future format chooser in
+005, etc.) follows this rule for consistency -- if a user learns
+that pressing Up at row 0 does nothing, they don't have to relearn
+the convention elsewhere in the TUI.
+
 ## Deferred to later stories
 
 The following design questions are deliberately left open here; each

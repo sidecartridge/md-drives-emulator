@@ -24,7 +24,21 @@ class Key(Enum):
     ENTER = "ENTER"
     BACKSPACE = "BACKSPACE"
     RESIZE = "RESIZE"
+    UP = "UP"
+    DOWN = "DOWN"
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
     UNKNOWN = "UNKNOWN"
+
+
+# Mapping from VT-style arrow sequences (the byte after `\x1b[`) to
+# Key sentinels. Used by both POSIX and the VT path on Windows.
+_VT_ARROWS = {
+    b"A": Key.UP,
+    b"B": Key.DOWN,
+    b"C": Key.RIGHT,
+    b"D": Key.LEFT,
+}
 
 
 # Set by the SIGWINCH handler installed in terminal.py (POSIX only).
@@ -63,10 +77,19 @@ if os.name == "posix":
         if b == b"\x1b":
             # Could be a real ESC keypress or the start of an escape
             # sequence (arrow keys, F-keys, etc.). Peek with a short
-            # timeout to disambiguate; if more bytes follow within
-            # 50 ms it's a sequence, drain and return UNKNOWN.
+            # timeout to disambiguate.
             if _has_pending(0.05):
-                _drain()
+                # Read the rest of the sequence. We expect short
+                # CSI-style sequences (`[A` etc.) but bound the read
+                # to be safe against runaway terminals.
+                seq = b""
+                for _ in range(16):
+                    if not _has_pending(0.05):
+                        break
+                    seq += os.read(sys.stdin.fileno(), 1)
+                # Match arrow keys: `[A` / `[B` / `[C` / `[D`.
+                if len(seq) == 2 and seq[:1] == b"[" and seq[1:2] in _VT_ARROWS:
+                    return _VT_ARROWS[seq[1:2]]
                 return Key.UNKNOWN
             return Key.ESC
         if b == b"\x03":
@@ -83,21 +106,30 @@ if os.name == "posix":
 elif os.name == "nt":
     import msvcrt
 
+    # Pre-VT special-key codes (Windows console, second byte after the
+    # 0x00 / 0xE0 prefix).
+    _WIN_PREVT_ARROWS = {
+        b"H": Key.UP,
+        b"P": Key.DOWN,
+        b"M": Key.RIGHT,
+        b"K": Key.LEFT,
+    }
+
     def read_key():
         b = msvcrt.getch()
         # Pre-VT-style special keys arrive as a 2-byte prefix
-        # (\x00 or \xe0) followed by a key code. Drain the second
-        # byte; story 002 will decode them.
+        # (\x00 or \xe0) followed by a key code.
         if b in (b"\x00", b"\xe0"):
-            msvcrt.getch()
-            return Key.UNKNOWN
+            b2 = msvcrt.getch()
+            return _WIN_PREVT_ARROWS.get(b2, Key.UNKNOWN)
         if b == b"\x1b":
-            # In VT-input mode arrows arrive as ESC sequences. Peek
-            # for more bytes; if any are queued, drain and return
-            # UNKNOWN. If nothing follows it's a real ESC.
+            # In VT-input mode arrows arrive as ESC sequences.
             if msvcrt.kbhit():
+                seq = b""
                 while msvcrt.kbhit():
-                    msvcrt.getch()
+                    seq += msvcrt.getch()
+                if len(seq) == 2 and seq[:1] == b"[" and seq[1:2] in _VT_ARROWS:
+                    return _VT_ARROWS[seq[1:2]]
                 return Key.UNKNOWN
             return Key.ESC
         if b == b"\x03":

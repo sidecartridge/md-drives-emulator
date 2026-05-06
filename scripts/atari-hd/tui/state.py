@@ -10,9 +10,9 @@ overwrite confirmation. Stories 003+ extend State with partitions,
 format/strict_tos, and unsaved-changes tracking.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 
 class Screen(Enum):
@@ -56,5 +56,26 @@ class State:
     # bar (e.g. "file not found", "load not yet implemented"). Cleared
     # on the next state-mutating key.
     status_message: Optional[str] = None
+
+    # Partition plan -----------------------------------------------------
+    # Driver format. Values match atari_hd.FORMAT_AHDI / FORMAT_PPDRIVER /
+    # FORMAT_HDDRIVER (plain strings). Stored as a string so this module
+    # does not need to import atari_hd.
+    format_id: str = "AHDI"
+    # AHDI-only: TOS<1.04 strict caps. Ignored on the hybrid formats.
+    strict_tos: bool = False
+    # In-memory partition list. Items are atari_hd.Partition instances,
+    # but render.py only depends on duck-typed attribute access
+    # (.name / .size_mb / .start_lba / .size_sectors), so this module
+    # doesn't import atari_hd.
+    partitions: List = field(default_factory=list)
+    # Index of the highlighted row in the partition list.
+    selected_slot: int = 0
+    # First visible row when the list is taller than the body. With
+    # MAX_PARTITIONS=14 and ~17 visible rows at 80x24 the value stays
+    # at 0 in practice; the code path exists for taller plans.
+    scroll_top: int = 0
+    # -------------------------------------------------------------------
+
     dirty: bool = True
     exit_requested: bool = False

@@ -47,21 +47,81 @@ def _handle_main(state: State, key) -> State:
         # an unsaved-changes guard.
         state.exit_requested = True
         return state
+
+    # Navigation in the partition list. Hard-stop at top/bottom (no
+    # wrap) -- DECISIONS.md records the choice for consistency across
+    # every list in this epic.
+    if key in (Key.UP, Key.DOWN) or (isinstance(key, str)
+                                     and key in ("k", "j")):
+        return _handle_navigation(state, key)
+
     if not isinstance(key, str):
         return state
     k = key.lower()
     if k == "q":
         state.exit_requested = True
-    elif k == "n":
-        state.prompt_mode = PromptMode.ASK_NEW_PATH
-        state.prompt_buffer = ""
-        state.status_message = None
-        state.dirty = True
-    elif k == "l":
-        state.prompt_mode = PromptMode.ASK_LOAD_PATH
-        state.prompt_buffer = ""
-        state.status_message = None
-        state.dirty = True
+        return state
+
+    # File-management actions are only available before an image is
+    # loaded; once the user has an image, the keybindings switch to
+    # partition operations. Partition actions are stubs in this story
+    # -- story 004 (A/D/E/T) and story 006 (W) replace them with
+    # real handlers.
+    if state.image_path is None:
+        if k == "n":
+            state.prompt_mode = PromptMode.ASK_NEW_PATH
+            state.prompt_buffer = ""
+            state.status_message = None
+            state.dirty = True
+        elif k == "l":
+            state.prompt_mode = PromptMode.ASK_LOAD_PATH
+            state.prompt_buffer = ""
+            state.status_message = None
+            state.dirty = True
+        return state
+
+    return _handle_partition_action_stub(state, k)
+
+
+def _handle_navigation(state: State, key) -> State:
+    """Move selected_slot up/down in the partition list. Hard-stop at
+    bounds; ignored when the list is empty."""
+    if not state.partitions:
+        return state
+    if key == Key.UP or key == "k":
+        if state.selected_slot > 0:
+            state.selected_slot -= 1
+            state.dirty = True
+    elif key == Key.DOWN or key == "j":
+        if state.selected_slot < len(state.partitions) - 1:
+            state.selected_slot += 1
+            state.dirty = True
+    return state
+
+
+# Stubs surfaced for the partition-action keys until the real handlers
+# land (A/D/E/T in story 004, W in story 006). Status_message gives the
+# user feedback so we don't leave the screen looking dead.
+_STUB_MESSAGES = {
+    "a": "story 004 implements Add",
+    "d": "story 004 implements Delete",
+    "e": "story 004 implements Edit",
+    "t": "story 004 implements Type toggle",
+    "w": "story 006 implements Write",
+}
+
+
+def _handle_partition_action_stub(state: State, k: str) -> State:
+    if k not in _STUB_MESSAGES:
+        return state
+    # D / E / T / W require a non-empty list; A is always available
+    # (until 14-cap, which story 004 enforces). Match the dim/enable
+    # rule from the keybinding row.
+    requires_partition = k in ("d", "e", "t", "w")
+    if requires_partition and not state.partitions:
+        return state
+    state.status_message = _STUB_MESSAGES[k]
+    state.dirty = True
     return state
 
 
