@@ -13,9 +13,9 @@ Produces a hard disk image in one of three on-disk layouts:
                 partitions (the overlap trick uses the same bytes MBR
                 slots 2/3 would occupy).
 
-The FAT16 filesystem is produced by mkfs.vfat (or mkdosfs) from the
-dosfstools package. This script only assembles the partition table, the
-hybrid BPBs, and the outer image bytes.
+The FAT16 filesystem is produced by a pure-Python writer (no external
+binaries). The script also assembles the partition table, the hybrid
+BPBs, and the outer image bytes.
 
 Inspired by Hatari's tools/atari-hd-image.sh but rewritten in Python and
 extended with the hybrid layouts used by real Atari hard disk drivers.
@@ -25,9 +25,7 @@ Usage: interactive. Run with no arguments.
 
 import hashlib
 import os
-import shutil
 import struct
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -39,9 +37,6 @@ from typing import List, Optional
 
 SECTOR_SIZE = 512
 MIB = 1024 * 1024
-
-# mkfs tool candidates, tried in order
-MKFS_CANDIDATES = ("mkfs.vfat", "mkdosfs")
 
 # Layout ids
 FORMAT_AHDI = "AHDI"
@@ -133,48 +128,6 @@ DEFAULT_IMAGE_MB = {
 # MBR partition type for extended containers (LBA-addressable variant).
 MBR_TYPE_FAT16 = 0x06
 MBR_TYPE_EXTENDED = 0x0F
-
-
-# --------------------------------------------------------------------------
-# Platform / toolchain probes
-# --------------------------------------------------------------------------
-
-def abort_if_windows() -> None:
-    if sys.platform.startswith("win"):
-        sys.stderr.write(
-            "atari_hd.py: Windows is not yet supported.\n"
-            "Run this tool on macOS or Linux for now.\n"
-            "(A WSL-based path would be a welcome contribution.)\n"
-        )
-        sys.exit(1)
-
-
-def find_mkfs_tool() -> str:
-    # mkfs.vfat / mkdosfs typically live in /sbin or an equivalent that's
-    # not always on the interactive user's PATH (especially on macOS, where
-    # Homebrew symlinks them into /usr/local/sbin or /opt/homebrew/sbin).
-    extra_dirs = [
-        "/sbin", "/usr/sbin",
-        "/usr/local/sbin", "/usr/local/bin",
-        "/opt/homebrew/sbin", "/opt/homebrew/bin",
-    ]
-    for name in MKFS_CANDIDATES:
-        path = shutil.which(name)
-        if path:
-            return path
-        for d in extra_dirs:
-            candidate = os.path.join(d, name)
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-    sys.stderr.write(
-        "ERROR: neither mkfs.vfat nor mkdosfs was found on PATH.\n"
-        "\n"
-        "  macOS:  brew install dosfstools\n"
-        "          (and ensure /usr/local/sbin or /opt/homebrew/sbin is on\n"
-        "           your PATH, or run this script from a shell that has it)\n"
-        "  Linux:  sudo apt-get install dosfstools   (or equivalent)\n"
-    )
-    sys.exit(1)
 
 
 # --------------------------------------------------------------------------
@@ -453,12 +406,11 @@ def synthesize_tos_bpb_from_dos512(dos_bpb: bytes, tos_bps: int,
     """Build a TOS companion BPB given the real PPDRIVER / HDDRIVER dual-BPB
     layout.
 
-    The DOS BPB is the output of `mkfs.vfat -S 512 -s (2*ratio) -R (ratio+1) -a`
-    (see run_mkfs_hybrid_dos). It uses 512-byte logical sectors so macOS
-    msdosfs can mount it. The TOS companion uses `tos_bps` (>=1024) with the
-    same physical cluster size, same physical FAT size, same root entries,
-    and res=1 -- so both views land on the same physical FAT/root/data
-    LBAs.
+    The DOS BPB is produced by format_fat16() with bps=512, spc=2*ratio,
+    and res=ratio+1 -- 512-byte logical sectors so macOS msdosfs can mount
+    it. The TOS companion uses `tos_bps` (>=1024) with the same physical
+    cluster size, same physical FAT size, same root entries, and res=1 --
+    so both views land on the same physical FAT/root/data LBAs.
 
     Constraints enforced (raise ValueError otherwise):
       - DOS res == ratio + 1       (where ratio = tos_bps / 512)
@@ -882,59 +834,22 @@ def format_fat16(out_path: str,
         _fat16_write_zeros(f, data_logical * sector_size)
 
 
-# --------------------------------------------------------------------------
-# mkfs.vfat invocation
-# --------------------------------------------------------------------------
-
-def run_mkfs(mkfs_path: str, out_path: str,
+def run_mkfs(out_path: str,
              partition_sectors_512: int, sector_size: int,
              sectors_per_cluster: int, reserved_sectors: int,
              label: str, disable_fat_align: bool) -> None:
-    """Invoke mkfs.vfat to produce a FAT16 image at `out_path` sized to
-    exactly `partition_sectors_512 * 512` bytes, with the requested logical
-    sector size, cluster size, and reserved-sector count.
-
-    `disable_fat_align=True` passes `-a` so mkfs.vfat honors `-R` literally
-    instead of rounding up to a cluster boundary. That's required for the
-    dual-BPB hybrid layout where DOS_res must be exactly ratio+1."""
-    total_bytes = partition_sectors_512 * SECTOR_SIZE
-    # mkfs.vfat's -C takes a block count in 1 KiB units.
-    blocks_1k = total_bytes // 1024
-
-    # mkfs.vfat with -C refuses to overwrite an existing file. Our caller
-    # uses mkstemp (which *creates* the file), so we must remove it here
-    # before handing the path to mkfs.
-    try:
-        os.unlink(out_path)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        raise RuntimeError(f"cannot clear {out_path}: {e}") from e
-
-    cmd = [
-        mkfs_path,
-        "-F", "16",
-        "-S", str(sector_size),           # logical sector size
-        "-s", str(sectors_per_cluster),   # sectors per cluster
-        "-R", str(reserved_sectors),      # reserved sectors (boot area)
-        "-n", label,                       # volume label
-    ]
-    if disable_fat_align:
-        cmd.append("-a")
-    cmd.extend(["-C", out_path, str(blocks_1k)])
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError:
-        raise RuntimeError(f"mkfs tool vanished between check and run: "
-                           f"{mkfs_path}")
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"mkfs.vfat failed (exit {result.returncode}).\n"
-            f"  command : {' '.join(cmd)}\n"
-            f"  stdout  : {result.stdout.strip()}\n"
-            f"  stderr  : {result.stderr.strip()}\n"
-        )
+    """Thin wrapper around format_fat16(). Kept as a separate entry point
+    so future callers can interpose logging / retries / metrics without
+    touching every call site."""
+    format_fat16(
+        out_path=out_path,
+        partition_sectors_512=partition_sectors_512,
+        sector_size=sector_size,
+        sectors_per_cluster=sectors_per_cluster,
+        reserved_sectors=reserved_sectors,
+        label=label,
+        disable_fat_align=disable_fat_align,
+    )
 
 
 def read_sector(path: str, lba: int) -> bytes:
@@ -982,7 +897,7 @@ class Partition:
     ebr_lba: int = 0                # 0 = primary; otherwise LBA of this
                                     # partition's Extended Boot Record
 
-    # Parameters passed to mkfs.vfat for the DOS-side FAT16 filesystem:
+    # FAT16 BPB parameters for the DOS-side filesystem:
     dos_bps: int = 512              # bytesPerSec in DOS BPB
     dos_spc: int = 0                # sectors-per-cluster in DOS BPB
     dos_res: int = 0                # reserved-sector count in DOS BPB
@@ -1294,7 +1209,7 @@ def ahdi_partition_id(partition_mb: int, strict_tos: bool = False,
     return b"GEM" if partition_mb <= threshold else b"BGM"
 
 
-def build_image(plan: ImagePlan, mkfs_path: str) -> None:
+def build_image(plan: ImagePlan) -> None:
     # Step 1: allocate the image file (sparse where possible).
     image_bytes = plan.image_sectors * SECTOR_SIZE
     try:
@@ -1303,7 +1218,7 @@ def build_image(plan: ImagePlan, mkfs_path: str) -> None:
     except OSError as e:
         raise RuntimeError(f"cannot create {plan.image_path}: {e}") from e
 
-    # Step 2: for each partition, run mkfs.vfat into a temp file and splice
+    # Step 2: for each partition, format a temp file as FAT16 and splice
     # the bytes into the main image at the partition's physical offset.
     for part in plan.partitions:
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="atari_hd_",
@@ -1311,7 +1226,6 @@ def build_image(plan: ImagePlan, mkfs_path: str) -> None:
         os.close(tmp_fd)
         try:
             run_mkfs(
-                mkfs_path=mkfs_path,
                 out_path=tmp_path,
                 partition_sectors_512=part.size_sectors,
                 sector_size=part.dos_bps,
@@ -1653,11 +1567,7 @@ def prompt_partitions(format_id: str, image_mb: int,
 
 
 def main() -> int:
-    abort_if_windows()
-    mkfs_path = find_mkfs_tool()
-
     print("SidecarTridge Atari HD image builder")
-    print(f"  using: {mkfs_path}")
 
     image_path = ask_filename()
     format_id = ask_format()
@@ -1682,7 +1592,7 @@ def main() -> int:
         return 1
 
     try:
-        build_image(plan, mkfs_path)
+        build_image(plan)
     except Exception as e:
         sys.stderr.write(f"ERROR: {e}\n")
         if os.path.exists(plan.image_path):
