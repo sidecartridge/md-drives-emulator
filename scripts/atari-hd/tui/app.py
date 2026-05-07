@@ -734,6 +734,17 @@ def _do_load(state: State, path: str) -> State:
     if loaded.get("strict_tos_inferred"):
         msg += (f"  [TOS<1.04: "
                 f"{'on' if state.strict_tos else 'off'} -- guessed]")
+    # Surface the first compatibility warning (when present) so a user
+    # loading a foreign-tool image (mkdosfs, acsi2stm, Falcon-format,
+    # ...) sees the salient issue immediately. The full list is on
+    # the planning summary if a future story wants a help/details
+    # screen.
+    warnings = loaded.get("warnings") or []
+    if warnings:
+        extra = warnings[0]
+        if len(warnings) > 1:
+            extra = f"{extra} (+{len(warnings) - 1} more)"
+        msg += f"  WARNING: {extra}"
     state.status_message = msg
     return state
 

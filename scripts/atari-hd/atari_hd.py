@@ -185,6 +185,12 @@ DEFAULT_IMAGE_MB = {
 # would conventionally be 0x04 (FAT16A); we don't generate those
 # because the hybrid min cap is 32 MB. AHDI is unaffected (no MBR).
 MBR_TYPE_FAT16 = 0x06
+# MBR partition types we accept as FAT16-family primaries when loading
+# an image. 0x04 = FAT16A (legacy < 32 MB), 0x06 = FAT16B (>= 32 MB,
+# what this tool writes), 0x0E = FAT16 with LBA addressing. Other tools
+# (mkdosfs, acsi2stm, ICD) emit any of these; recognising all three lets
+# us load their output even though we only emit 0x06 ourselves.
+MBR_FAT16_TYPES = (0x04, 0x06, 0x0E)
 #
 # Extended-container type: PPDRIVER uses 0x0F (Win95 LBA-addressable
 # extended) to force LBA addressing on large disks. HDDRIVER uses
@@ -1276,10 +1282,14 @@ def detect_format(image_path: str):
       - 0x55AA at byte 510 -> MBR-style root sector. Then:
           * AHDI overlap at 0x1DE (flag bit 0 set, ident GEM/BGM)
             -> HDDRIVER's overlap trick.
-          * Else: read the first FAT16 primary's BPB and check for
-            OEM "PPGDODBC" -> PPDRIVER. Without the marker we
-            return None rather than falsely tagging vanilla DOS
-            MBR images as PPDRIVER.
+          * Else, walk MBR slots for any FAT16-family primary
+            (types 0x04 / 0x06 / 0x0E) whose BPB looks like a
+            FAT16 BPB (sane bps + spc) -> classify as PPDRIVER.
+            The PPDRIVER OEM 'PPGDODBC' is no longer required;
+            mkdosfs, acsi2stm and similar foreign tools emit
+            FAT16 images without that marker, and refusing to
+            load them was a UX dead end. The OEM mismatch is
+            surfaced by image_load_warnings() instead.
       - No 0x55AA + at least one valid AHDI slot (GEM/BGM/XGM)
         -> pure-AHDI image.
       - Anything else -> None (caller surfaces "format unknown").
@@ -1297,16 +1307,10 @@ def detect_format(image_path: str):
         if (ahdi_at_slot2["flag"] & AHDI_FLAG_EXISTENT) and (
                 ahdi_at_slot2["ident"] in (b"GEM", b"BGM")):
             return FORMAT_HDDRIVER
-        # PPDRIVER: walk MBR slots to find the first FAT16 primary,
-        # then check its BPB OEM. We stamp PPGDODBC on every
-        # partition's BPB at build time, so checking the first one
-        # is sufficient.
-        if _has_ppdriver_oem_marker(image_path, sec0):
+        if _has_any_fat16_primary(image_path, sec0):
             return FORMAT_PPDRIVER
-        # MBR-signed image without the HDDRIVER overlap and without
-        # the PPDRIVER OEM: not a recognised hybrid (vanilla DOS,
-        # foreign tooling, corrupt root, ...). Return None and let
-        # the caller surface "format unknown".
+        # MBR-signed but no FAT16-family primary with a sane BPB:
+        # not anything we know how to read.
         return None
     # No MBR signature -> pure AHDI if any slot has a valid ident.
     valid = (b"GEM", b"BGM", b"XGM")
@@ -1316,26 +1320,42 @@ def detect_format(image_path: str):
     return None
 
 
-def _has_ppdriver_oem_marker(image_path: str, sec0: bytes) -> bool:
-    """Return True iff the first FAT16 MBR primary's BPB carries the
-    PPDRIVER OEM marker. Conservative on errors (returns False) so a
-    bad read never produces a false-positive classification."""
+# bps values choose_logical_sector_size will ever pick + the Falcon
+# extras we accept on read (16384 / 32768) so we don't reject
+# Falcon-formatted images at detect time. The writer's narrower
+# acceptance is enforced separately in format_fat16().
+_BPS_ACCEPTED_FOR_LOAD = (512, 1024, 2048, 4096, 8192, 16384, 32768)
+
+
+def _has_any_fat16_primary(image_path: str, sec0: bytes) -> bool:
+    """Return True iff any MBR primary slot has a FAT16-family type
+    (0x04 / 0x06 / 0x0E) and its BPB at start_lba parses with sane
+    bps + spc. Conservative on errors: returns False so a bad read
+    never produces a false-positive classification."""
     try:
         mbr = parse_mbr_root(sec0)
-        for slot in mbr["slots"]:
-            if slot["part_type"] != MBR_TYPE_FAT16:
-                continue
-            start_lba = slot["rel_start_lba"]
+    except struct.error:
+        return False
+    for slot in mbr["slots"]:
+        if slot["part_type"] not in MBR_FAT16_TYPES:
+            continue
+        start_lba = slot["rel_start_lba"]
+        try:
             with open(image_path, "rb") as f:
-                f.seek(start_lba * SECTOR_SIZE)
+                f.seek(max(start_lba, 0) * SECTOR_SIZE)
                 bpb_sec = f.read(SECTOR_SIZE)
-            if len(bpb_sec) != SECTOR_SIZE:
-                return False
+        except OSError:
+            continue
+        if len(bpb_sec) != SECTOR_SIZE:
+            continue
+        try:
             bpb = parse_bpb(bpb_sec, 0)
-            return bpb["oem"] == PPDRIVER_OEM
-        return False
-    except (OSError, struct.error):
-        return False
+        except struct.error:
+            continue
+        if (bpb["bytes_per_sector"] in _BPS_ACCEPTED_FOR_LOAD
+                and bpb["sectors_per_cluster"] > 0):
+            return True
+    return False
 
 
 def _read_sector_at(image_path: str, lba: int, image_size: int) -> bytes:
@@ -1443,8 +1463,8 @@ def _load_mbr(image_path: str, sec0: bytes, image_size: int,
             ext_base = slot["rel_start_lba"]
             ext_link = slot["rel_start_lba"]
             continue
-        if ptype != MBR_TYPE_FAT16:
-            # Unknown partition type; skip.
+        if ptype not in MBR_FAT16_TYPES:
+            # Unknown / non-FAT16 partition type; skip.
             continue
         partitions.append(_partition_from_mbr(
             image_path, image_size,
@@ -1523,6 +1543,60 @@ def _infer_strict_tos(partitions) -> bool:
     return True
 
 
+def image_load_warnings(image_path: str, sec0: bytes,
+                         partitions, fmt) -> list:
+    """Collect non-fatal compatibility warnings about an image we just
+    loaded. Each warning is a short human-readable string the TUI can
+    surface in the status bar after `L = Load`. Returns an empty list
+    when the image is a clean match for our writer.
+
+    detect_format() now accepts MBR+FAT16 images regardless of OEM and
+    of the specific FAT16 type byte; warnings here record the deltas
+    from our canonical PPDRIVER output (OEM, type=0x06, start_lba>=1,
+    bps<=8192) so the user knows what re-saving will normalise vs.
+    what would produce a broken image.
+    """
+    warnings = []
+    if fmt != FORMAT_PPDRIVER:
+        return warnings
+    try:
+        mbr = parse_mbr_root(sec0)
+    except struct.error:
+        return warnings
+    first_fat = None
+    for slot in mbr["slots"]:
+        if slot["part_type"] in MBR_FAT16_TYPES:
+            first_fat = slot
+            break
+    if first_fat is None:
+        return warnings
+    if first_fat["part_type"] != MBR_TYPE_FAT16:
+        warnings.append(
+            f"primary uses MBR type 0x{first_fat['part_type']:02X} "
+            f"(this tool writes 0x06; re-saving will normalise)")
+    if first_fat["rel_start_lba"] == 0:
+        warnings.append(
+            "partition starts at LBA 0 (superfloppy layout); re-saving "
+            "will move it to LBA 1")
+    try:
+        with open(image_path, "rb") as f:
+            f.seek(max(first_fat["rel_start_lba"], 0) * SECTOR_SIZE)
+            bpb_sec = f.read(SECTOR_SIZE)
+        if len(bpb_sec) == SECTOR_SIZE:
+            bpb = parse_bpb(bpb_sec, 0)
+            if bpb["oem"] != PPDRIVER_OEM:
+                warnings.append(
+                    f"BPB OEM {bpb['oem']!r} != {PPDRIVER_OEM!r}; "
+                    "re-saving overwrites it")
+            if bpb["bytes_per_sector"] > 8192:
+                warnings.append(
+                    f"BPB bps={bpb['bytes_per_sector']} unsupported by "
+                    "this writer (max 8192) - image is read-only here")
+    except (OSError, struct.error):
+        pass
+    return warnings
+
+
 def load_image(image_path: str) -> dict:
     """Parse an existing image and return a planning summary:
         {
@@ -1530,6 +1604,7 @@ def load_image(image_path: str) -> dict:
           "strict_tos": bool,         # AHDI-only inference
           "partitions": list[Partition],
           "strict_tos_inferred": bool, # True iff we guessed
+          "warnings": list[str],      # non-fatal compatibility notes
         }
     Raises ImageLoadError on unrecognised or corrupt images."""
     try:
@@ -1567,6 +1642,7 @@ def load_image(image_path: str) -> dict:
         "strict_tos": strict_tos,
         "strict_tos_inferred": strict_inferred,
         "partitions": partitions,
+        "warnings": image_load_warnings(image_path, sec0, partitions, fmt),
     }
 
 
