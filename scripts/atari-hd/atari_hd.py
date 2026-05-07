@@ -23,6 +23,7 @@ extended with the hybrid layouts used by real Atari hard disk drivers.
 Usage: interactive. Run with no arguments.
 """
 
+import argparse
 import hashlib
 import os
 import struct
@@ -2292,5 +2293,55 @@ def main() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# TUI / prompt-mode launcher (epic-003 / story 009)
+# --------------------------------------------------------------------------
+
+def _parse_args(argv=None):
+    """Parse the launcher's two TUI/prompt selector flags. argparse
+    auto-rejects --tui --no-tui together via the mutually-exclusive
+    group, so we don't have to."""
+    p = argparse.ArgumentParser(
+        prog="atari_hd.py",
+        description=("Build Atari ST hard-disk images "
+                     "(AHDI / PPDRIVER / HDDRIVER)."),
+        epilog=("Default: TUI when both stdin and stdout are a "
+                "terminal; otherwise the linear prompt flow."))
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
+        "--tui", action="store_true",
+        help=("Force the terminal UI even when stdin/stdout are not "
+              "a TTY (mainly for debug)."))
+    g.add_argument(
+        "--no-tui", action="store_true",
+        help="Force the linear prompt flow even on a TTY.")
+    return p.parse_args(argv)
+
+
+def _should_use_tui(args) -> bool:
+    """Resolve the TUI-vs-prompt choice. Explicit flags win; otherwise
+    require *both* stdin and stdout to be TTYs (the TUI has nothing to
+    draw on a redirected stdout, and read_key() would spin on a
+    redirected stdin)."""
+    if args.tui:
+        return True
+    if args.no_tui:
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _run_tui() -> int:
+    """Launch the TUI. Lazy-imports the tui package so prompt-mode
+    invocations don't pay its startup cost."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from tui.app import main as tui_main
+    return tui_main()
+
+
 if __name__ == "__main__":
+    args = _parse_args()
+    if _should_use_tui(args):
+        sys.exit(_run_tui())
     sys.exit(main())
