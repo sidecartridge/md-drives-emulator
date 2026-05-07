@@ -3096,6 +3096,13 @@ def main(ahdi_driver_path: Optional[str] = None,
     print(f"Done. Wrote {plan.image_path} "
           f"({plan.image_sectors * SECTOR_SIZE // MIB} MB, "
           f"{len(plan.partitions)} partition(s)).")
+    if plan.format_id == FORMAT_HDDRIVER:
+        print()
+        print("Note: HDDRIVER images are not self-bootable from this tool.")
+        print("To make this image bootable, run HDDRUTIL.APP from the")
+        print("HDDRIVER distribution on the target Atari to install the")
+        print("per-disk driver. See BOOTABLE.md (HDDRIVER section) for")
+        print("the full workflow and rationale.")
     return 0
 
 

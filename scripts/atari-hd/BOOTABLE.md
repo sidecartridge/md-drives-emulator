@@ -165,30 +165,98 @@ Neither image is in the repo (both untracked at repo root).
 
 ## PPDRIVER — Peter Putnik PPTOSDOS
 
-Pending — see [story 009](epics/epic-004-real-hardware-compat/story-009-acquire-ppdriver-binary.md)
-for the planned acquisition workflow and validator
-(`tools/check_ppdriver_binary.py`).
+Bootable PPDRIVER images are produced via a single CLI flag:
 
-## HDDRIVER — Uwe Seimet
+```
+python3 scripts/atari-hd/atari_hd.py --ppdriver-bootable
+```
 
-Pending — see [story 010](epics/epic-004-real-hardware-compat/story-010-acquire-hddriver-binary.md)
-for the planned acquisition workflow and validator
-(`tools/check_hddriver_binary.py`). Note: HDDRIVER is **commercial**
-(free demo + paid full version); licensing for that one is
-unambiguous, no community-freeware ambiguity.
+No path argument — PPDRIVER's distribution is explicit-freeware per
+Peter Putnik's terms, so we bundle the boot blob in-repo at
+`scripts/atari-hd/assets/pp_boot_blob.bin` (15 sectors / 7,680 bytes,
+SHA-256 `50dd9ee8…6b9a`, extracted from a known-good PPDRIVER 1 GB
+reference). Cold-boot validated on real Atari hardware.
+
+The blob covers everything: sector 0 IPL + secondary IPL at LBA 1 +
+the bundled `.PRG`-format driver at LBA 2..14. PPDRIVER's boot
+mechanism lives entirely in the pre-partition gap, not as a file
+inside the FAT16, so no `--ppdriver-driver=PATH` flag is needed.
+
+## HDDRIVER — Uwe Seimet (manual install, not self-bootable)
+
+**This tool does not produce self-bootable HDDRIVER images.** Use
+the standard HDDRIVER distribution and HDDRUTIL.APP to install on
+first boot.
+
+### Why not self-bootable?
+
+We tried the same recipe that worked for AHDI / PPDRIVER (extract
+sector 0 + driver bytes from a working reference, embed them, patch
+the partition table at build time) and it failed cold-boot on real
+hardware: the disk wasn't recognized.
+
+Investigation showed why: HDDRIVER's on-disk `HDDRIVER.SYS` is
+**generated per-disk by HDDRUTIL.APP**, not a static binary. Two
+copies we obtained had completely different sizes (24,874 B and
+1,024 B) and SHAs. The dependency on the source disk is encoded
+indirectly (likely a checksum of the boot sector, hardware params,
+or a license fingerprint — HDDRIVER is commercial software). Without
+the author's documentation, reverse-engineering it isn't realistic,
+and shipping anyone's per-disk `HDDRIVER.SYS` would be both legally
+questionable and functionally wrong.
+
+### What we ship instead
+
+The existing HDDRIVER format path (`atari_hd.py` with format
+`HDDRIVER`) produces non-bootable HDDRIVER-compatible images. The
+AHDI partition table, dual BPB, and `PPGDODBC` OEM stamp match real
+HDDRIVER reference disks byte-for-byte (validated as part of story
+003). HDDRUTIL.APP recognizes them and can install onto them
+normally.
+
+### Manual install workflow
+
+1. Build a non-bootable HDDRIVER image with this tool (no
+   bootable-mode flag).
+2. Obtain HDDRIVER from the vendor (commercial software with a free
+   demo; users source it themselves — we don't bundle).
+3. Boot the Atari from any working HD or floppy that has HDDRIVER
+   installed.
+4. Mount our generated image (via SidecarTridge, second hard-disk
+   bus, or any other way the Atari can see the bytes).
+5. Run **HDDRUTIL.APP** from the HDDRIVER distribution.
+6. Choose "Install driver" — HDDRUTIL writes the per-disk
+   `HDDRIVER.SYS` plus its IPL into sector 0 of the target image.
+7. The image is self-bootable from then on.
+
+### Why AUTO/HDDRIVER.PRG is *not* a workaround
+
+A common reflex is "just put HDDRIVER.PRG in the boot partition's
+`AUTO/` folder and let TOS load it." That's chicken-and-egg: TOS
+can't scan `AUTO/` on a hard disk until a hard-disk handler is
+already registered. The handler is what `HDDRIVER.SYS` would
+provide. Without it, TOS never reaches AUTO. Combining it with
+ICD's IPL doesn't help either — only one HD handler can be
+registered, and ICD claims the slot first.
 
 ---
 
 ## Story chain (epic-004)
 
 ```
-stage 1 (acquire)        stage 2 (checksum)    stage 3 (bootable)
-─────────────────        ──────────────────    ─────────────────────
-story 008  ICD ────────► story 001  $1234 ───► story 011  AHDI loader
-story 009  PPDRIVER ──►                   ───► story 005  PPDRIVER loader
-story 010  HDDRIVER ──► story 002  PBL ───►    story 006  FAT16 file-writer
-                                               (used by 011 + 005 + 006)
+stage 1 (acquire)        stage 3 (bootable)
+─────────────────        ─────────────────────
+story 008  ICD ────────► story 011  AHDI bootable      ✅
+                          (ICDBOOT.PRG embedded as
+                           /ICDBOOT.SYS at cluster 2)
+story 009  PPDRIVER ──►   moot — story 005 bundles
+                          assets/pp_boot_blob.bin in-repo
+story 005   ────────►    PPDRIVER bootable             ✅
+                          (--ppdriver-bootable, no PATH)
+story 010   ────────►    folded into 006
+story 006   ────────►    HDDRIVER manual-install docs  (this section)
 ```
 
-Story 008 — this story — gives the AHDI track its acquisition
-prerequisite. Stories 009 and 010 cover PPDRIVER and HDDRIVER.
+Effectively-done by-side-effect of 005/011: stories 001 (AHDI
+checksum), 002 (PPDRIVER 0x1BC adjust). Real remaining work in
+the epic: story 012 (TUI surface) and 007 (parity harness).
