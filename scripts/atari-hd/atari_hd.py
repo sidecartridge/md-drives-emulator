@@ -157,13 +157,19 @@ BPB_TOTAL_SEC16_OFFSET = 19
 BPB_SEC_PER_FAT_OFFSET = 22
 
 # CHS geometry baked into MBR partition entries. CHS is vestigial on
-# AHDI disks (which are LBA-only) and only present in MBR slots for
-# PC / DOS compatibility -- real Atari drivers ignore it. The 16x32
-# pair is the Hatari atari-hd-image.sh tooling convention, not a TOS
-# spec. Validated against the Atari Compendium notebook; see
-# CLAUDE.md.
-CHS_HEADS = 16
-CHS_SECTORS_PER_TRACK = 32
+# MBR partition entries' CHS fields. AHDI disks are LBA-only and
+# real Atari drivers ignore CHS; these constants only affect the
+# MBR writer used by PPDRIVER / HDDRIVER hybrid output.
+#
+# Switched from 16 x 32 (Hatari atari-hd-image.sh convention) to the
+# 255 x 63 PC standard so byte-output matches real PPDRIVER reference
+# images (e.g. /Volumes/SIDECART/1GB-RAWDUMP.img where MBR P0 chs_end
+# = 0x93 0x36 0x1d -> head=147, requiring 255-head geometry). LBA 63
+# becomes the first valid post-MBR cylinder-aligned LBA, which is
+# also where real PPDRIVER puts its first partition. Validated
+# against the Atari Compendium notebook; see CLAUDE.md.
+CHS_HEADS = 255
+CHS_SECTORS_PER_TRACK = 63
 
 # Sector size warning threshold (any size <= this goes through silently)
 SECTOR_SIZE_WARN_THRESHOLD = 8192
@@ -461,9 +467,14 @@ def build_root_sector_ppdriver(plan: "ImagePlan") -> bytes:
 
     for i in range(plan.primary_count):
         part = plan.partitions[i]
-        boot = 0x80 if i == 0 else 0x00
+        # Real PPDRIVER leaves the MBR boot flag at 0x00 on the
+        # primary slot -- PPDRIVER's IPL handles boot via the AHDI
+        # convention, not the DOS-style boot bit. Verified against
+        # 1GB-RAWDUMP.img (real PPDRIVER reference: P0 byte at 0x1BE
+        # is 0x00). Setting 0x80 here would diverge from real-tool
+        # output and may confuse PPDRIVER's runtime detection.
         write_mbr_entry(buf, MBR_P0_OFFSET + i * 16,
-                        boot=boot, part_type=MBR_TYPE_FAT16,
+                        boot=0x00, part_type=MBR_TYPE_FAT16,
                         start_lba=part.start_lba,
                         sector_count=part.size_sectors)
 
@@ -609,7 +620,18 @@ def synthesize_tos_bpb_from_dos512(dos_bpb: bytes, tos_bps: int,
     tos_spc = 2
     tos_res = 1
     tos_spfat = dos_spfat // ratio
-    tos_total = dos_total // ratio
+    # TOS view's "logical sector 0" is at firstLBA + 1 (the TOS BPB
+    # itself); the DOS BPB at firstLBA is OUTSIDE the TOS view. So the
+    # TOS-visible region is (dos_total - 1) DOS sectors, i.e.
+    # floor((dos_total - 1) / ratio) TOS sectors. Real PPDRIVER's
+    # 1GB-RAWDUMP P1/P2 (ratio=8, dos_total=475136) carry tot16=59391
+    # which matches floor((475136-1)/8) = 59391, NOT 475136/8 = 59392.
+    # The earlier convention here used the simpler dos_total/ratio,
+    # which over-counted by 1 TOS sector and let the Atari driver
+    # address clusters past the partition end -- writes after enough
+    # data accumulated landed in the next partition's territory and
+    # corrupted both filesystems. Hardware-validated fix.
+    tos_total = (dos_total - 1) // ratio
 
     # Build a fresh 512-byte TOS BPB. Start from the DOS one so OEM/jmp/etc
     # come through, then overwrite the numeric fields.
@@ -622,17 +644,19 @@ def synthesize_tos_bpb_from_dos512(dos_bpb: bytes, tos_bps: int,
     tos[BPB_FAT_COUNT_OFFSET] = dos_fats
     tos[BPB_ROOT_ENTRIES_OFFSET:BPB_ROOT_ENTRIES_OFFSET + 2] = \
         dos_root.to_bytes(2, "little")
-    # tot16 holds the TOS total when it fits (it always does thanks to the
-    # Hatari doubling rule that keeps cluster count <= 32765). tot32 is
-    # cleared for clarity.
-    if tos_total < 0x10000:
-        tos[BPB_TOTAL_SEC16_OFFSET:BPB_TOTAL_SEC16_OFFSET + 2] = \
-            tos_total.to_bytes(2, "little")
-        tos[32:36] = (0).to_bytes(4, "little")
-    else:
-        tos[BPB_TOTAL_SEC16_OFFSET:BPB_TOTAL_SEC16_OFFSET + 2] = \
-            (0).to_bytes(2, "little")
-        tos[32:36] = tos_total.to_bytes(4, "little")
+    # tot16 holds the TOS-side total (in TOS sectors). tot32 carries
+    # the DOS-side total (in 512-byte sectors). Real PPDRIVER images
+    # populate BOTH fields in the TOS BPB (verified against the
+    # 1GB-RAWDUMP reference: P1/P2 have tot16=59391, tot32=475136 with
+    # ratio=8; P3 has tot16=61439, tot32=983024 with ratio=16). Earlier
+    # versions of this writer zeroed tot32 when tot16 fit -- the
+    # user's hardware PPDRIVER appears to read both and our zero
+    # tot32 confused its bounds-checking on deep writes. Populating
+    # both is the clean compromise and matches real PPDRIVER bytes.
+    tos[BPB_TOTAL_SEC16_OFFSET:BPB_TOTAL_SEC16_OFFSET + 2] = \
+        (tos_total & 0xFFFF).to_bytes(2, "little") if tos_total < 0x10000 \
+        else (0).to_bytes(2, "little")
+    tos[32:36] = dos_total.to_bytes(4, "little")
     tos[BPB_SEC_PER_FAT_OFFSET:BPB_SEC_PER_FAT_OFFSET + 2] = \
         tos_spfat.to_bytes(2, "little")
 
@@ -1807,10 +1831,43 @@ def first_partition_start_lba(format_id: str) -> int:
     BSL later doesn't have to relocate partition 0. The first
     partition therefore starts at LBA 2.
 
-    Hybrid layouts (PPDRIVER / HDDRIVER): no AHDI BSL is involved; the
-    DOS BPB sits at LBA 1 directly. Validated against the Atari
-    Compendium notebook; see CLAUDE.md."""
-    return 2 if format_id == FORMAT_AHDI else 1
+    Hybrid layouts cylinder-align the first partition to the
+    PC/DOS 255 heads x 63 spt geometry so the MBR matches what real
+    PPDRIVER / HDDRIVER setup tools produce. Empirical evidence on
+    real Atari hardware: a hybrid image with first partition at LBA 1
+    (the previous convention here) initially mounts and reads, but
+    once enough writes accumulate to cross a cylinder boundary the
+    driver's internal cylinder-arithmetic and the MBR's idea of where
+    data lives drift apart and the filesystem corrupts.
+
+      - PPDRIVER: LBA 63 (cyl=0, head=1, sec=1; first cylinder-aligned
+        LBA after the MBR).
+      - HDDRIVER: LBA 64 (PPDRIVER + 1; HDDRIVER's setup tool reserves
+        an extra sector at LBA 63 for its PBL chain head). See
+        story-006 in epic-004 for the full PBL plumbing.
+
+    Validated against /Volumes/SIDECART/1GB-RAWDUMP.img (real PPDRIVER
+    reference shows P0 at LBA 63) and the Atari Compendium notebook;
+    see CLAUDE.md and epic-004 / story 003."""
+    if format_id == FORMAT_AHDI:
+        return 2
+    if format_id == FORMAT_HDDRIVER:
+        return 64
+    return 63   # PPDRIVER
+
+
+def hybrid_logical_pad_sectors(format_id: str) -> int:
+    """Sectors between an EBR sector and the partition data that
+    follows. PPDRIVER and HDDRIVER cylinder-align logicals 63 sectors
+    after the EBR (1 EBR sector + 62 zero pad sectors so the data
+    starts on a cylinder boundary in the 255 x 63 geometry); AHDI's
+    XGM chain uses a tight 1-sector gap (the descriptor sector itself
+    immediately followed by the partition data).
+
+    Used by `plan_image` when allocating EBR / XGM-descriptor LBAs."""
+    if format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER):
+        return 63
+    return 1   # AHDI XGM: descriptor sector + immediate logical
 
 
 def partition_layout(format_id: str, n: int) -> dict:
@@ -2099,11 +2156,16 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
         plan.primary_count = sum(1 for p in partitions if not p.is_extended)
         plan.has_extended = any(p.is_extended for p in partitions)
 
+    # Per-format gap between an EBR / XGM-descriptor sector and the
+    # partition data behind it. Hybrid formats cylinder-align logicals
+    # 63 sectors after the EBR (PC 255 x 63 geometry); AHDI XGM uses a
+    # tight 1-sector gap. See hybrid_logical_pad_sectors() docstring.
+    logical_pad = hybrid_logical_pad_sectors(format_id)
     next_lba = first_partition_start_lba(format_id)
     for part in partitions:
         if part.is_extended:
             part.ebr_lba = next_lba
-            next_lba += 1
+            next_lba += logical_pad
         else:
             part.ebr_lba = 0
         part.size_sectors = mb_to_sectors_512(part.size_mb)
