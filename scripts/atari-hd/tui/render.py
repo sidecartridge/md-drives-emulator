@@ -59,6 +59,10 @@ def render(state: State) -> str:
         frame = _render_main(state, cols, rows)
         if state.edit_dialog is not None:
             frame += _render_edit_dialog_overlay(state, cols, rows)
+        # Help overlay sits on top of everything (story 008): drawn
+        # last so it covers the edit dialog and the main body.
+        if state.show_help:
+            frame += _render_help_overlay(state, cols, rows)
         return frame
     raise ValueError(f"unknown screen: {state.screen!r}")
 
@@ -329,7 +333,10 @@ def _render_status_keys(state: State, cols: int) -> str:
          so the user can pick the format before adding partitions.
     """
     if state.image_path is None:
-        line = "N=New   L=Load   Q=Quit"
+        # ? is universal but easy to miss; advertise it on the
+        # landing row where there's still space. The partition-list
+        # row is at the 80-col budget and stays as-is.
+        line = "N=New   L=Load   Q=Quit   ?=Help"
         return _pad_to(line, cols)
     # File actions stay visible even after an image is loaded so the
     # user can create a fresh plan or load a different file mid-session
@@ -618,3 +625,77 @@ def validate_edit_dialog(state: State):
             return f"label has illegal character: {ch!r}"
 
     return None
+
+
+# -------------------------------------------------------------------
+# Help overlay (story 008)
+# -------------------------------------------------------------------
+
+# Single source of truth for keybindings. Entries are
+# (group, key, description) tuples; the overlay walks them in order
+# and emits a group header row whenever the group changes. Tests and
+# any future docs should reference this list rather than maintain a
+# parallel copy.
+#
+# Sized to fit 80x24: 17 entries + 4 group headers + 2 borders = 23
+# rows, leaving 1 row of breathing space.
+HELP_ENTRIES = [
+    ("Files / Quit", "N",                "New image"),
+    ("Files / Quit", "L",                "Load image"),
+    ("Files / Quit", "Q",                "Quit (warns if unsaved)"),
+    ("Partitions",   "Up / Dn / k / j",  "Move selection"),
+    ("Partitions",   "A",                "Add partition"),
+    ("Partitions",   "D",                "Delete selected"),
+    ("Partitions",   "E",                "Edit selected"),
+    ("Partitions",   "T",                "Toggle GEM/BGM (AHDI)"),
+    ("Partitions",   "F",                "Change format"),
+    ("Partitions",   "W",                "Write image"),
+    ("Dialogs",      "Tab",              "Next field"),
+    ("Dialogs",      "t / Left / Right", "Cycle Type"),
+    ("Dialogs",      "Enter / S",        "Save"),
+    ("Dialogs",      "A / P / H",        "Pick format (in selector)"),
+    ("Dialogs",      "y / N / O",        "Confirm prompts (O = overwrite)"),
+    ("Dialogs",      "Esc",              "Cancel dialog / prompt"),
+    ("Anywhere",     "?",                "Toggle this help"),
+]
+
+HELP_BOX_WIDTH = 60
+HELP_KEY_COL = 18  # left-padded width of the key column inside rows
+
+
+def _render_help_overlay(state: State, cols: int, rows: int) -> str:
+    """Centered modal help overlay. Walks HELP_ENTRIES and emits a
+    group header on each transition; rows are key + description in
+    two aligned columns (per the story spec). ASCII content only --
+    box-drawing borders are the only non-ASCII pieces."""
+    body_lines = []
+    last_group = None
+    for group, key, desc in HELP_ENTRIES:
+        if group != last_group:
+            body_lines.append(group)
+            last_group = group
+        # Two columns: "  KEY<padded>  DESC". Indent group entries by
+        # 2 chars so the header (no indent) reads as a section break.
+        row = f"  {key.ljust(HELP_KEY_COL)}{desc}"
+        body_lines.append(row)
+
+    inner = HELP_BOX_WIDTH - 2  # subtract the side borders
+    height = len(body_lines) + 2  # +2 for top/bottom borders
+    box_top = max(1, (rows - height) // 2 + 1)
+    box_left = max(1, (cols - HELP_BOX_WIDTH) // 2 + 1)
+
+    title = " atari-hd help (Esc / ? to close) "
+    title_pad = max(0, inner - len(title))
+    left_pad = title_pad // 2
+    right_pad = title_pad - left_pad
+    top_border = "┌" + ("─" * left_pad) + title + ("─" * right_pad) + "┐"
+    bottom_border = "└" + ("─" * inner) + "┘"
+
+    out = [_cursor_to(box_top, box_left) + top_border]
+    for i, body in enumerate(body_lines):
+        if len(body) > inner:
+            body = body[:inner]
+        line = "│" + body + (" " * (inner - len(body))) + "│"
+        out.append(_cursor_to(box_top + 1 + i, box_left) + line)
+    out.append(_cursor_to(box_top + height - 1, box_left) + bottom_border)
+    return "".join(out)

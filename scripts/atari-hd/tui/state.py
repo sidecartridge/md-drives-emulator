@@ -129,6 +129,11 @@ class State:
     # last successful write. Set by every mutating handler; cleared
     # on successful write and on image_path change (load / new).
     unsaved_changes: bool = False
+    # Story 008: help overlay visibility. Toggled by `?` from any
+    # screen; Esc / `?` while open closes it. Layers on top of every
+    # other UI element (main / dialog / prompt) without disturbing
+    # them, so closing returns the user to whatever was underneath.
+    show_help: bool = False
     # Index of the highlighted row in the partition list.
     selected_slot: int = 0
     # First visible row when the list is taller than the body. With

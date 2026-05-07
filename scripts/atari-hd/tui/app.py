@@ -39,6 +39,22 @@ def handle_key(state: State, key) -> State:
         state.dirty = True
         return state
 
+    # Help overlay (story 008): when open, swallow input until the
+    # user closes it via Esc or `?` again. Layered above every other
+    # handler so any underlying screen / dialog / prompt is preserved
+    # exactly as it was when the user opened help.
+    if state.show_help:
+        return _handle_help_open(state, key)
+    # `?` opens help from any screen, including inside dialogs and
+    # prompts. We accept it as a global shortcut even if it would
+    # otherwise be a printable char in a text-entry prompt; users
+    # rarely need a literal `?` in image filenames, and the spec
+    # requires a single consistent help key.
+    if isinstance(key, str) and key == "?":
+        state.show_help = True
+        state.dirty = True
+        return state
+
     # Modal edit dialog takes precedence over every other handler.
     if state.edit_dialog is not None:
         return _handle_edit_dialog(state, key)
@@ -64,6 +80,26 @@ def handle_key(state: State, key) -> State:
         return _handle_discard_unsaved_confirm(state, key)
     if state.prompt_mode == PromptMode.CONFIRM_DISCARD_BEFORE_LOAD:
         return _handle_discard_before_load_confirm(state, key)
+    return state
+
+
+# -------------------------------------------------------------------
+# Help overlay (story 008)
+# -------------------------------------------------------------------
+
+def _handle_help_open(state: State, key) -> State:
+    """While the help overlay is up: Esc / `?` close it, Ctrl-C still
+    exits (consistent with everywhere), all other keys are ignored.
+    Underlying state (edit_dialog / prompt_mode / partition selection)
+    is never touched, so closing the overlay returns the user exactly
+    where they were."""
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if key == Key.ESC or (isinstance(key, str) and key == "?"):
+        state.show_help = False
+        state.dirty = True
+        return state
     return state
 
 
