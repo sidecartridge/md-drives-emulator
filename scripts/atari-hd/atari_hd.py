@@ -1522,7 +1522,8 @@ def _load_mbr(image_path: str, sec0: bytes, image_size: int,
             image_path, image_size,
             start_lba=abs_start,
             size_sectors=slot0["sector_count"],
-            slot_index=len(partitions)))
+            slot_index=len(partitions),
+            ebr_lba=ext_link))
         slot1 = ebr["slots"][1]
         if slot1["part_type"] not in MBR_EXTENDED_TYPES:
             break
@@ -1553,15 +1554,23 @@ def _partition_from_entry(image_path: str, image_size: int, entry: dict,
 
 def _partition_from_mbr(image_path: str, image_size: int,
                         start_lba: int, size_sectors: int,
-                        slot_index: int) -> "Partition":
+                        slot_index: int,
+                        ebr_lba: int = 0) -> "Partition":
     """Build a Partition from an MBR/EBR FAT16 entry. The DOS BPB lives
-    at start_lba (bps=512 for the dual-BPB DOS view)."""
+    at start_lba (bps=512 for the dual-BPB DOS view).
+
+    `ebr_lba` is 0 for partitions recovered from MBR primary slots and
+    the absolute LBA of the partition's EBR sector for chain logicals.
+    Round-trip with build_image expects this distinction so the writer
+    can put primaries back at MBR slots and logicals back in the
+    extended chain."""
     size_mb = (size_sectors * SECTOR_SIZE) // MIB
     default = f"P{slot_index + 1}"
     name = _label_from_bpb(image_path, start_lba, image_size,
                             default=default)
     p = Partition(name=name, size_mb=size_mb,
-                   size_sectors=size_sectors, start_lba=start_lba)
+                   size_sectors=size_sectors, start_lba=start_lba,
+                   ebr_lba=ebr_lba)
     return p
 
 
