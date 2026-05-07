@@ -151,6 +151,26 @@ ICD_BOOT_SECTOR_ASSET = "assets/icd_boot_sector.bin"
 ICD_BOOT_DRIVER_FILENAME = b"ICDBOOT "    # 8-byte FAT16 short-name
 ICD_BOOT_DRIVER_EXT = b"SYS"               # 3-byte extension
 
+# PPDRIVER boot-blob asset: 15 sectors (LBA 0..14) extracted from a
+# real PPDRIVER 1GB reference image. Holds:
+#   LBA 0       — MBR + IPL (sums to $1234, MBR sig 0x55AA preserved)
+#   LBA 1       — secondary IPL (68000 BRA)
+#   LBA 2..14   — bundled .PRG-format PPDRIVER driver
+# LBA 15..62 (cylinder-alignment slack) stay zero; the existing
+# sparse `truncate` covers that. Unlike ICD's recipe, no FAT-side
+# work is needed -- the driver lives entirely in the pre-partition
+# gap.
+PP_BOOT_BLOB_ASSET = "assets/pp_boot_blob.bin"
+PP_BOOT_BLOB_SECTORS = 15
+
+# PPDRIVER's boot checksum adjustment word lives at byte offset
+# 0x1BC..0x1BD of sector 0 (just before the MBR partition table).
+# This is different from AHDI which puts the adjustment at
+# 0x1FE..0x1FF (the AHDI sigword); PPDRIVER keeps 0x55AA at 0x1FE
+# because it's a real MBR + bootable hybrid. Confirmed against
+# 1GB-RAWDUMP.img.
+MBR_BOOT_ADJUST_WORD_OFFSET = 0x01BC
+
 # MBR partition-table offsets
 MBR_P0_OFFSET = 0x01BE
 MBR_SIGNATURE_OFFSET = 510
@@ -697,6 +717,116 @@ def build_root_sector_ppdriver(plan: "ImagePlan") -> bytes:
 
     buf[MBR_SIGNATURE_OFFSET:MBR_SIGNATURE_OFFSET + 2] = MBR_SIGNATURE
     return bytes(buf)
+
+
+def _load_pp_boot_blob() -> bytes:
+    """Load the bundled PPDRIVER boot-blob asset. 15 sectors of real
+    PPDRIVER bytes (LBA 0..14 of a known-good reference image), so
+    we don't have to re-implement the IPL or the .PRG-format driver
+    -- we ship Putnik's bytes verbatim and only patch the partition
+    table + disk signature on the way out."""
+    asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              PP_BOOT_BLOB_ASSET)
+    with open(asset_path, "rb") as f:
+        blob = f.read()
+    expected = PP_BOOT_BLOB_SECTORS * SECTOR_SIZE
+    if len(blob) != expected:
+        raise RuntimeError(
+            f"PPDRIVER boot-blob asset is {len(blob)} bytes, expected "
+            f"{expected} ({PP_BOOT_BLOB_SECTORS} sectors); path: "
+            f"{asset_path}")
+    return blob
+
+
+def patch_pp_boot_sector(plan: "ImagePlan") -> bytes:
+    """Build a bootable PPDRIVER sector 0 by loading the bundled boot
+    blob and overwriting only the partition-specific fields:
+
+      0x1B8..0x1BB  disk signature  (deterministic from plan inputs)
+      0x1BC..0x1BD  $1234 adjust word (computed last)
+      0x1BE..0x1FD  MBR partition table (slot 0 = primary, slot 1 =
+                    optional extended container)
+      0x1FE..0x1FF  MBR signature 0x55AA (already in the asset)
+
+    The IPL bytes 0x000..0x1B7 stay verbatim. PPDRIVER's IPL reads
+    its own MBR table to find the boot partition, then chains into
+    the secondary IPL at LBA 1 and the .PRG-format driver at LBA 2 --
+    none of which depend on partition-table content beyond the
+    standard MBR layout we're patching in.
+    """
+    blob = _load_pp_boot_blob()
+    sector = bytearray(blob[:SECTOR_SIZE])
+
+    # 1. Disk signature (matches what build_root_sector_ppdriver writes
+    # for non-bootable PPDRIVER -- same plan -> same signature).
+    sector[MBR_DISK_SIGNATURE_OFFSET:MBR_DISK_SIGNATURE_OFFSET + 4] = (
+        _ppdriver_disk_signature(plan))
+
+    # 2. MBR partition table: zero out then re-emit our actual entries.
+    # Mirrors build_root_sector_ppdriver's logic exactly so bootable
+    # vs. non-bootable PPDRIVER images agree on the table layout.
+    for i in range(4):
+        off = MBR_P0_OFFSET + i * 16
+        sector[off:off + 16] = b"\x00" * 16
+
+    for i in range(plan.primary_count):
+        part = plan.partitions[i]
+        write_mbr_entry(sector, MBR_P0_OFFSET + i * 16,
+                        boot=0x00, part_type=MBR_TYPE_FAT16,
+                        start_lba=part.start_lba,
+                        sector_count=part.size_sectors)
+
+    if plan.has_extended:
+        ext_start, ext_size = extended_container_bounds(plan)
+        write_mbr_entry(sector, MBR_P0_OFFSET + plan.primary_count * 16,
+                        boot=0x00, part_type=MBR_TYPE_EXTENDED_LBA,
+                        start_lba=ext_start, sector_count=ext_size)
+
+    # 3. MBR signature (preserved from asset; assert just in case
+    # someone's blob was corrupted).
+    if (sector[MBR_SIGNATURE_OFFSET:MBR_SIGNATURE_OFFSET + 2]
+            != MBR_SIGNATURE):
+        raise RuntimeError(
+            "PPDRIVER boot-blob asset is missing the 0x55AA MBR "
+            "signature at offset 0x1FE -- corrupted asset?")
+
+    # 4. $1234 adjust word at 0x1BC..0x1BD. Zero it first, sum the
+    # rest of the sector, then write the residual.
+    sector[MBR_BOOT_ADJUST_WORD_OFFSET:
+           MBR_BOOT_ADJUST_WORD_OFFSET + 2] = b"\x00\x00"
+    needed = (AHDI_BOOT_CHECKSUM - _be_word_sum(sector)) & 0xFFFF
+    sector[MBR_BOOT_ADJUST_WORD_OFFSET] = (needed >> 8) & 0xFF
+    sector[MBR_BOOT_ADJUST_WORD_OFFSET + 1] = needed & 0xFF
+
+    final_sum = _be_word_sum(sector)
+    if final_sum != AHDI_BOOT_CHECKSUM:
+        raise RuntimeError(
+            f"patch_pp_boot_sector: adjust-word math broken "
+            f"(got {final_sum:#06x}, want {AHDI_BOOT_CHECKSUM:#06x})")
+    return bytes(sector)
+
+
+def install_pp_driver_blob(plan: "ImagePlan") -> None:
+    """Write the PPDRIVER pre-partition driver bytes (LBA 1..14)
+    verbatim from the asset to the image. Sector 0 is patched and
+    written separately by patch_pp_boot_sector + write_sector. The
+    LBA 1..14 region is partition-table-agnostic -- it's a self-
+    contained 68000 IPL stub plus a .PRG-format driver -- so we
+    don't have to patch anything on the way through.
+
+    LBA 15..62 (cylinder-alignment slack) stay zero from the
+    initial sparse `truncate`; no write needed.
+    """
+    blob = _load_pp_boot_blob()
+    payload = blob[SECTOR_SIZE:]  # skip sector 0; it's handled separately
+    expected = (PP_BOOT_BLOB_SECTORS - 1) * SECTOR_SIZE
+    if len(payload) != expected:
+        raise RuntimeError(
+            f"PPDRIVER blob payload is {len(payload)} bytes, expected "
+            f"{expected}")
+    with open(plan.image_path, "r+b") as f:
+        f.seek(1 * SECTOR_SIZE)  # LBA 1
+        f.write(payload)
 
 
 def _ppdriver_disk_signature(plan: "ImagePlan") -> bytes:
@@ -1347,6 +1477,12 @@ class ImagePlan:
     # driver (ICDBOOT.PRG). Triggers the ICD-boot-sector patch +
     # cluster-2 driver placement. Only meaningful on FORMAT_AHDI.
     ahdi_driver_path: Optional[str] = None
+    # PPDRIVER bootable mode: when True, the writer embeds the
+    # bundled PPDRIVER boot blob (LBA 0..14 from a real PPDRIVER
+    # reference image, shipped as assets/pp_boot_blob.bin). Only
+    # meaningful on FORMAT_PPDRIVER. The user supplies no path --
+    # everything needed for boot is in the bundled blob.
+    ppdriver_bootable: bool = False
 
 
 def format_max_partition_mb(format_id: str, strict_tos: bool) -> int:
@@ -2250,12 +2386,17 @@ def compute_partition_geometry(format_id: str, size_sectors_512: int) -> dict:
 def plan_image(format_id: str, image_path: str, image_mb: int,
                partitions: List[Partition],
                strict_tos: bool = False,
-               ahdi_driver_path: Optional[str] = None) -> ImagePlan:
+               ahdi_driver_path: Optional[str] = None,
+               ppdriver_bootable: bool = False) -> ImagePlan:
     if not partitions:
         raise ValueError("at least one partition is required")
     if ahdi_driver_path and format_id != FORMAT_AHDI:
         raise ValueError(
             f"--ahdi-driver only applies to AHDI images (got {format_id})")
+    if ppdriver_bootable and format_id != FORMAT_PPDRIVER:
+        raise ValueError(
+            f"--ppdriver-bootable only applies to PPDRIVER images "
+            f"(got {format_id})")
 
     plan = ImagePlan(
         format_id=format_id,
@@ -2264,6 +2405,7 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
         partitions=partitions,
         strict_tos=strict_tos,
         ahdi_driver_path=ahdi_driver_path,
+        ppdriver_bootable=ppdriver_bootable,
     )
     plan.image_sectors = mb_to_sectors_512(image_mb)
 
@@ -2548,12 +2690,27 @@ def build_image(plan: ImagePlan, progress=None) -> None:
         else:
             root = build_root_sector_ahdi(plan)
     elif plan.format_id == FORMAT_PPDRIVER:
-        root = build_root_sector_ppdriver(plan)
+        if plan.ppdriver_bootable:
+            # Bootable PPDRIVER: embed the bundled boot blob's sector 0
+            # (PPDRIVER's IPL) and patch in our partition table + disk
+            # signature + $1234 adjust word at 0x1BC.
+            root = patch_pp_boot_sector(plan)
+        else:
+            root = build_root_sector_ppdriver(plan)
     elif plan.format_id == FORMAT_HDDRIVER:
         root = build_root_sector_hddriver(plan)
     else:
         raise ValueError(f"unknown format {plan.format_id!r}")
     write_sector(plan.image_path, 0, root)
+
+    # Step 4.5 (PPDRIVER bootable only): write the pre-partition driver
+    # bytes (LBA 1..14) verbatim from the asset. Sector 0 was already
+    # patched and written above; this fills in the secondary IPL + the
+    # bundled .PRG driver. LBA 15..62 (cylinder-alignment slack) stay
+    # zero from the initial allocation -- no write needed.
+    if plan.format_id == FORMAT_PPDRIVER and plan.ppdriver_bootable:
+        _emit("Writing PPDRIVER driver blob (LBA 1..14)...")
+        install_pp_driver_blob(plan)
 
     # Step 5: write the extended-chain descriptors for logical partitions.
     # PPERA / HDDRIVE use MBR EBR chains (type 0x0F); AHDI uses its native
@@ -2754,6 +2911,8 @@ def print_summary(plan: ImagePlan) -> None:
         if plan.ahdi_driver_path:
             print(f"  Bootable   : yes (driver: "
                   f"{plan.ahdi_driver_path})")
+    if plan.format_id == FORMAT_PPDRIVER and plan.ppdriver_bootable:
+        print(f"  Bootable   : yes (bundled PPDRIVER boot blob)")
     print(f"  Image size : {plan.image_mb} MB "
           f"({plan.image_sectors} x 512-byte sectors)")
     print(f"  Partitions : {len(plan.partitions)}")
@@ -2876,20 +3035,29 @@ def _validate_ahdi_driver(path: str) -> Optional[str]:
     return None
 
 
-def main(ahdi_driver_path: Optional[str] = None) -> int:
+def main(ahdi_driver_path: Optional[str] = None,
+         ppdriver_bootable: bool = False) -> int:
     print("SidecarTridge Atari HD image builder")
+
+    if ahdi_driver_path and ppdriver_bootable:
+        sys.stderr.write(
+            "ERROR: --ahdi-driver and --ppdriver-bootable are "
+            "mutually exclusive (different formats).\n")
+        return 1
 
     if ahdi_driver_path:
         # Bootable AHDI implies the format choice; skip the prompt.
         format_id = FORMAT_AHDI
         print(f"Format     : AHDI (bootable; embedding "
               f"{os.path.basename(ahdi_driver_path)})")
-    else:
-        pass  # format chosen below after the filename prompt
+    elif ppdriver_bootable:
+        format_id = FORMAT_PPDRIVER
+        print("Format     : PPDRIVER (bootable; embedding bundled "
+              "boot blob)")
 
     image_path = ask_filename()
 
-    if not ahdi_driver_path:
+    if not ahdi_driver_path and not ppdriver_bootable:
         format_id = ask_format()
 
     # TOS compatibility only matters for AHDI (the hybrid formats route
@@ -2906,7 +3074,8 @@ def main(ahdi_driver_path: Optional[str] = None) -> int:
 
     plan = plan_image(format_id, image_path, image_mb, partitions,
                       strict_tos=strict_tos,
-                      ahdi_driver_path=ahdi_driver_path)
+                      ahdi_driver_path=ahdi_driver_path,
+                      ppdriver_bootable=ppdriver_bootable)
     print_summary(plan)
     if not ask_yes_no("Proceed with image creation?", default=True):
         print("Aborted.")
@@ -2962,6 +3131,15 @@ def _parse_args(argv=None):
               "the boot partition and ICD's IPL is stamped at sector "
               "0. Implies AHDI format and forces prompt mode (TUI "
               "doesn't currently surface this option)."))
+    p.add_argument(
+        "--ppdriver-bootable", action="store_true",
+        help=("Make a self-bootable PPDRIVER image using the bundled "
+              "PPDRIVER boot blob (assets/pp_boot_blob.bin -- LBA 0..14 "
+              "of a real PPDRIVER reference disk). Unlike "
+              "--ahdi-driver, no path is required because PPDRIVER's "
+              "boot data lives entirely in the pre-partition gap, not "
+              "as a file inside the FAT. Implies PPDRIVER format and "
+              "forces prompt mode."))
     return p.parse_args(argv)
 
 
@@ -2970,15 +3148,16 @@ def _should_use_tui(args) -> bool:
     require *both* stdin and stdout to be TTYs (the TUI has nothing to
     draw on a redirected stdout, and read_key() would spin on a
     redirected stdin)."""
-    # --ahdi-driver carries options the TUI can't currently set, so
-    # force prompt mode whenever it's supplied. The user can still pass
-    # --tui explicitly to override (no-op for now -- TUI ignores the
-    # driver path until story 011's TUI follow-up lands).
+    # Bootable-mode flags carry options the TUI can't currently set, so
+    # force prompt mode whenever any of them is supplied. The user can
+    # still pass --tui explicitly to override (the wrapper warns and
+    # ignores the bootable inputs in that case -- story 012 wires them
+    # into the TUI later).
     if args.tui:
         return True
     if args.no_tui:
         return False
-    if args.ahdi_driver:
+    if args.ahdi_driver or args.ppdriver_bootable:
         return False
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -2995,15 +3174,22 @@ def _run_tui() -> int:
 
 if __name__ == "__main__":
     args = _parse_args()
+    if args.ahdi_driver and args.ppdriver_bootable:
+        sys.stderr.write(
+            "ERROR: --ahdi-driver and --ppdriver-bootable are mutually "
+            "exclusive (different formats).\n")
+        sys.exit(1)
     if args.ahdi_driver:
         err = _validate_ahdi_driver(args.ahdi_driver)
         if err:
             sys.stderr.write(f"ERROR: {err}\n")
             sys.exit(1)
     if _should_use_tui(args):
-        if args.ahdi_driver:
+        if args.ahdi_driver or args.ppdriver_bootable:
             sys.stderr.write(
-                "WARNING: --ahdi-driver is currently only honored in "
-                "prompt mode; pass --no-tui (or unset --tui) to use it.\n")
+                "WARNING: bootable-mode flags are only honored in "
+                "prompt mode; pass --no-tui (or unset --tui) to use "
+                "them.\n")
         sys.exit(_run_tui())
-    sys.exit(main(ahdi_driver_path=args.ahdi_driver))
+    sys.exit(main(ahdi_driver_path=args.ahdi_driver,
+                  ppdriver_bootable=args.ppdriver_bootable))
