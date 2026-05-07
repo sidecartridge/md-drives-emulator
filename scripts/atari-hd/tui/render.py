@@ -39,9 +39,11 @@ MIN_ROWS = 24
 HLINE = "─"   # ─
 
 
-# Partition-list column widths, in order.
+# Partition-list column widths, in order. COL_TYPE = 6 fits "FAT16+"
+# (the trailing "+" marks chain logicals; bare "FAT16" / "GEM" / "BGM"
+# / "XGM" mean primary).
 COL_SLOT = 4
-COL_TYPE = 5
+COL_TYPE = 6
 COL_START = 12
 COL_SIZE = 10
 COL_LABEL = 13
@@ -286,17 +288,24 @@ def _partition_ident(part, index: int, format_id: str) -> str:
     follows bps strictly: GEM iff bps=512, i.e. size <= 31 MB; BGM
     otherwise).
 
-    For PPDRIVER / HDDRIVER: every partition is FAT16 in the MBR table
-    (the EBR-chain "extended" type is the chain header, not a partition
-    the user listed).
+    For PPDRIVER / HDDRIVER: every partition is FAT16 in the MBR table.
+
+    A trailing "+" marks chain logicals (those whose ebr_lba > 0 --
+    set by load_image / plan_image when the partition lives inside an
+    EBR chain on hybrid formats or an XGM chain on AHDI). Bare idents
+    mean the partition occupies a primary slot.
     """
     explicit = getattr(part, "ahdi_ident", None)
     if explicit is not None:
-        return explicit if isinstance(explicit, str) else explicit.decode(
+        ident = explicit if isinstance(explicit, str) else explicit.decode(
             "ascii", errors="replace")
-    if format_id == "AHDI":
-        return "GEM" if part.size_mb <= atari_hd.AHDI_GEM_MAX_MB else "BGM"
-    return "FAT16"
+    elif format_id == "AHDI":
+        ident = "GEM" if part.size_mb <= atari_hd.AHDI_GEM_MAX_MB else "BGM"
+    else:
+        ident = "FAT16"
+    if getattr(part, "ebr_lba", 0):
+        ident += "+"
+    return ident
 
 
 def _format_size(mb: int) -> str:

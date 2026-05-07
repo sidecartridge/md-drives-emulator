@@ -1466,7 +1466,8 @@ def _load_ahdi(image_path: str, sec0: bytes, image_size: int):
             {"flag": logical["flag"], "ident": logical["ident"],
              "start_lba": abs_start,
              "size_sectors": logical["size_sectors"]},
-            slot_index=len(partitions)))
+            slot_index=len(partitions),
+            ebr_lba=chain_link))
         link = desc["link"]
         if not (link["flag"] & AHDI_FLAG_EXISTENT):
             break
@@ -1533,11 +1534,18 @@ def _load_mbr(image_path: str, sec0: bytes, image_size: int,
 
 
 def _partition_from_entry(image_path: str, image_size: int, entry: dict,
-                          slot_index: int) -> "Partition":
+                          slot_index: int, ebr_lba: int = 0) -> "Partition":
     """Build a Partition from an AHDI-table entry, recovering the label
     from the FAT16 BPB at start_lba. AHDI partitions live at bps =
     Hatari-doubling-rule(size_sectors); we use that convention to
-    locate the BPB."""
+    locate the BPB.
+
+    `ebr_lba` is 0 for partitions recovered from AHDI primary slots
+    (slots 0..3 of the root sector) and the absolute LBA of the XGM
+    sub-descriptor sector for chain logicals -- analogous to the
+    MBR-side _partition_from_mbr's ebr_lba so the rest of the tool
+    can use a single field to distinguish primary from logical
+    regardless of format."""
     size_sec = entry["size_sectors"]
     size_mb = (size_sec * SECTOR_SIZE) // MIB
     default = f"P{slot_index + 1}"
@@ -1545,7 +1553,8 @@ def _partition_from_entry(image_path: str, image_size: int, entry: dict,
                             default=default)
     p = Partition(name=name, size_mb=size_mb,
                    size_sectors=size_sec,
-                   start_lba=entry["start_lba"])
+                   start_lba=entry["start_lba"],
+                   ebr_lba=ebr_lba)
     ident = entry["ident"]
     p.ahdi_ident = (ident.decode("ascii", errors="replace")
                     if isinstance(ident, (bytes, bytearray)) else ident)
