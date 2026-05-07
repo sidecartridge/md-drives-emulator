@@ -134,6 +134,22 @@ AHDI_FLAG_BOOTABLE = 0x80
 # the hybrid layouts (PPDRIVER / HDDRIVER) -- the MBR partition
 # table at 0x1BE..0x1FD overlaps these bytes.
 AHDI_HD_SIZ_OFFSET = 0x01C2
+# AHDI bad-sector-list pointer (BE u32). We always write 0 (no BSL).
+AHDI_BSL_PTR_OFFSET = 0x01FA
+# AHDI bootable sigword (last 2 bytes of sector 0). Patched so the
+# 256-BE-word-sum of the whole sector mod 0x10000 == AHDI_BOOT_CHECKSUM.
+AHDI_SIGWORD_OFFSET = 0x01FE
+AHDI_BOOT_CHECKSUM = 0x1234
+
+# ICD boot-sector asset: ICD Pro 6.5.5's real sector 0 (IPL bytes
+# verbatim), extracted from a known-good ICD-formatted SD card. The
+# IPL is partition-table-aware (it reads slot 0's firstLBA, mounts
+# the FAT16 there, loads N consecutive sectors from cluster 2). Our
+# bootable-AHDI writer patches in this image's hd_siz / partition
+# table / sigword and leaves the IPL bytes untouched.
+ICD_BOOT_SECTOR_ASSET = "assets/icd_boot_sector.bin"
+ICD_BOOT_DRIVER_FILENAME = b"ICDBOOT "    # 8-byte FAT16 short-name
+ICD_BOOT_DRIVER_EXT = b"SYS"               # 3-byte extension
 
 # MBR partition-table offsets
 MBR_P0_OFFSET = 0x01BE
@@ -392,6 +408,191 @@ def build_root_sector_ahdi(plan: "ImagePlan") -> bytes:
 
     # NOTE: intentionally no 0x55AA signature (this is a pure-AHDI image).
     return bytes(buf)
+
+
+def _be_word_sum(buf: bytes) -> int:
+    """16-bit big-endian word sum of `buf`, mod 0x10000. AHDI ROM checks
+    sector 0's word-sum equals AHDI_BOOT_CHECKSUM ($1234) as the
+    "this disk is bootable" gate."""
+    s = 0
+    for i in range(0, len(buf), 2):
+        s = (s + ((buf[i] << 8) | buf[i + 1])) & 0xFFFF
+    return s
+
+
+def patch_icd_boot_sector(plan: "ImagePlan") -> bytes:
+    """Build a bootable AHDI sector 0 by loading ICD's real IPL from
+    `assets/icd_boot_sector.bin` and overwriting only the geometry-
+    dependent fields (hd_siz, partition table, BSL pointer, sigword).
+    The IPL bytes (0x000..0x1C1) stay verbatim.
+
+    The ICD IPL reads slot 0's firstLBA from the patched table, mounts
+    the FAT16 at firstLBA, and loads consecutive sectors starting at
+    cluster 2 (= the boot partition's data-area start). The on-disk
+    invariant the IPL relies on -- ICDBOOT.SYS at cluster 2 -- is
+    enforced by install_icdboot_sys() in the same build pipeline.
+    """
+    asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              ICD_BOOT_SECTOR_ASSET)
+    with open(asset_path, "rb") as f:
+        sector = bytearray(f.read())
+    if len(sector) != SECTOR_SIZE:
+        raise RuntimeError(
+            f"ICD boot-sector asset is {len(sector)} bytes, expected "
+            f"{SECTOR_SIZE} (path: {asset_path})")
+
+    # 1. hd_siz @ 0x1C2..0x1C5 (BE u32) -- total disk sectors.
+    sector[AHDI_HD_SIZ_OFFSET:AHDI_HD_SIZ_OFFSET + 4] = (
+        plan.image_sectors).to_bytes(4, "big")
+
+    # 2. AHDI partition slots @ 0x1C6..0x1F5: zero out then re-emit our
+    # actual table (mirrors build_root_sector_ahdi's logic).
+    ahdi_offsets = (AHDI_SLOT0_OFFSET, AHDI_SLOT1_OFFSET,
+                    AHDI_SLOT2_OFFSET, AHDI_SLOT3_OFFSET)
+    for off in ahdi_offsets:
+        sector[off:off + AHDI_ENTRY_SIZE] = b"\x00" * AHDI_ENTRY_SIZE
+
+    for i in range(plan.primary_count):
+        part = plan.partitions[i]
+        flag = AHDI_FLAG_EXISTENT | (AHDI_FLAG_BOOTABLE if i == 0 else 0)
+        write_ahdi_entry(sector, ahdi_offsets[i], flag,
+                         ahdi_partition_id(part.size_mb),
+                         part.start_lba, part.size_sectors)
+
+    if plan.has_extended:
+        xgm_start, xgm_size = xgm_container_bounds(plan)
+        write_ahdi_entry(sector, ahdi_offsets[plan.primary_count],
+                         AHDI_FLAG_EXISTENT, b"XGM",
+                         xgm_start, xgm_size)
+
+    # 3. BSL pointer @ 0x1FA..0x1FD (BE u32) -- zero (we don't track
+    # bad sectors).
+    sector[AHDI_BSL_PTR_OFFSET:AHDI_BSL_PTR_OFFSET + 4] = b"\x00" * 4
+
+    # 4. Sigword @ 0x1FE..0x1FF: chosen so the whole-sector word-sum
+    # mod 0x10000 == AHDI_BOOT_CHECKSUM ($1234). Zero it first so the
+    # partial sum is clean, then store the residual.
+    sector[AHDI_SIGWORD_OFFSET:AHDI_SIGWORD_OFFSET + 2] = b"\x00\x00"
+    needed = (AHDI_BOOT_CHECKSUM - _be_word_sum(sector)) & 0xFFFF
+    sector[AHDI_SIGWORD_OFFSET] = (needed >> 8) & 0xFF
+    sector[AHDI_SIGWORD_OFFSET + 1] = needed & 0xFF
+
+    # Sanity: the patched sector now sums to AHDI_BOOT_CHECKSUM exactly.
+    final_sum = _be_word_sum(sector)
+    if final_sum != AHDI_BOOT_CHECKSUM:
+        raise RuntimeError(
+            f"patch_icd_boot_sector: sigword math broken "
+            f"(got {final_sum:#06x}, want {AHDI_BOOT_CHECKSUM:#06x})")
+    return bytes(sector)
+
+
+def install_icdboot_sys(plan: "ImagePlan", driver_bytes: bytes,
+                         progress=None) -> None:
+    """Place `driver_bytes` at FAT cluster 2 of plan.partitions[0]
+    (the boot partition) and update both FAT copies and the root
+    directory so the file is reachable by the FAT16 conventions.
+
+    Must run AFTER format_fat16 has written the empty filesystem to
+    the boot partition (i.e. after build_image's Step 2). Mutates
+    the image file in place.
+    """
+    def _emit(msg):
+        if progress is not None:
+            progress(msg)
+
+    if not plan.partitions:
+        raise RuntimeError("install_icdboot_sys: plan has no partitions")
+    part = plan.partitions[0]
+
+    # Read the partition's BPB (which format_fat16 just wrote) to get
+    # the geometry we'll use for placement. We don't trust constants
+    # here -- the geometry depends on partition size.
+    bpb = read_sector(plan.image_path, part.start_lba)
+    bps   = int.from_bytes(bpb[BPB_BYTES_PER_SEC_OFFSET:
+                                BPB_BYTES_PER_SEC_OFFSET + 2], "little")
+    spc   = bpb[BPB_SEC_PER_CLUS_OFFSET]
+    resv  = int.from_bytes(bpb[BPB_RESERVED_OFFSET:
+                                BPB_RESERVED_OFFSET + 2], "little")
+    nfats = bpb[BPB_FAT_COUNT_OFFSET]
+    nroot = int.from_bytes(bpb[BPB_ROOT_ENTRIES_OFFSET:
+                                BPB_ROOT_ENTRIES_OFFSET + 2], "little")
+    spfat = int.from_bytes(bpb[BPB_SEC_PER_FAT_OFFSET:
+                                BPB_SEC_PER_FAT_OFFSET + 2], "little")
+    if bps == 0 or spc == 0 or nfats == 0 or spfat == 0:
+        raise RuntimeError(
+            f"install_icdboot_sys: invalid BPB at LBA {part.start_lba} "
+            f"(bps={bps} spc={spc} nfats={nfats} spfat={spfat})")
+
+    fat_lba   = part.start_lba + resv
+    root_lba  = fat_lba + nfats * spfat
+    root_secs = (nroot * 32 + bps - 1) // bps
+    data_lba  = root_lba + root_secs
+
+    cluster_size = bps * spc
+    n_clusters = (len(driver_bytes) + cluster_size - 1) // cluster_size
+    if n_clusters < 1:
+        raise RuntimeError("install_icdboot_sys: driver is empty")
+    # Cluster 2 is the first data cluster; we use clusters 2..(1+n).
+    last_cluster = 1 + n_clusters
+
+    # Sanity: the partition has to be big enough to hold the driver.
+    needed_data_bytes = n_clusters * cluster_size
+    avail_data_bytes = (part.start_lba + part.size_sectors -
+                         data_lba) * SECTOR_SIZE
+    if needed_data_bytes > avail_data_bytes:
+        raise RuntimeError(
+            f"install_icdboot_sys: driver ({len(driver_bytes)} B / "
+            f"{n_clusters} clusters) doesn't fit in boot partition's "
+            f"data area ({avail_data_bytes} B available)")
+
+    _emit(f"Installing ICDBOOT.SYS at cluster 2 "
+          f"({n_clusters} clusters, {len(driver_bytes)} bytes)...")
+
+    # Step 1: write the driver bytes at cluster 2 (zero-padded to the
+    # last cluster boundary so we don't leave garbage in the tail).
+    pad_bytes = needed_data_bytes - len(driver_bytes)
+    with open(plan.image_path, "r+b") as f:
+        f.seek(data_lba * SECTOR_SIZE)
+        f.write(driver_bytes)
+        if pad_bytes:
+            f.write(b"\x00" * pad_bytes)
+
+    # Step 2: patch FAT1 and FAT2 with the contiguous chain
+    # 2 -> 3 -> ... -> last_cluster -> 0xFFFF.
+    fat_size_bytes = spfat * bps
+    new_fat = bytearray(fat_size_bytes)
+    # Read the existing FAT1 first (so we preserve whatever
+    # format_fat16 wrote for entries 0/1: media descriptor + EOC).
+    with open(plan.image_path, "rb") as f:
+        f.seek(fat_lba * SECTOR_SIZE)
+        new_fat[:] = f.read(fat_size_bytes)
+
+    for k in range(n_clusters - 1):
+        c = 2 + k
+        new_fat[c * 2:c * 2 + 2] = (c + 1).to_bytes(2, "little")
+    new_fat[last_cluster * 2:last_cluster * 2 + 2] = b"\xff\xff"
+
+    with open(plan.image_path, "r+b") as f:
+        for fat_idx in range(nfats):
+            f.seek((fat_lba + fat_idx * spfat) * SECTOR_SIZE)
+            f.write(new_fat)
+
+    # Step 3: write the root-directory entry at offset 0 of the root
+    # area. 32 bytes total: name (8) + ext (3) + attr (1) + reserved
+    # block (10, all zeros for our purposes) + cluster-low (2 at
+    # offset 26) + size (4 at offset 28).
+    entry = bytearray(32)
+    entry[0:8]   = ICD_BOOT_DRIVER_FILENAME       # b"ICDBOOT "
+    entry[8:11]  = ICD_BOOT_DRIVER_EXT             # b"SYS"
+    entry[11]    = 0x00                             # attr=0 (cleared archive bit)
+    # offsets 12..25: NTRes, time/date fields. All zero matches the
+    # reference image (ICD's ICDFMT writes them zero too).
+    entry[26:28] = (2).to_bytes(2, "little")       # start cluster low
+    entry[28:32] = len(driver_bytes).to_bytes(4, "little")
+
+    with open(plan.image_path, "r+b") as f:
+        f.seek(root_lba * SECTOR_SIZE)
+        f.write(entry)
 
 
 def build_xgm_descriptor_sector(logical_abs_start: int, logical_size: int,
@@ -1142,6 +1343,10 @@ class ImagePlan:
     # Partition-table split (computed by plan_image):
     primary_count: int = 0     # partitions 0..primary_count-1 are primary
     has_extended: bool = False  # true if an MBR extended container is used
+    # AHDI bootable mode: when set, the path to a user-supplied ICD
+    # driver (ICDBOOT.PRG). Triggers the ICD-boot-sector patch +
+    # cluster-2 driver placement. Only meaningful on FORMAT_AHDI.
+    ahdi_driver_path: Optional[str] = None
 
 
 def format_max_partition_mb(format_id: str, strict_tos: bool) -> int:
@@ -2044,9 +2249,13 @@ def compute_partition_geometry(format_id: str, size_sectors_512: int) -> dict:
 
 def plan_image(format_id: str, image_path: str, image_mb: int,
                partitions: List[Partition],
-               strict_tos: bool = False) -> ImagePlan:
+               strict_tos: bool = False,
+               ahdi_driver_path: Optional[str] = None) -> ImagePlan:
     if not partitions:
         raise ValueError("at least one partition is required")
+    if ahdi_driver_path and format_id != FORMAT_AHDI:
+        raise ValueError(
+            f"--ahdi-driver only applies to AHDI images (got {format_id})")
 
     plan = ImagePlan(
         format_id=format_id,
@@ -2054,6 +2263,7 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
         image_mb=image_mb,
         partitions=partitions,
         strict_tos=strict_tos,
+        ahdi_driver_path=ahdi_driver_path,
     )
     plan.image_sectors = mb_to_sectors_512(image_mb)
 
@@ -2313,10 +2523,30 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                 dos_bpb, tos_bps=part.tos_bps, oem=oem)
             write_sector(plan.image_path, part.start_lba + 1, tos_bpb)
 
+    # Step 3.5 (AHDI bootable only): inject the ICD driver at cluster 2
+    # of the boot partition. Must happen AFTER the partition's FAT16 has
+    # been written (Step 2) and BEFORE we patch sector 0 (Step 4), so
+    # the boot partition's BPB is readable for geometry computation and
+    # the driver bytes don't get clobbered by anything later.
+    if plan.format_id == FORMAT_AHDI and plan.ahdi_driver_path:
+        with open(plan.ahdi_driver_path, "rb") as f:
+            driver_bytes = f.read()
+        if len(driver_bytes) < 2 or driver_bytes[:2] != b"\x60\x1a":
+            raise RuntimeError(
+                f"AHDI driver {plan.ahdi_driver_path!r} doesn't look "
+                f"like an Atari .PRG (expected magic 0x601A at offset 0; "
+                f"run tools/check_icd_driver.py to validate).")
+        install_icdboot_sys(plan, driver_bytes, progress=progress)
+
     # Step 4: write the root sector (sector 0) describing all partitions.
     _emit("Writing partition table...")
     if plan.format_id == FORMAT_AHDI:
-        root = build_root_sector_ahdi(plan)
+        if plan.ahdi_driver_path:
+            # Bootable AHDI: embed ICD's IPL verbatim from the asset and
+            # patch in our partition table + sigword.
+            root = patch_icd_boot_sector(plan)
+        else:
+            root = build_root_sector_ahdi(plan)
     elif plan.format_id == FORMAT_PPDRIVER:
         root = build_root_sector_ppdriver(plan)
     elif plan.format_id == FORMAT_HDDRIVER:
