@@ -2082,12 +2082,13 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                     next_chain_size=next_chain_size,
                 )
             else:
-                # PPDRIVER uses 0x0F (LBA), HDDRIVER uses 0x05 (CHS)
-                # for the next-EBR-link type byte. Match the
-                # container type emitted in the root sector.
-                ext_type = (MBR_TYPE_EXTENDED_CHS
-                            if plan.format_id == FORMAT_HDDRIVER
-                            else MBR_TYPE_EXTENDED_LBA)
+                # Real PPDRIVER and HDDRIVER images both use 0x05
+                # (CHS-extended) for the next-EBR-link byte inside
+                # an EBR, even when the OUTER container at MBR slot 1
+                # is 0x0F (LBA-extended). Verified against a real
+                # PPDRIVER 1 GB raw dump: outer = 0x0F, chain links
+                # = 0x05 throughout. Standard DOS convention.
+                ext_type = MBR_TYPE_EXTENDED_CHS
                 desc = build_ebr_sector(
                     logical_abs_start=part.start_lba,
                     logical_size=part.size_sectors,
