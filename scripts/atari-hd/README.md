@@ -28,7 +28,7 @@ primaries vs. how many have to live in an extended chain:
 | Format | Max primary | Primary slots | Extended chain type | When extended kicks in |
 |--------|------------:|---------------|---------------------|------------------------|
 | AHDI | 4 | AHDI root slots 0..3 at 0x1C6 / 0x1D2 / 0x1DE / 0x1EA | XGM (AHDI-native) | N > 4: use slots 0..2 as primaries, slot 3 as the XGM chain head |
-| PPDRIVER | 4 | MBR P0..P3 at 0x1BE..0x1EE | MBR extended (type 0x0F) | N > 4: use P0..P2 as primaries, P3 as the extended container |
+| PPDRIVER | 1 | MBR P0 only at 0x1BE | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container (matches PPTOSDOS convention; multi-primary fails on real Atari hardware at >256 MB partition sizes) |
 | HDDRIVER | 1 | MBR P0 only (AHDI slot 2 at 0x1DE carries the TOS overlap marker and consumes the slot where MBR P2 would live) | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container |
 
 For AHDI, each XGM sub-descriptor sector follows the Atari convention:
@@ -81,18 +81,26 @@ partitions more tightly than TOS 1.04+:
 
 | Mode | GEM cap (boot + small partitions) | BGM cap (big partitions) |
 |------|:--------------------------------:|:-----------------------:|
-| TOS 1.04+ (default) | 32 MB | 512 MB |
+| TOS 1.04+ (default) | 31 MB | 511 MB |
 | TOS < 1.04 (strict) | 16 MB | 256 MB |
+
+The "512 MB" figure quoted in much of the AHDI literature is rounded
+up: the real ceiling is `NSECTS = 65535` at `bps = 8192` =
+**511.99 MB**. A 512 MB BGM partition trips the Hatari sector-doubling
+rule into `bps = 16384`, which TOS 1.04 - 3.x doesn't support.
 
 Say yes to the compat prompt if you're writing an image for a 520ST /
 1040ST / Mega ST still running the original TOS; otherwise leave it at
 the default. The choice:
 
-- **Forces partition 1 (the TOS boot partition) to be a GEM entry**
-  capped at the GEM size (16 or 32 MB). TOS only boots from GEM, so this
-  is a hard constraint regardless of your answer to the compat prompt —
-  the cap just changes with the mode.
-- Caps subsequent partitions at the BGM size (256 or 512 MB). Slots
+- **Forces partition 1 to be a GEM entry**, capped at the GEM size
+  (16 or 31 MB). This is a defensive compatibility default for the
+  legacy boot path — original AHDI and early SCSI Tools required GEM
+  on the boot slot. TOS itself only checks the boot flag, and modern
+  drivers (HDDRIVER, PPDRIVER, ICD Pro) accept BGM boot up to 511 MB,
+  but emitting GEM at slot 0 is what works everywhere. The cap just
+  changes with the strict-vs-permissive mode.
+- Caps subsequent partitions at the BGM size (256 or 511 MB). Slots
   2..N can still be GEM (within the GEM cap) or BGM.
 - Is surfaced in the summary (`TOS compat : ...`) so you can verify
   before confirming.
@@ -123,6 +131,15 @@ view exists). For **PPDRIVER / HDDRIVER** both columns apply: the DOS BPB
 always uses 512-byte sectors (so macOS mounts them), the TOS companion BPB
 uses the larger Hatari-picked sector size, and both BPBs project onto the
 same physical FAT/root/data regions.
+
+> ⚠️ **PPDRIVER / HDDRIVER primary-slot rule.** The single MBR primary
+> (slot 0) is capped at **255 MB** (TOS bps ≤ 4096). Real PPDRIVER and
+> real HDDRIVER on Atari hardware fail to read primary partitions whose
+> TOS BPB carries `bps>4096`; logicals in the extended chain are
+> unaffected and get the full 511 MB cap. To make a >255 MB hybrid
+> image, add a small primary (e.g. 32 MB BOOT) and put the bulk in the
+> extended chain — that's what real PPDRIVER's setup tool produces.
+> Verified empirically + against real reference images.
 
 ### macOS compatibility
 

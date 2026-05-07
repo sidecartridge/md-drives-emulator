@@ -7,10 +7,13 @@ prevent re-discovering them the hard way.
 
 Covered:
   - partition_cap_mb: AHDI per-slot caps, hybrid no-per-slot caps.
-  - ahdi_partition_id: first slot always GEM; threshold pick for slots 1+.
+  - ahdi_partition_id: first slot always emitted as GEM (defensive
+    legacy-driver-compatibility clamp; not a hard TOS rule -- see
+    atari_hd.ahdi_partition_id() docstring); threshold pick for
+    slots 1+.
   - partition_layout: primary/extended split per format for representative N.
   - Rejection paths: out-of-range N, AHDI strict caps, AHDI permissive caps,
-    HDDRIVER primary cap (always 1), first-AHDI-must-be-GEM invariant.
+    HDDRIVER primary cap (always 1), first-AHDI-always-GEM invariant.
 """
 
 import unittest
@@ -33,8 +36,11 @@ class TestPartitionCapMb(unittest.TestCase):
             atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, True, 0), 16)
 
     def test_ahdi_permissive_gem_cap(self):
+        # 31 MB, not 32: ident=GEM strictly implies bps=512, and
+        # choose_logical_sector_size flips to bps=1024 at 32 MB.
+        # See AHDI_GEM_MAX_MB rationale in atari_hd.py.
         self.assertEqual(
-            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 0), 32)
+            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 0), 31)
 
     def test_ahdi_strict_bgm_cap(self):
         # Slot 1+ is BGM. Strict caps BGM at 256 MB.
@@ -42,8 +48,12 @@ class TestPartitionCapMb(unittest.TestCase):
             atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, True, 1), 256)
 
     def test_ahdi_permissive_bgm_cap(self):
+        # 511 MB, not 512: the documented "512 MB BGM" is rounded up.
+        # Real ceiling is NSECTS=65535 at bps=8192 = 511.99 MB. A 512 MB
+        # plan trips the Hatari sector-doubling rule into bps=16384,
+        # which TOS 1.04 - 3.x doesn't support.
         self.assertEqual(
-            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 1), 512)
+            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 1), 511)
 
     def test_ahdi_strict_bgm_cap_holds_for_higher_slots(self):
         # Slots 2..N share the BGM cap with slot 1.
@@ -53,47 +63,129 @@ class TestPartitionCapMb(unittest.TestCase):
                     atari_hd.partition_cap_mb(
                         atari_hd.FORMAT_AHDI, True, slot), 256)
 
-    def test_hybrid_caps_have_no_per_slot_distinction(self):
-        # PPDRIVER / HDDRIVER go through the DOS view, which doesn't care
-        # about TOS BGM limits. Cap is the FAT16 ceiling regardless of
-        # slot or strict flag.
+    def test_hybrid_primary_cap_at_slot_0(self):
+        # PPDRIVER / HDDRIVER both cap the primary slot at
+        # HYBRID_PRIMARY_MAX_MB (255 MB) because real driver behaviour
+        # rejects primaries with bps>4096. Strict flag is meaningless
+        # for hybrids; same cap regardless. Slots 1+ get the full
+        # HYBRID_MAX (511 MB) since the chain-link path supports up
+        # to bps=8192.
         for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
-            for slot in (0, 1, 5, 13):
-                for strict in (True, False):
+            for strict in (True, False):
+                with self.subTest(format=fmt, slot=0, strict=strict):
+                    self.assertEqual(
+                        atari_hd.partition_cap_mb(fmt, strict, 0),
+                        atari_hd.HYBRID_PRIMARY_MAX_MB)
+                for slot in (1, 5, 13):
                     with self.subTest(format=fmt, slot=slot, strict=strict):
                         self.assertEqual(
                             atari_hd.partition_cap_mb(fmt, strict, slot),
-                            atari_hd.MAX_PARTITION_MB)
+                            atari_hd.HYBRID_MAX_PARTITION_MB)
+
+
+class TestCapMbForType(unittest.TestCase):
+    """cap_mb_for_type returns the cap for a partition based on the
+    user-chosen type ident. Used by interactive callers (TUI edit
+    dialog) where slot 1+ might be GEM-typed by the user."""
+
+    def test_ahdi_gem_cap_regardless_of_slot(self):
+        # User picks GEM on any slot -> GEM cap (16 strict, 31 perm).
+        # Perm cap is 31, not 32: ident=GEM strictly implies bps=512.
+        for ident in (b"GEM", "GEM"):
+            with self.subTest(ident=ident):
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, True, ident),
+                    16)
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
+                    31)
+
+    def test_ahdi_bgm_cap_regardless_of_slot(self):
+        # User picks BGM -> BGM cap (256 strict, 511 perm).
+        for ident in (b"BGM", "BGM"):
+            with self.subTest(ident=ident):
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, True, ident),
+                    256)
+                self.assertEqual(
+                    atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
+                    511)
+
+    def test_unknown_ahdi_ident_falls_back_to_bgm_cap(self):
+        # Defensive: anything other than GEM uses the BGM cap.
+        self.assertEqual(
+            atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, b"XGM"),
+            511)
+        self.assertEqual(
+            atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, None),
+            511)
+
+    def test_hybrid_ignores_ident(self):
+        # PPDRIVER / HDDRIVER ignore the ident; only slot index matters
+        # for the cap. With slot_index unset (or >= 1) we get the
+        # HYBRID_MAX ceiling. Strict flag is meaningless for hybrids.
+        for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
+            for ident in (b"GEM", b"BGM", None, "FAT16"):
+                with self.subTest(format=fmt, ident=ident):
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, False, ident),
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, True, ident),
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
+                    # Slot 1+ explicitly: still HYBRID_MAX.
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, False, ident,
+                                                  slot_index=1),
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
+
+    def test_hybrid_primary_slot_picks_primary_cap(self):
+        # When slot_index=0 is passed, both hybrids return the
+        # HYBRID_PRIMARY_MAX_MB cap regardless of ident or strict_tos.
+        for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
+            for ident in (b"GEM", b"BGM", None, "FAT16"):
+                for strict in (True, False):
+                    with self.subTest(format=fmt, ident=ident,
+                                      strict=strict):
+                        self.assertEqual(
+                            atari_hd.cap_mb_for_type(fmt, strict, ident,
+                                                      slot_index=0),
+                            atari_hd.HYBRID_PRIMARY_MAX_MB)
 
 
 class TestAhdiPartitionId(unittest.TestCase):
-    """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')."""
+    """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')
+    strictly from the bps that choose_logical_sector_size picks for
+    the partition's 512-byte sector count.
 
-    def test_first_partition_is_always_gem(self):
-        # Hard rule: TOS only boots from a GEM entry, so slot 0 must be
-        # GEM regardless of size or strict mode.
-        for size in (1, 16, 17, 32, 33, 100, 256, 257, 512, 1024):
-            for strict in (True, False):
-                with self.subTest(size=size, strict=strict):
-                    self.assertEqual(
-                        atari_hd.ahdi_partition_id(size, strict,
-                                                    is_first=True),
-                        b"GEM",
-                        f"size={size}, strict={strict} must be GEM")
+    Per AHDI 3.0 / the Atari Compendium: GEM means bps=512, BGM means
+    bps>512. The Hatari doubling rule keeps bps=512 only while
+    clusters_at_spc=2 stays <= 32765, i.e. partition_sec_512 <= 65530
+    (~31.99 MB). At 32 MB exactly the rule doubles to bps=1024.
 
-    def test_permissive_threshold_at_32mb(self):
-        # TOS 1.04+ uses a 32 MB threshold for non-first slots.
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(32, False, is_first=False), b"GEM")
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(33, False, is_first=False), b"BGM")
+    The earlier version of this function accepted an `is_first` flag
+    that forced GEM at slot 0 regardless of size; that force was
+    removed because it could produce GEM+bps=1024, which the
+    Compendium flagged as malformed (legacy drivers may corrupt past
+    the first 32 MB of physical sectors). Slot 0 is now kept in the
+    GEM region by partition_cap_mb() instead, so the ident landing
+    here is always consistent with the BPB."""
 
-    def test_strict_threshold_at_16mb(self):
-        # TOS < 1.04 tightens the threshold to 16 MB.
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(16, True, is_first=False), b"GEM")
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(17, True, is_first=False), b"BGM")
+    def test_gem_region(self):
+        # Sizes that choose_logical_sector_size keeps at bps=512 -> GEM.
+        for size in (1, 2, 8, 16, 17, 24, 30, 31):
+            with self.subTest(size=size):
+                self.assertEqual(
+                    atari_hd.ahdi_partition_id(size), b"GEM",
+                    f"{size} MB sits at bps=512; ident must be GEM")
+
+    def test_bgm_region(self):
+        # 32 MB is the first size that trips bps=1024 -> BGM.
+        for size in (32, 33, 64, 128, 256, 511):
+            with self.subTest(size=size):
+                self.assertEqual(
+                    atari_hd.ahdi_partition_id(size), b"BGM",
+                    f"{size} MB sits at bps>512; ident must be BGM")
 
 
 class TestPartitionLayout(unittest.TestCase):
@@ -112,6 +204,14 @@ class TestPartitionLayout(unittest.TestCase):
             14: (3, True, 11),
         },
         atari_hd.FORMAT_PPDRIVER: {
+            # PPTOSDOS allows up to 4 primaries (each individually
+            # capped at HYBRID_PRIMARY_MAX_MB = 255 MB so its TOS bps
+            # stays <= 4096); N > 4 falls to (cap-1) primaries plus an
+            # MBR extended container holding the rest as logicals.
+            # The earlier "single-primary" iteration of this rule came
+            # from misdiagnosing a 2 x 511 MB hardware failure that
+            # actually traced to bps>4096-in-primary, not multi-primary
+            # itself.
             1:  (1, False, 0),
             2:  (2, False, 0),
             3:  (3, False, 0),
@@ -209,8 +309,8 @@ class TestRejectionPaths(unittest.TestCase):
         self.assertIn("BGM", msg, msg)
 
     def test_ahdi_permissive_first_partition_over_gem_cap(self):
-        # 33 MB > 32 MB permissive GEM cap => reject under TOS 1.04+ mode.
-        partitions = [atari_hd.Partition(name="BOOT", size_mb=33)]
+        # 32 MB > 31 MB permissive GEM cap => reject under TOS 1.04+ mode.
+        partitions = [atari_hd.Partition(name="BOOT", size_mb=32)]
         with self.assertRaises(ValueError) as ctx:
             atari_hd.plan_image(atari_hd.FORMAT_AHDI, "<test>", image_mb=64,
                                 partitions=partitions, strict_tos=False)
@@ -219,9 +319,11 @@ class TestRejectionPaths(unittest.TestCase):
         self.assertIn("boot (GEM)", msg, msg)
 
     def test_ahdi_permissive_bgm_partition_over_cap(self):
-        # 600 MB > 512 MB permissive BGM cap.
+        # 600 MB > 511 MB permissive BGM cap. BOOT is 31 MB (the
+        # permissive GEM cap) so plan_image gets past slot 0 and
+        # reaches the BGM-cap check on slot 1.
         partitions = [
-            atari_hd.Partition(name="BOOT", size_mb=32),
+            atari_hd.Partition(name="BOOT", size_mb=31),
             atari_hd.Partition(name="HUGE", size_mb=600),
         ]
         with self.assertRaises(ValueError) as ctx:

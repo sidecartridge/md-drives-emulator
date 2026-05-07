@@ -114,6 +114,16 @@ On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emu
 
 Keep `AGENTS.md` updated when new workflow rules or hardware gotchas are discovered.
 
+## Hard-disk specs: validate against the Atari Compendium via `/notebooklm`
+
+When working on Atari ST hard-disk on-disk formats — partition tables (AHDI / MBR / XGM / EBR), partition idents (GEM / BGM / XGM), the FAT16 BPB used by TOS, the dual-BPB hybrid layout used by PPDRIVER / HDDRIVER, partition-size caps and TOS-version rules, or any related low-level detail — use the `/notebooklm` skill against the **Atari ST/STE/TT/Falcon — Technical Reference** notebook as the source of truth before making non-trivial claims in code or docs. The notebook indexes the Atari Compendium and related references; the skill opens a fresh browser session per question.
+
+Applies anywhere these surfaces are touched: `scripts/atari-hd/atari_hd.py`, `scripts/atari-hd/tui/`, `rp/src/acsi.c`, `target/atarist/src/acsi.s`, the test suite under `scripts/atari-hd/tests/`, and any docstring or `CLAUDE.md` / `README.md` that describes the on-disk format.
+
+Workflow: ask focused questions, follow up on gaps (each NotebookLM answer ends with "Is that ALL you need to know?" — read it and decide), then record the non-obvious conclusions in a docstring or comment so the next reader doesn't have to re-validate.
+
+Drift example we already caught with this skill: the "first AHDI partition must be GEM" rule was framed as a TOS boot rule across `atari_hd.py`, the TUI, the test suite and the README. The Compendium clarifies that TOS itself only checks the boot flag (bit 7 of the AHDI flag byte); the GEM-on-slot-0 clamp is a *legacy-driver* compatibility default (original AHDI / SCSI Tools required it; modern drivers — HDDRIVER, PPDRIVER, ICD Pro — accept BGM boot up to 512 MB). The clamp stayed in the code but the framing was corrected. That's the kind of mistake this validation step exists to catch.
+
 ## Editing guardrails
 
 - **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.

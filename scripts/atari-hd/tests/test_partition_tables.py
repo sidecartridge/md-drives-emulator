@@ -34,7 +34,10 @@ AHDI_EXISTS_BOOT = 0x81
 
 # MBR partition types
 MBR_TYPE_FAT16 = 0x06
-MBR_TYPE_EXTENDED = 0x0F
+MBR_TYPE_EXTENDED_LBA = 0x0F   # PPDRIVER's container marker
+MBR_TYPE_EXTENDED_CHS = 0x05   # HDDRIVER's container marker
+# Backward-compat alias used by the PPDRIVER-side tests in this module.
+MBR_TYPE_EXTENDED = MBR_TYPE_EXTENDED_LBA
 
 
 def _make_partition(name, size_mb, size_sectors, start_lba,
@@ -113,8 +116,12 @@ class TestAhdiRoot(unittest.TestCase):
                                  "the 0x55AA MBR signature")
 
     def test_four_primaries_mixed_gem_bgm(self):
-        # Slot 0 is forced to GEM regardless of size; slots 1+ pick GEM/BGM
-        # from the size threshold (32 MB by default).
+        # Idents follow bps strictly: GEM iff bps=512 (size <= 31 MB),
+        # BGM iff bps>512 (size >= 32 MB). 32 MB is the first size that
+        # trips the doubling rule, so S1 is BGM, not GEM (the earlier
+        # version of this test expected GEM at 32 MB; that combination
+        # was technically malformed -- ident=GEM with bps=1024 -- and
+        # was flagged by the AHDI 3.0 review).
         partitions = [
             _make_partition("BOOT", size_mb=16, size_sectors=32768,  start_lba=2),
             _make_partition("S1",   size_mb=32, size_sectors=65536,  start_lba=32770),
@@ -125,7 +132,7 @@ class TestAhdiRoot(unittest.TestCase):
         sec = atari_hd.build_root_sector_ahdi(plan)
         slots = parse_ahdi_root(sec)
 
-        expected_idents = [b"GEM", b"GEM", b"BGM", b"BGM"]
+        expected_idents = [b"GEM", b"BGM", b"BGM", b"BGM"]
         for i, (part, want_ident) in enumerate(zip(partitions, expected_idents)):
             raw = sec[AHDI_SLOT_OFFSETS[i]:AHDI_SLOT_OFFSETS[i] + 12]
             with self.subTest(slot=i, partition=part.name):
@@ -376,8 +383,11 @@ class TestHddriverRoot(unittest.TestCase):
         mbr = parse_mbr_root(sec)
 
         # P0 unchanged, P1 = extended container.
+        # HDDRIVER uses CHS-extended FAT16B (0x05), NOT the LBA variant
+        # PPDRIVER uses (0x0F) -- per the Atari Compendium, this byte
+        # mirrors what real HDDRIVER images ship with.
         self.assertEqual(mbr["slots"][0]["part_type"], MBR_TYPE_FAT16)
-        self.assertEqual(mbr["slots"][1]["part_type"], MBR_TYPE_EXTENDED)
+        self.assertEqual(mbr["slots"][1]["part_type"], MBR_TYPE_EXTENDED_CHS)
         self.assertEqual(mbr["slots"][1]["rel_start_lba"], log0.ebr_lba)
         self.assertEqual(mbr["slots"][1]["sector_count"],
                          (log0.start_lba + log0.size_sectors) - log0.ebr_lba)
