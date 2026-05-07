@@ -62,6 +62,8 @@ def handle_key(state: State, key) -> State:
         return _handle_write_overwrite_confirm(state, key)
     if state.prompt_mode == PromptMode.CONFIRM_DISCARD_UNSAVED:
         return _handle_discard_unsaved_confirm(state, key)
+    if state.prompt_mode == PromptMode.CONFIRM_DISCARD_BEFORE_LOAD:
+        return _handle_discard_before_load_confirm(state, key)
     return state
 
 
@@ -87,23 +89,53 @@ def _handle_main(state: State, key) -> State:
     if k == "q":
         return _request_exit(state)
 
-    # File-management actions are only available before an image is
-    # loaded; once the user has an image, the keybindings switch to
-    # partition operations.
-    if state.image_path is None:
-        if k == "n":
-            state.prompt_mode = PromptMode.ASK_NEW_PATH
-            state.prompt_buffer = ""
-            state.status_message = None
-            state.dirty = True
-        elif k == "l":
-            state.prompt_mode = PromptMode.ASK_LOAD_PATH
-            state.prompt_buffer = ""
-            state.status_message = None
-            state.dirty = True
+    # File-management actions (N, L) are always available so the user
+    # can load a different image mid-session. L routes through the
+    # unsaved-changes guard when there's an in-memory plan that would
+    # otherwise be silently discarded.
+    if k == "n":
+        state.prompt_mode = PromptMode.ASK_NEW_PATH
+        state.prompt_buffer = ""
+        state.status_message = None
+        state.dirty = True
         return state
+    if k == "l":
+        return _start_load(state)
 
+    # Partition operations only when an image is set.
+    if state.image_path is None:
+        return state
     return _handle_partition_action(state, k)
+
+
+def _start_load(state: State) -> State:
+    """Open ASK_LOAD_PATH, but if there are unsaved in-memory changes
+    first route through CONFIRM_DISCARD_BEFORE_LOAD so the user
+    doesn't silently lose them. Mirrors the Q exit-guard pattern."""
+    if state.unsaved_changes:
+        state.prompt_mode = PromptMode.CONFIRM_DISCARD_BEFORE_LOAD
+        state.dirty = True
+        return state
+    state.prompt_mode = PromptMode.ASK_LOAD_PATH
+    state.prompt_buffer = ""
+    state.status_message = None
+    state.dirty = True
+    return state
+
+
+def _handle_discard_before_load_confirm(state: State, key) -> State:
+    if isinstance(key, str) and key.lower() == "y":
+        state.prompt_mode = PromptMode.ASK_LOAD_PATH
+        state.prompt_buffer = ""
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    state.prompt_mode = PromptMode.OFF
+    state.status_message = "load cancelled"
+    state.dirty = True
+    return state
 
 
 def _handle_navigation(state: State, key) -> State:
@@ -641,12 +673,46 @@ def _commit_text_prompt(state: State) -> State:
         if not os.path.exists(path):
             state.prompt_mode = PromptMode.OFF
             state.status_message = f"file not found: {path}"
-        else:
-            state.image_path = path
-            state.prompt_mode = PromptMode.OFF
-            state.status_message = "load not yet implemented (story 007)"
+            state.dirty = True
+            return state
+        return _do_load(state, path)
+    return state
+
+
+def _do_load(state: State, path: str) -> State:
+    """Parse the image at `path` and replace the in-memory partition
+    plan with what the file says. On any parse error the previous
+    state is left intact and the error is surfaced in the status
+    bar -- never partial state."""
+    try:
+        loaded = atari_hd.load_image(path)
+    except atari_hd.ImageLoadError as e:
+        state.prompt_mode = PromptMode.OFF
+        state.status_message = f"load failed: {e}"
         state.dirty = True
         return state
+    except Exception as e:
+        state.prompt_mode = PromptMode.OFF
+        state.status_message = f"load failed (unexpected): {e}"
+        state.dirty = True
+        return state
+
+    state.image_path = path
+    state.format_id = loaded["format_id"]
+    state.strict_tos = loaded["strict_tos"]
+    state.partitions = list(loaded["partitions"])
+    state.selected_slot = 0
+    state.scroll_top = 0
+    state.unsaved_changes = False
+    state.prompt_mode = PromptMode.OFF
+    state.dirty = True
+
+    n = len(state.partitions)
+    msg = f"loaded {state.format_id}: {n} partition(s) from {path}"
+    if loaded.get("strict_tos_inferred"):
+        msg += (f"  [TOS<1.04: "
+                f"{'on' if state.strict_tos else 'off'} -- guessed]")
+    state.status_message = msg
     return state
 
 
@@ -698,7 +764,12 @@ def _preflight_check(state: State):
     real = [p for p in state.partitions if p is not None]
     if not real:
         return "no partitions to write"
+    min_mb = atari_hd.format_min_partition_mb(state.format_id)
     for i, part in enumerate(real):
+        if part.size_mb < min_mb:
+            return (f"partition {part.name!r} ({part.size_mb} MB) is "
+                    f"below the {min_mb} MB minimum for "
+                    f"{state.format_id}")
         ident = _effective_ident(state, i, part, state.format_id)
         cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
                                         ident)

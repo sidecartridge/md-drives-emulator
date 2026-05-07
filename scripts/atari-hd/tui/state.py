@@ -42,6 +42,8 @@ class PromptMode(Enum):
     # Commit / write flow (story 006)
     CONFIRM_OVERWRITE_WRITE = "confirm_overwrite_write"
     CONFIRM_DISCARD_UNSAVED = "confirm_discard_unsaved"
+    # Load existing image (story 007)
+    CONFIRM_DISCARD_BEFORE_LOAD = "confirm_discard_before_load"
 
 
 class EditField(Enum):

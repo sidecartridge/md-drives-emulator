@@ -45,20 +45,46 @@ FORMAT_HDDRIVER = "HDDRIVER"
 
 # Limits
 MIN_IMAGE_MB = 2              # absolute floor; mkfs.vfat refuses smaller
-MAX_PARTITION_MB = 2048       # FAT16 ceiling with 32 KB clusters
+# FAT16 theoretical ceiling with 32 KB clusters; only reachable on
+# Falcon TOS 4.x (which supports bps=16384/32768). On ST/STE/Mega ST/TT
+# (TOS 1.04 - 3.x) the practical ceiling is the hybrid cap below.
+MAX_PARTITION_MB = 2048
 MIN_PARTITION_MB = 2
 
 # AHDI partition-size caps imposed by the TOS kernel's BGM handling. These
-# are only enforced on the AHDI path (the hybrid formats go through the
-# DOS view which doesn't care). "Strict" = TOS < 1.04 (520ST / 1040ST /
-# Mega ST running the original TOS). Permissive = TOS 1.04 and later.
+# are only enforced on the AHDI path (the hybrid formats use their own
+# caps below). "Strict" = TOS < 1.04 (520ST / 1040ST / Mega ST running the
+# original TOS). Permissive = TOS 1.04 and later.
+#
+# The permissive cap was historically quoted as 512 MB (= 65536 logical
+# sectors x 8192 bps) but TOS reads NSECTS as 16-bit unsigned, so the
+# real ceiling is 65535 sectors -> 511.99 MB rounded down to 511. Real
+# AHDI partitions of exactly 512 MB don't build in our pipeline (they
+# trip the Hatari sector-doubling rule into bps=16384, which TOS
+# 1.04 - 3.x doesn't support). Validated against the Atari Compendium
+# notebook; see CLAUDE.md and HYBRID_MAX_PARTITION_MB below.
 AHDI_MAX_PARTITION_MB_STRICT = 256   # TOS < 1.04 BGM cap
-AHDI_MAX_PARTITION_MB = 512          # TOS 1.04+ BGM cap
+AHDI_MAX_PARTITION_MB = 511          # TOS 1.04+ BGM cap (was 512; off by one)
 
 # Threshold for AHDI's GEM vs. BGM partition-id choice. <= threshold uses
 # "GEM" (small partition); above uses "BGM" (big).
 AHDI_GEM_MAX_MB_STRICT = 16          # TOS < 1.04 GEM cap
 AHDI_GEM_MAX_MB = 32                 # TOS 1.04+ GEM cap
+
+# Caps for the PPDRIVER / HDDRIVER dual-BPB hybrid layout. Both ends
+# come from the TOS-side BPB, NOT the DOS view:
+#   - MAX: TOS reads the partition's total-sectors-16 field (NSECTS) as
+#     a 16-bit unsigned value (max 65535). At the maximum supported TOS
+#     logical sector size of 8192 bytes (TOS 1.04 - 3.x; Falcon TOS 4.x
+#     could go to 16384/32768 but isn't a target here), that's
+#     65535 x 8192 = 511.99 MB, rounded down to 511 MB.
+#   - MIN: the hybrid synthesis requires tos_bps >= 1024 (ratio >= 2).
+#     The Hatari sector-doubling rule first reaches ratio=2 at
+#     ~32 MB; below that, choose_logical_sector_size leaves bps=512
+#     and synthesize_tos_bpb_from_dos512 rejects the plan.
+# Validated against the Atari Compendium notebook; see CLAUDE.md.
+HYBRID_MAX_PARTITION_MB = 511
+HYBRID_MIN_PARTITION_MB = 32
 
 # mkfs behavior: sectors per cluster fixed at 2 (matches Hatari's script and
 # real HDDRIVER/PPDRIVER images we've seen on disk).
@@ -72,10 +98,22 @@ AHDI_SLOT3_OFFSET = 0x01EA
 AHDI_ENTRY_SIZE = 12
 AHDI_FLAG_EXISTENT = 0x01
 AHDI_FLAG_BOOTABLE = 0x80
+# AHDI 3.0 'hd_siz' field: total disk size in 512-byte sectors,
+# 4 bytes big-endian. Documented but optional; modern drivers
+# (HDDRIVER, ICD Pro) ignore it. We populate it on pure-AHDI images
+# for byte-level fidelity with real AHDI tooling. NOT applicable to
+# the hybrid layouts (PPDRIVER / HDDRIVER) -- the MBR partition
+# table at 0x1BE..0x1FD overlaps these bytes.
+AHDI_HD_SIZ_OFFSET = 0x01C2
 
 # MBR partition-table offsets
 MBR_P0_OFFSET = 0x01BE
 MBR_SIGNATURE_OFFSET = 510
+# Disk signature (Windows NT-style 4-byte ID). Real PPDRIVER images
+# stamp a random value here; HDDRIVER leaves it at zero. We seed
+# PPDRIVER's deterministically from plan inputs (same hash-of-inputs
+# approach as the FAT16 volume_id) so output stays reproducible.
+MBR_DISK_SIGNATURE_OFFSET = 0x01B8
 MBR_SIGNATURE = bytes((0x55, 0xAA))
 
 # BPB field offsets inside a boot sector (Hatari/DOS convention)
@@ -130,9 +168,27 @@ DEFAULT_IMAGE_MB = {
     FORMAT_HDDRIVER: 2048,
 }
 
-# MBR partition type for extended containers (LBA-addressable variant).
+# MBR partition type bytes.
+#
+# FAT16 type: PPDRIVER and HDDRIVER both emit 0x06 (FAT16B / "BIGDOS";
+# >= 32 MB) for their primary FAT16 partitions. Sub-32 MB partitions
+# would conventionally be 0x04 (FAT16A); we don't generate those
+# because the hybrid min cap is 32 MB. AHDI is unaffected (no MBR).
 MBR_TYPE_FAT16 = 0x06
-MBR_TYPE_EXTENDED = 0x0F
+#
+# Extended-container type: PPDRIVER uses 0x0F (Win95 LBA-addressable
+# extended) to force LBA addressing on large disks. HDDRIVER uses
+# 0x05 (CHS extended FAT16B). Real PPDRIVER and HDDRIVER images
+# byte-mismatch on this single field; we honor each driver's choice.
+# Validated against the Atari Compendium notebook; see CLAUDE.md.
+MBR_TYPE_EXTENDED_LBA = 0x0F
+MBR_TYPE_EXTENDED_CHS = 0x05
+# Back-compat alias used by existing callers / tests; defaults to the
+# LBA variant which is what build_ebr_sector also defaults to.
+MBR_TYPE_EXTENDED = MBR_TYPE_EXTENDED_LBA
+# Extended-container types the loader / walker recognises (either LBA
+# or CHS) so we can read both PPDRIVER and HDDRIVER images.
+MBR_EXTENDED_TYPES = (MBR_TYPE_EXTENDED_LBA, MBR_TYPE_EXTENDED_CHS)
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +270,8 @@ def write_mbr_entry(buf: bytearray, offset: int, boot: int, part_type: int,
 def build_ebr_sector(logical_abs_start: int, logical_size: int,
                      ebr_abs_lba: int, ext_base_abs_lba: int,
                      next_ebr_abs_lba: Optional[int],
-                     next_chain_size: int) -> bytes:
+                     next_chain_size: int,
+                     extended_type: int = MBR_TYPE_EXTENDED_LBA) -> bytes:
     """Build a 512-byte Extended Boot Record.
 
     EBR layout:
@@ -225,6 +282,10 @@ def build_ebr_sector(logical_abs_start: int, logical_size: int,
         (= the absolute LBA of the first EBR).
       - slots 2/3 left empty.
       - 0x55AA signature at byte 510.
+
+    `extended_type` controls slot 1's type byte for the next-EBR link.
+    PPDRIVER uses 0x0F (LBA); HDDRIVER uses 0x05 (CHS). Default 0x0F
+    matches PPDRIVER and the test fixtures from epic-002.
 
     If `next_ebr_abs_lba` is None this is the last EBR in the chain and
     slot 1 is left zero.
@@ -237,7 +298,7 @@ def build_ebr_sector(logical_abs_start: int, logical_size: int,
     # Slot 1: link to the next EBR, if the chain continues.
     if next_ebr_abs_lba is not None:
         write_mbr_entry(buf, MBR_P0_OFFSET + 16, boot=0x00,
-                        part_type=MBR_TYPE_EXTENDED,
+                        part_type=extended_type,
                         start_lba=next_ebr_abs_lba,
                         sector_count=next_chain_size,
                         rel_start_lba=next_ebr_abs_lba - ext_base_abs_lba)
@@ -281,6 +342,12 @@ def build_root_sector_ahdi(plan: "ImagePlan") -> bytes:
         write_ahdi_entry(buf, ahdi_offsets[plan.primary_count],
                          AHDI_FLAG_EXISTENT, b"XGM",
                          xgm_start, xgm_size)
+
+    # AHDI 3.0 'hd_siz' field: total disk sectors in 4 bytes big-endian.
+    # Optional / informational; modern drivers ignore it but we write
+    # it for byte-level fidelity with real AHDI tooling.
+    buf[AHDI_HD_SIZ_OFFSET:AHDI_HD_SIZ_OFFSET + 4] = (
+        plan.image_sectors).to_bytes(4, "big")
 
     # NOTE: intentionally no 0x55AA signature (this is a pure-AHDI image).
     return bytes(buf)
@@ -362,12 +429,37 @@ def build_root_sector_ppdriver(plan: "ImagePlan") -> bytes:
 
     if plan.has_extended:
         ext_start, ext_size = extended_container_bounds(plan)
+        # PPDRIVER uses LBA-addressable extended (0x0F) to force LBA
+        # semantics on large disks; matches what real PPTOSDOS images
+        # ship with.
         write_mbr_entry(buf, MBR_P0_OFFSET + plan.primary_count * 16,
-                        boot=0x00, part_type=MBR_TYPE_EXTENDED,
+                        boot=0x00, part_type=MBR_TYPE_EXTENDED_LBA,
                         start_lba=ext_start, sector_count=ext_size)
+
+    # PPDRIVER stamps a 4-byte disk signature at MBR offset 0x1B8.
+    # Real PPDRIVER images use a random value; we seed deterministically
+    # from plan inputs so output is byte-stable across runs. HDDRIVER
+    # leaves this field at zero (matched by build_root_sector_hddriver).
+    buf[MBR_DISK_SIGNATURE_OFFSET:MBR_DISK_SIGNATURE_OFFSET + 4] = (
+        _ppdriver_disk_signature(plan))
 
     buf[MBR_SIGNATURE_OFFSET:MBR_SIGNATURE_OFFSET + 2] = MBR_SIGNATURE
     return bytes(buf)
+
+
+def _ppdriver_disk_signature(plan: "ImagePlan") -> bytes:
+    """Deterministic 4-byte disk signature for PPDRIVER images. Same
+    rationale as _fat16_seed_volume_id: same inputs -> same bytes,
+    no wall-clock seeding, no host randomness. Inputs cover the
+    image-shape choices that uniquely identify the plan."""
+    seed = (
+        os.path.basename(os.fspath(plan.image_path)).encode("utf-8",
+                                                              errors="replace")
+        + struct.pack("<II", plan.image_sectors & 0xFFFFFFFF,
+                       len(plan.partitions))
+    )
+    digest = hashlib.sha256(seed).digest()
+    return digest[:4]
 
 
 def build_root_sector_hddriver(plan: "ImagePlan") -> bytes:
@@ -397,8 +489,16 @@ def build_root_sector_hddriver(plan: "ImagePlan") -> bytes:
 
     if plan.has_extended:
         ext_start, ext_size = extended_container_bounds(plan)
+        # HDDRIVER uses CHS-extended FAT16B (0x05) for its container,
+        # not the LBA variant -- matches the byte HDDRIVER itself
+        # writes. NOTE: per the Atari Compendium, HDDRIVER's TOS&DOS
+        # hybrid mode supports only ONE TOS-mountable partition per
+        # drive (the primary in MBR P0; the AHDI overlap at 0x1DE
+        # points only at it). Logical partitions in this EBR chain
+        # are DOS-readable but **not** TOS-mountable; they live for
+        # PC-side use of the same image.
         write_mbr_entry(buf, MBR_P0_OFFSET + 16,
-                        boot=0x00, part_type=MBR_TYPE_EXTENDED,
+                        boot=0x00, part_type=MBR_TYPE_EXTENDED_CHS,
                         start_lba=ext_start, sector_count=ext_size)
 
     # AHDI slot 2 marker (TOS view of the primary partition). Written AFTER
@@ -941,12 +1041,34 @@ class ImagePlan:
 
 def format_max_partition_mb(format_id: str, strict_tos: bool) -> int:
     """Maximum allowed partition size (MB) for a given format and TOS-compat
-    mode, across ALL slots. AHDI honors the TOS BGM cap (256/512); the
-    hybrid formats use the FAT16 ceiling."""
+    mode, across ALL slots.
+
+    AHDI honors the TOS BGM cap (256/512). PPDRIVER / HDDRIVER use the
+    hybrid-layout cap (511 MB) -- bounded by the TOS-side BPB's 16-bit
+    NSECTS field at the max supported TOS bps (8192 on TOS 1.04 - 3.x).
+    The Falcon TOS 4.x ceiling (2 GB) isn't a target here. See the
+    HYBRID_MAX_PARTITION_MB constant for the rationale."""
     if format_id == FORMAT_AHDI:
         return (AHDI_MAX_PARTITION_MB_STRICT if strict_tos
                 else AHDI_MAX_PARTITION_MB)
-    return MAX_PARTITION_MB
+    return HYBRID_MAX_PARTITION_MB
+
+
+def format_min_partition_mb(format_id: str) -> int:
+    """Minimum partition size (MB) for a given format.
+
+    AHDI single-BPB images can host any partition that produces >= 4085
+    FAT16 clusters (around 4-5 MB at native bps); the v1 doesn't enforce
+    a hard min on AHDI -- format_fat16 rejects too-small inputs at
+    write time and the user fixes the size in the dialog.
+
+    Hybrid formats (PPDRIVER / HDDRIVER) require ratio >= 2 in the
+    synthesize step, which the Hatari sector-doubling rule first
+    reaches at ~32 MB. Below that, build_image fails with a cryptic
+    'tos_bps must be a power of two >= 1024'. We catch it earlier."""
+    if format_id == FORMAT_AHDI:
+        return MIN_PARTITION_MB  # 2 MB; format_fat16 rejects below ~4-5 MB
+    return HYBRID_MIN_PARTITION_MB
 
 
 def partition_cap_mb(format_id: str, strict_tos: bool,
@@ -957,14 +1079,138 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
     partition and clamp it to the GEM cap (16 MB strict / 32 MB
     permissive) for legacy-driver compatibility. This is *not* a TOS
     rule per se -- TOS itself only checks the boot flag, and modern
-    drivers boot from BGM up to 512 MB -- but the original AHDI and
+    drivers boot from BGM up to 511 MB -- but the original AHDI and
     early SCSI Tools required the GEM clamp, so we keep it. See
     ahdi_partition_id() for the full rationale. Slots 2..N can be GEM
-    (within the same threshold) or BGM (up to 256/512). Hybrid formats
+    (within the same threshold) or BGM (up to 256/511). Hybrid formats
     have no per-slot distinction."""
     if format_id == FORMAT_AHDI and partition_index == 0:
         return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
     return format_max_partition_mb(format_id, strict_tos)
+
+
+# --------------------------------------------------------------------------
+# Partition-table parsers (used by the TUI's load action and by the test
+# suite). Pure struct.unpack_from; no I/O. The walker + load_image()
+# below add the I/O layer.
+# --------------------------------------------------------------------------
+
+# Tuple form for iteration; the scalar AHDI_SLOT*_OFFSET / MBR_P0_OFFSET
+# constants are still defined above for individual writes.
+AHDI_SLOT_OFFSETS = (AHDI_SLOT0_OFFSET, AHDI_SLOT1_OFFSET,
+                     AHDI_SLOT2_OFFSET, AHDI_SLOT3_OFFSET)
+MBR_SLOT_OFFSETS = tuple(MBR_P0_OFFSET + i * 16 for i in range(4))
+
+
+def parse_ahdi_entry(buf, offset):
+    """Parse a 12-byte AHDI partition entry at `offset` in `buf`.
+
+    Layout (big-endian for the two 32-bit fields):
+        +0   flag        (1 byte; bit 0 = exists, bit 7 = bootable)
+        +1   ident       (3 bytes ASCII; e.g. b"GEM" / b"BGM" / b"XGM")
+        +4   start_lba   (4 bytes, big-endian)
+        +8   size        (4 bytes, big-endian)
+    """
+    start_lba, size_sectors = struct.unpack_from(">II", buf, offset + 4)
+    return {
+        "flag":         buf[offset],
+        "ident":        bytes(buf[offset + 1:offset + 4]),
+        "start_lba":    start_lba,
+        "size_sectors": size_sectors,
+    }
+
+
+def parse_ahdi_root(buf):
+    """Parse the four AHDI slots from a root sector buffer. Empty slots
+    come back with flag=0 / ident=b'\\x00\\x00\\x00'."""
+    return [parse_ahdi_entry(buf, off) for off in AHDI_SLOT_OFFSETS]
+
+
+def parse_mbr_entry(buf, offset):
+    """Parse a 16-byte MBR partition entry at `offset` in `buf`.
+
+    Layout (little-endian for the two 32-bit fields):
+        +0   boot          (1 byte; 0x80 marks active)
+        +1   chs_first     (3 bytes; pack_chs format)
+        +4   part_type     (1 byte; 0x06 = FAT16, 0x0F = extended-LBA)
+        +5   chs_last      (3 bytes)
+        +8   rel_start_lba (4 bytes, little-endian; for EBRs this is
+                            relative to the EBR sector or chain base)
+        +12  sector_count  (4 bytes, little-endian)
+    """
+    rel_start_lba, sector_count = struct.unpack_from("<II", buf, offset + 8)
+    return {
+        "boot":          buf[offset],
+        "chs_first":     bytes(buf[offset + 1:offset + 4]),
+        "part_type":     buf[offset + 4],
+        "chs_last":      bytes(buf[offset + 5:offset + 8]),
+        "rel_start_lba": rel_start_lba,
+        "sector_count":  sector_count,
+    }
+
+
+def parse_mbr_root(buf):
+    """Parse the four MBR slots + the 0x55AA signature. Returns
+    {'slots': [<4 dicts>], 'signature': bytes(2)}."""
+    return {
+        "slots":     [parse_mbr_entry(buf, off) for off in MBR_SLOT_OFFSETS],
+        "signature": bytes(buf[510:512]),
+    }
+
+
+def parse_ebr(buf):
+    """An EBR has the same on-disk layout as an MBR root sector (4 slot
+    positions + signature); only slots 0 and 1 are populated in
+    practice."""
+    return parse_mbr_root(buf)
+
+
+def parse_xgm_descriptor(buf):
+    """Parse an AHDI XGM sub-descriptor: slot 0 = logical partition,
+    slot 1 = next-descriptor link (or empty when chain ends)."""
+    return {
+        "logical": parse_ahdi_entry(buf, AHDI_SLOT_OFFSETS[0]),
+        "link":    parse_ahdi_entry(buf, AHDI_SLOT_OFFSETS[1]),
+    }
+
+
+def parse_bpb(buf, offset):
+    """Parse the BPB / extended boot record at `offset` in a FAT16
+    boot-sector buffer. Returns every documented field as a plain int
+    or bytes value. Multi-byte fields are little-endian."""
+    base = offset
+    return {
+        "jump":                    bytes(buf[base + 0x00:base + 0x03]),
+        "oem":                     bytes(buf[base + 0x03:base + 0x0B]),
+        "bytes_per_sector":        struct.unpack_from(
+                                       "<H", buf, base + 0x0B)[0],
+        "sectors_per_cluster":     buf[base + 0x0D],
+        "reserved_sectors":        struct.unpack_from(
+                                       "<H", buf, base + 0x0E)[0],
+        "num_fats":                buf[base + 0x10],
+        "root_entries":            struct.unpack_from(
+                                       "<H", buf, base + 0x11)[0],
+        "total_sectors_16":        struct.unpack_from(
+                                       "<H", buf, base + 0x13)[0],
+        "media_descriptor":        buf[base + 0x15],
+        "sectors_per_fat_16":      struct.unpack_from(
+                                       "<H", buf, base + 0x16)[0],
+        "sectors_per_track":       struct.unpack_from(
+                                       "<H", buf, base + 0x18)[0],
+        "num_heads":               struct.unpack_from(
+                                       "<H", buf, base + 0x1A)[0],
+        "hidden_sectors":          struct.unpack_from(
+                                       "<I", buf, base + 0x1C)[0],
+        "total_sectors_32":        struct.unpack_from(
+                                       "<I", buf, base + 0x20)[0],
+        "drive_number":            buf[base + 0x24],
+        "extended_boot_signature": buf[base + 0x26],
+        "volume_id":               struct.unpack_from(
+                                       "<I", buf, base + 0x27)[0],
+        "volume_label":            bytes(buf[base + 0x2B:base + 0x36]),
+        "fs_type":                 bytes(buf[base + 0x36:base + 0x3E]),
+        "signature":               bytes(buf[base + 0x1FE:base + 0x200]),
+    }
 
 
 def cap_mb_for_type(format_id: str, strict_tos: bool,
@@ -985,7 +1231,327 @@ def cap_mb_for_type(format_id: str, strict_tos: bool,
         if ident in (b"GEM", "GEM"):
             return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
         return AHDI_MAX_PARTITION_MB_STRICT if strict_tos else AHDI_MAX_PARTITION_MB
-    return MAX_PARTITION_MB
+    return HYBRID_MAX_PARTITION_MB
+
+
+# --------------------------------------------------------------------------
+# Image loader: detect format, walk the partition table, recover labels
+# from each partition's FAT16 BPB. Used by the TUI's L (load) action.
+# --------------------------------------------------------------------------
+
+class ImageLoadError(RuntimeError):
+    """Raised when an image can't be parsed (file too small, no
+    recognisable root sector, corrupt chain, etc.). The TUI surfaces
+    the message verbatim in the status bar."""
+
+
+# PPDRIVER (PPTOSDOS) marker stamped on every partition's BPB by
+# build_image step 3. Per the Atari Compendium it is the canonical
+# detection mark for "this is a PPDRIVER-managed image"; PPDRIVER
+# itself uses it as a distinguishing marker so it can apply the dual-
+# BPB redirection logic.
+PPDRIVER_OEM = b"PPGDODBC"
+
+
+def detect_format(image_path: str):
+    """Return one of "AHDI" / "PPDRIVER" / "HDDRIVER" or None.
+
+    Heuristic (validated against the Atari Compendium notebook):
+      - 0x55AA at byte 510 -> MBR-style root sector. Then:
+          * AHDI overlap at 0x1DE (flag bit 0 set, ident GEM/BGM)
+            -> HDDRIVER's overlap trick.
+          * Else: read the first FAT16 primary's BPB and check for
+            OEM "PPGDODBC" -> PPDRIVER. Without the marker we
+            return None rather than falsely tagging vanilla DOS
+            MBR images as PPDRIVER.
+      - No 0x55AA + at least one valid AHDI slot (GEM/BGM/XGM)
+        -> pure-AHDI image.
+      - Anything else -> None (caller surfaces "format unknown").
+    """
+    with open(image_path, "rb") as f:
+        sec0 = f.read(SECTOR_SIZE)
+    if len(sec0) < SECTOR_SIZE:
+        return None
+    has_mbr_sig = bytes(sec0[510:512]) == MBR_SIGNATURE
+    if has_mbr_sig:
+        # Inspect the bytes at AHDI slot 2 (= MBR slot 2 area). If they
+        # parse as an AHDI partition entry with flag-exists set and a
+        # known ident, this is the HDDRIVER overlap.
+        ahdi_at_slot2 = parse_ahdi_entry(sec0, AHDI_SLOT2_OFFSET)
+        if (ahdi_at_slot2["flag"] & AHDI_FLAG_EXISTENT) and (
+                ahdi_at_slot2["ident"] in (b"GEM", b"BGM")):
+            return FORMAT_HDDRIVER
+        # PPDRIVER: walk MBR slots to find the first FAT16 primary,
+        # then check its BPB OEM. We stamp PPGDODBC on every
+        # partition's BPB at build time, so checking the first one
+        # is sufficient.
+        if _has_ppdriver_oem_marker(image_path, sec0):
+            return FORMAT_PPDRIVER
+        # MBR-signed image without the HDDRIVER overlap and without
+        # the PPDRIVER OEM: not a recognised hybrid (vanilla DOS,
+        # foreign tooling, corrupt root, ...). Return None and let
+        # the caller surface "format unknown".
+        return None
+    # No MBR signature -> pure AHDI if any slot has a valid ident.
+    valid = (b"GEM", b"BGM", b"XGM")
+    for slot in parse_ahdi_root(sec0):
+        if (slot["flag"] & AHDI_FLAG_EXISTENT) and slot["ident"] in valid:
+            return FORMAT_AHDI
+    return None
+
+
+def _has_ppdriver_oem_marker(image_path: str, sec0: bytes) -> bool:
+    """Return True iff the first FAT16 MBR primary's BPB carries the
+    PPDRIVER OEM marker. Conservative on errors (returns False) so a
+    bad read never produces a false-positive classification."""
+    try:
+        mbr = parse_mbr_root(sec0)
+        for slot in mbr["slots"]:
+            if slot["part_type"] != MBR_TYPE_FAT16:
+                continue
+            start_lba = slot["rel_start_lba"]
+            with open(image_path, "rb") as f:
+                f.seek(start_lba * SECTOR_SIZE)
+                bpb_sec = f.read(SECTOR_SIZE)
+            if len(bpb_sec) != SECTOR_SIZE:
+                return False
+            bpb = parse_bpb(bpb_sec, 0)
+            return bpb["oem"] == PPDRIVER_OEM
+        return False
+    except (OSError, struct.error):
+        return False
+
+
+def _read_sector_at(image_path: str, lba: int, image_size: int) -> bytes:
+    """Read one 512-byte sector at `lba`. Raises ImageLoadError when the
+    LBA falls outside the file (defensive against corrupt chain
+    pointers; we never read past the file)."""
+    if lba < 0 or (lba + 1) * SECTOR_SIZE > image_size:
+        raise ImageLoadError(
+            f"chain pointer LBA {lba} is outside the image "
+            f"({image_size} bytes)")
+    with open(image_path, "rb") as f:
+        f.seek(lba * SECTOR_SIZE)
+        buf = f.read(SECTOR_SIZE)
+    if len(buf) != SECTOR_SIZE:
+        raise ImageLoadError(f"short read at LBA {lba}")
+    return buf
+
+
+def _label_from_bpb(image_path: str, start_lba: int,
+                    image_size: int, default: str) -> str:
+    """Read the FAT16 BPB at `start_lba` and return the volume label
+    (uppercased, trimmed). Falls back to `default` if the BPB looks
+    invalid -- we don't fail the whole load for one missing label."""
+    try:
+        sec = _read_sector_at(image_path, start_lba, image_size)
+        bpb = parse_bpb(sec, 0)
+    except (ImageLoadError, struct.error):
+        return default
+    if bpb["signature"] != MBR_SIGNATURE:
+        # Not a recognisable BPB; use default.
+        return default
+    label = bpb["volume_label"].rstrip(b" \x00")
+    try:
+        decoded = label.decode("ascii", errors="replace").strip()
+    except Exception:
+        return default
+    return decoded or default
+
+
+def _load_ahdi(image_path: str, sec0: bytes, image_size: int):
+    """Walk the AHDI root sector and any XGM chain. Returns a list of
+    Partition objects. Raises ImageLoadError on chain corruption."""
+    partitions = []
+    chain_base = None
+    chain_link = None
+
+    for slot_idx, slot in enumerate(parse_ahdi_root(sec0)):
+        if not (slot["flag"] & AHDI_FLAG_EXISTENT):
+            continue
+        if slot["ident"] == b"XGM":
+            chain_base = slot["start_lba"]
+            chain_link = slot["start_lba"]
+            continue
+        if slot["ident"] not in (b"GEM", b"BGM"):
+            continue
+        partitions.append(_partition_from_entry(
+            image_path, image_size, slot, slot_index=len(partitions)))
+
+    # Walk the XGM chain.
+    visited = set()
+    while chain_link is not None:
+        if chain_link in visited:
+            raise ImageLoadError("XGM chain has a cycle")
+        visited.add(chain_link)
+        desc_buf = _read_sector_at(image_path, chain_link, image_size)
+        desc = parse_xgm_descriptor(desc_buf)
+        logical = desc["logical"]
+        if not (logical["flag"] & AHDI_FLAG_EXISTENT):
+            break
+        # Logical partition: start is RELATIVE to the descriptor's LBA.
+        abs_start = chain_link + logical["start_lba"]
+        partitions.append(_partition_from_entry(
+            image_path, image_size,
+            {"flag": logical["flag"], "ident": logical["ident"],
+             "start_lba": abs_start,
+             "size_sectors": logical["size_sectors"]},
+            slot_index=len(partitions)))
+        link = desc["link"]
+        if not (link["flag"] & AHDI_FLAG_EXISTENT):
+            break
+        chain_link = chain_base + link["start_lba"]
+
+    return partitions
+
+
+def _load_mbr(image_path: str, sec0: bytes, image_size: int,
+              skip_slot2: bool):
+    """Walk an MBR root sector and any EBR chain. `skip_slot2` skips
+    the slot-2 entry (used for HDDRIVER, where 0x1DE holds an AHDI
+    overlap rather than a real MBR partition)."""
+    partitions = []
+    ext_base = None
+    ext_link = None
+
+    mbr = parse_mbr_root(sec0)
+    for i, slot in enumerate(mbr["slots"]):
+        if skip_slot2 and i == 2:
+            continue
+        ptype = slot["part_type"]
+        if ptype == 0:
+            continue
+        if ptype in MBR_EXTENDED_TYPES:
+            # Either 0x0F (PPDRIVER LBA) or 0x05 (HDDRIVER CHS) is a
+            # valid extended-container marker -- accept both.
+            ext_base = slot["rel_start_lba"]
+            ext_link = slot["rel_start_lba"]
+            continue
+        if ptype != MBR_TYPE_FAT16:
+            # Unknown partition type; skip.
+            continue
+        partitions.append(_partition_from_mbr(
+            image_path, image_size,
+            start_lba=slot["rel_start_lba"],
+            size_sectors=slot["sector_count"],
+            slot_index=len(partitions)))
+
+    # Walk EBR chain.
+    visited = set()
+    while ext_link is not None:
+        if ext_link in visited:
+            raise ImageLoadError("EBR chain has a cycle")
+        visited.add(ext_link)
+        ebr_buf = _read_sector_at(image_path, ext_link, image_size)
+        ebr = parse_ebr(ebr_buf)
+        slot0 = ebr["slots"][0]
+        if slot0["part_type"] == 0:
+            break
+        abs_start = ext_link + slot0["rel_start_lba"]
+        partitions.append(_partition_from_mbr(
+            image_path, image_size,
+            start_lba=abs_start,
+            size_sectors=slot0["sector_count"],
+            slot_index=len(partitions)))
+        slot1 = ebr["slots"][1]
+        if slot1["part_type"] not in MBR_EXTENDED_TYPES:
+            break
+        ext_link = ext_base + slot1["rel_start_lba"]
+
+    return partitions
+
+
+def _partition_from_entry(image_path: str, image_size: int, entry: dict,
+                          slot_index: int) -> "Partition":
+    """Build a Partition from an AHDI-table entry, recovering the label
+    from the FAT16 BPB at start_lba. AHDI partitions live at bps =
+    Hatari-doubling-rule(size_sectors); we use that convention to
+    locate the BPB."""
+    size_sec = entry["size_sectors"]
+    size_mb = (size_sec * SECTOR_SIZE) // MIB
+    default = f"P{slot_index + 1}"
+    name = _label_from_bpb(image_path, entry["start_lba"], image_size,
+                            default=default)
+    p = Partition(name=name, size_mb=size_mb,
+                   size_sectors=size_sec,
+                   start_lba=entry["start_lba"])
+    ident = entry["ident"]
+    p.ahdi_ident = (ident.decode("ascii", errors="replace")
+                    if isinstance(ident, (bytes, bytearray)) else ident)
+    return p
+
+
+def _partition_from_mbr(image_path: str, image_size: int,
+                        start_lba: int, size_sectors: int,
+                        slot_index: int) -> "Partition":
+    """Build a Partition from an MBR/EBR FAT16 entry. The DOS BPB lives
+    at start_lba (bps=512 for the dual-BPB DOS view)."""
+    size_mb = (size_sectors * SECTOR_SIZE) // MIB
+    default = f"P{slot_index + 1}"
+    name = _label_from_bpb(image_path, start_lba, image_size,
+                            default=default)
+    p = Partition(name=name, size_mb=size_mb,
+                   size_sectors=size_sectors, start_lba=start_lba)
+    return p
+
+
+def _infer_strict_tos(partitions) -> bool:
+    """Best-effort guess at strict_tos from partition sizes. Strict if
+    slot 0 <= 16 MB and all later partitions <= 256 MB. Only meaningful
+    for AHDI; the caller should still set strict_tos=False on hybrid
+    formats."""
+    for i, p in enumerate(partitions):
+        cap = AHDI_GEM_MAX_MB_STRICT if i == 0 else AHDI_MAX_PARTITION_MB_STRICT
+        if p.size_mb > cap:
+            return False
+    return True
+
+
+def load_image(image_path: str) -> dict:
+    """Parse an existing image and return a planning summary:
+        {
+          "format_id": "AHDI" / "PPDRIVER" / "HDDRIVER",
+          "strict_tos": bool,         # AHDI-only inference
+          "partitions": list[Partition],
+          "strict_tos_inferred": bool, # True iff we guessed
+        }
+    Raises ImageLoadError on unrecognised or corrupt images."""
+    try:
+        image_size = os.path.getsize(image_path)
+    except OSError as e:
+        raise ImageLoadError(f"cannot stat image: {e}") from e
+    if image_size < SECTOR_SIZE:
+        raise ImageLoadError(
+            f"image too small ({image_size} bytes); need at least 512")
+
+    fmt = detect_format(image_path)
+    if fmt is None:
+        raise ImageLoadError(
+            "no recognisable AHDI or MBR partition table at sector 0")
+
+    sec0 = _read_sector_at(image_path, 0, image_size)
+    if fmt == FORMAT_AHDI:
+        partitions = _load_ahdi(image_path, sec0, image_size)
+    elif fmt == FORMAT_HDDRIVER:
+        partitions = _load_mbr(image_path, sec0, image_size,
+                                skip_slot2=True)
+    else:
+        partitions = _load_mbr(image_path, sec0, image_size,
+                                skip_slot2=False)
+
+    if not partitions:
+        raise ImageLoadError(
+            f"recognised {fmt} root sector but no partitions found")
+
+    strict_inferred = (fmt == FORMAT_AHDI)
+    strict_tos = _infer_strict_tos(partitions) if strict_inferred else False
+
+    return {
+        "format_id": fmt,
+        "strict_tos": strict_tos,
+        "strict_tos_inferred": strict_inferred,
+        "partitions": partitions,
+    }
 
 
 def first_partition_start_lba(format_id: str) -> int:
@@ -1180,7 +1746,7 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
     # treated as the boot partition and clamped to the GEM cap (16/32
     # MB) for legacy-driver compatibility -- not a hard TOS rule but a
     # defensive default; see ahdi_partition_id() for the rationale.
-    # Slots 2..N follow the BGM 256/512 MB cap. Hybrid formats have no
+    # Slots 2..N follow the BGM 256/511 MB cap. Hybrid formats have no
     # per-slot distinction.
     if format_id == FORMAT_AHDI:
         mode_label = "TOS < 1.04" if strict_tos else "TOS 1.04+"
@@ -1192,6 +1758,30 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"partition {part.name!r} is {part.size_mb} MB but "
                     f"the {mode_label} {kind} cap at slot {i + 1} is "
                     f"{cap_mb} MB; lower the size or disable strict mode")
+    else:
+        # Hybrid formats (PPDRIVER / HDDRIVER) have a hard min size:
+        # the synthesize step requires tos_bps >= 1024, which the
+        # Hatari sector-doubling rule first reaches at ~32 MB. Catch
+        # it here with a clear message instead of letting the user
+        # hit the cryptic 'tos_bps must be a power of two >= 1024'
+        # later. The hybrid max (511 MB) is enforced via
+        # cap_mb_for_type() at the TUI layer; we don't repeat it
+        # here because the planner accepts any size up to the FAT16
+        # cluster cap and the synthesize layer rejects whatever is
+        # actually unbuildable.
+        for i, part in enumerate(partitions):
+            if part.size_mb < HYBRID_MIN_PARTITION_MB:
+                raise ValueError(
+                    f"partition {part.name!r} is {part.size_mb} MB but "
+                    f"{format_id} requires >= {HYBRID_MIN_PARTITION_MB} "
+                    f"MB per partition (hybrid layout requires logical "
+                    f"sector size >= 1024)")
+            if part.size_mb > HYBRID_MAX_PARTITION_MB:
+                raise ValueError(
+                    f"partition {part.name!r} is {part.size_mb} MB but "
+                    f"{format_id} caps at {HYBRID_MAX_PARTITION_MB} MB "
+                    f"per partition (TOS NSECTS 16-bit limit at "
+                    f"bps=8192)")
 
     # Decide the MBR primary vs. extended-chain split. Partitions with index
     # < primary_count land directly in MBR slots; partitions at index >=
@@ -1252,10 +1842,10 @@ def ahdi_partition_id(partition_mb: int, strict_tos: bool = False,
     *defensive compatibility* choice rather than a hard TOS requirement:
     TOS itself only checks the boot flag (bit 7 of the partition-entry
     flag byte), not the ident; modern drivers (HDDRIVER, PPDRIVER, ICD
-    Pro) happily boot from BGM up to 512 MB. But the original AHDI and
+    Pro) happily boot from BGM up to 511 MB. But the original AHDI and
     early SCSI Tools required ident == GEM and size <= 16 MB on the
     boot slot, so emitting GEM at slot 0 is the broadest-compatibility
-    pick. Removing this clamp would let the user set up a 512 MB BGM
+    pick. Removing this clamp would let the user set up a 511 MB BGM
     boot partition that works on modern drivers but fails on legacy
     ones; revisit if a workflow actually wants that.
 
@@ -1392,6 +1982,12 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                     next_chain_size=next_chain_size,
                 )
             else:
+                # PPDRIVER uses 0x0F (LBA), HDDRIVER uses 0x05 (CHS)
+                # for the next-EBR-link type byte. Match the
+                # container type emitted in the root sector.
+                ext_type = (MBR_TYPE_EXTENDED_CHS
+                            if plan.format_id == FORMAT_HDDRIVER
+                            else MBR_TYPE_EXTENDED_LBA)
                 desc = build_ebr_sector(
                     logical_abs_start=part.start_lba,
                     logical_size=part.size_sectors,
@@ -1399,6 +1995,7 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                     ext_base_abs_lba=chain_base,
                     next_ebr_abs_lba=next_desc_abs,
                     next_chain_size=next_chain_size,
+                    extended_type=ext_type,
                 )
             write_sector(plan.image_path, part.ebr_lba, desc)
 
@@ -1469,7 +2066,7 @@ def ask_tos_compat() -> bool:
     print("TOS < 1.04 was the original TOS shipped with early machines")
     print("(520ST, 1040ST, Mega ST). It caps AHDI partitions tighter:")
     print("   - GEM <= 16 MB   (vs 32 MB on TOS 1.04+)")
-    print("   - BGM <= 256 MB  (vs 512 MB on TOS 1.04+)")
+    print("   - BGM <= 256 MB  (vs 511 MB on TOS 1.04+)")
     return ask_yes_no(
         "Force compatibility with TOS < 1.04 "
         "(original 520ST / 1040ST / Mega ST)?",

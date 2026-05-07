@@ -150,6 +150,35 @@ def _render_body_empty_partitions(state: State, cols: int, height: int) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _display_start_lbas(state: State) -> list:
+    """Return [start_lba_i] for each slot in `state.partitions` for the
+    "Start (LBA)" column.
+
+    `Partition.start_lba` is only populated by `plan_image()` at write
+    time, so partitions added in the dialog show 0 until the user hits
+    W. We mirror plan_image's sequential placement here so the list
+    reflects something useful while the user is still composing.
+
+    Approximate, not authoritative -- we don't account for the EBR/XGM
+    chain overhead that plan_image inserts (a sector or two before each
+    logical when N exceeds the format's primary-slot count). Slots that
+    are None (a hole left by Delete) get 0 and don't advance the
+    cursor, matching plan_image which skips them entirely.
+    """
+    if not state.partitions:
+        return []
+    next_lba = atari_hd.first_partition_start_lba(state.format_id)
+    out = []
+    for part in state.partitions:
+        if part is None:
+            out.append(0)
+            continue
+        out.append(next_lba)
+        size_sectors = (part.size_mb * 1024 * 1024) // 512
+        next_lba += size_sectors
+    return out
+
+
 def _render_body_partitions(state: State, cols: int, height: int) -> str:
     """Image set and partitions present: column header + rows +
     format row. Selection is highlighted with reverse video.
@@ -163,13 +192,16 @@ def _render_body_partitions(state: State, cols: int, height: int) -> str:
     elif state.selected_slot >= scroll + list_rows_visible:
         scroll = state.selected_slot - list_rows_visible + 1
 
+    display_lbas = _display_start_lbas(state)
     lines = [_render_partition_list_header(cols)]
     for i in range(list_rows_visible):
         idx = scroll + i
         if idx < len(state.partitions):
+            lba = display_lbas[idx] if idx < len(display_lbas) else 0
             row = _render_partition_row(state.partitions[idx], idx, cols,
                                         format_id=state.format_id,
-                                        selected=(idx == state.selected_slot))
+                                        selected=(idx == state.selected_slot),
+                                        start_lba_override=lba)
             lines.append(row)
         else:
             lines.append(blank)
@@ -191,10 +223,16 @@ def _render_partition_list_header(cols: int) -> str:
 
 
 def _render_partition_row(part, index: int, cols: int,
-                          format_id: str, selected: bool) -> str:
+                          format_id: str, selected: bool,
+                          start_lba_override=None) -> str:
     """One partition row. `part` may be None (a hole left by Delete);
     set partitions duck-type atari_hd.Partition (.name, .size_mb,
-    .start_lba, .size_sectors)."""
+    .start_lba, .size_sectors).
+
+    `start_lba_override` lets the caller display a sequentially-derived
+    LBA (computed by `_display_start_lbas`) instead of `part.start_lba`,
+    which is only populated by `plan_image()` at write time.
+    """
     if part is None:
         parts = [
             " " * LIST_LEFT_MARGIN,
@@ -208,11 +246,12 @@ def _render_partition_row(part, index: int, cols: int,
             return INVERSE_ON + body + INVERSE_OFF
         return body
     ident = _partition_ident(part, index, format_id)
+    lba = part.start_lba if start_lba_override is None else start_lba_override
     parts = [
         " " * LIST_LEFT_MARGIN,
         f"{index:>{COL_SLOT}}", " " * COL_GAP,
         ident.ljust(COL_TYPE), " " * COL_GAP,
-        f"{part.start_lba:>{COL_START},}", " " * COL_GAP,
+        f"{lba:>{COL_START},}", " " * COL_GAP,
         _format_size(part.size_mb).rjust(COL_SIZE), " " * COL_GAP,
         _truncate_middle(part.name, COL_LABEL).ljust(COL_LABEL),
     ]
@@ -292,7 +331,10 @@ def _render_status_keys(state: State, cols: int) -> str:
     if state.image_path is None:
         line = "N=New   L=Load   Q=Quit"
         return _pad_to(line, cols)
-    items = ["A=Add"]
+    # File actions stay visible even after an image is loaded so the
+    # user can create a fresh plan or load a different file mid-session
+    # without exiting first.
+    items = ["N=New", "L=Load", "A=Add"]
     selected_real = _selected_is_real(state)
     has_real = _has_real_partitions(state)
     cond = [
@@ -350,6 +392,8 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         return f"Overwrite {state.image_path}? (y/N)"
     if state.prompt_mode == PromptMode.CONFIRM_DISCARD_UNSAVED:
         return "Discard unsaved changes? (y/N)"
+    if state.prompt_mode == PromptMode.CONFIRM_DISCARD_BEFORE_LOAD:
+        return "Discard unsaved changes and load? (y/N)"
     if state.status_message:
         return state.status_message
     return ""
@@ -414,7 +458,14 @@ def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
     title = "Add Partition" if d.mode == EditMode.ADD else f"Edit Partition #{d.slot}"
     cap_mb = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
                                        d.type_choice)
-    size_label = f"Size (<= {cap_mb} MB):"
+    min_mb = atari_hd.format_min_partition_mb(state.format_id)
+    if min_mb > 1:
+        # Hybrid formats have a hard 32 MB floor; surface the range
+        # so users don't type a 16 MB hybrid partition and hit the
+        # build-time min-size rejection later.
+        size_label = f"Size ({min_mb}-{cap_mb} MB):"
+    else:
+        size_label = f"Size (<= {cap_mb} MB):"
     size_value = d.size_buffer if d.size_buffer else "_"
     if d.field == EditField.SIZE:
         size_value = INVERSE_ON + size_value.ljust(8) + INVERSE_OFF
@@ -541,15 +592,19 @@ def validate_edit_dialog(state: State):
 
     # Cap depends on the user-chosen type via cap_mb_for_type. For
     # AHDI slot 0 the dialog locks type to GEM, so cap is the GEM
-    # cap; for hybrid formats type is moot and the cap is the FAT16
-    # ceiling.
+    # cap; for hybrid formats type is moot and the cap is the
+    # hybrid TOS-NSECTS ceiling.
     cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
                                     d.type_choice)
+    min_mb = atari_hd.format_min_partition_mb(state.format_id)
+    if size_mb < min_mb:
+        return (f"size below {min_mb} MB minimum for "
+                f"{state.format_id} hybrid layout")
     if size_mb > cap:
         kind = (f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
                 if state.format_id == "AHDI" and d.type_choice == "GEM"
                 else "BGM" if state.format_id == "AHDI"
-                else "FAT16")
+                else f"{state.format_id} hybrid")
         return f"size exceeds {cap} MB cap for {kind}"
 
     # Label validation -- empty is OK (we'll default to a generated

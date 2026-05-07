@@ -45,8 +45,12 @@ class TestPartitionCapMb(unittest.TestCase):
             atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, True, 1), 256)
 
     def test_ahdi_permissive_bgm_cap(self):
+        # 511 MB, not 512: the documented "512 MB BGM" is rounded up.
+        # Real ceiling is NSECTS=65535 at bps=8192 = 511.99 MB. A 512 MB
+        # plan trips the Hatari sector-doubling rule into bps=16384,
+        # which TOS 1.04 - 3.x doesn't support.
         self.assertEqual(
-            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 1), 512)
+            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 1), 511)
 
     def test_ahdi_strict_bgm_cap_holds_for_higher_slots(self):
         # Slots 2..N share the BGM cap with slot 1.
@@ -58,15 +62,18 @@ class TestPartitionCapMb(unittest.TestCase):
 
     def test_hybrid_caps_have_no_per_slot_distinction(self):
         # PPDRIVER / HDDRIVER go through the DOS view, which doesn't care
-        # about TOS BGM limits. Cap is the FAT16 ceiling regardless of
-        # slot or strict flag.
+        # about TOS BGM limits. The cap is the hybrid layout ceiling
+        # (511 MB; TOS NSECTS 16-bit max at bps=8192) regardless of
+        # slot or strict flag. The strict flag is meaningless for
+        # hybrids -- they target TOS 1.04+ exclusively (synthesize
+        # rejects ratio < 2 / tos_bps < 1024).
         for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
             for slot in (0, 1, 5, 13):
                 for strict in (True, False):
                     with self.subTest(format=fmt, slot=slot, strict=strict):
                         self.assertEqual(
                             atari_hd.partition_cap_mb(fmt, strict, slot),
-                            atari_hd.MAX_PARTITION_MB)
+                            atari_hd.HYBRID_MAX_PARTITION_MB)
 
 
 class TestCapMbForType(unittest.TestCase):
@@ -86,7 +93,7 @@ class TestCapMbForType(unittest.TestCase):
                     32)
 
     def test_ahdi_bgm_cap_regardless_of_slot(self):
-        # User picks BGM -> BGM cap (256 strict, 512 perm).
+        # User picks BGM -> BGM cap (256 strict, 511 perm).
         for ident in (b"BGM", "BGM"):
             with self.subTest(ident=ident):
                 self.assertEqual(
@@ -94,28 +101,31 @@ class TestCapMbForType(unittest.TestCase):
                     256)
                 self.assertEqual(
                     atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
-                    512)
+                    511)
 
     def test_unknown_ahdi_ident_falls_back_to_bgm_cap(self):
         # Defensive: anything other than GEM uses the BGM cap.
         self.assertEqual(
             atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, b"XGM"),
-            512)
+            511)
         self.assertEqual(
             atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, None),
-            512)
+            511)
 
     def test_hybrid_ignores_ident(self):
-        # PPDRIVER / HDDRIVER use the FAT16 ceiling regardless.
+        # PPDRIVER / HDDRIVER use the hybrid-layout ceiling regardless
+        # of ident or strict_tos. The cap (511 MB) comes from the TOS
+        # NSECTS 16-bit limit at the maximum supported TOS bps of
+        # 8192 -- not the FAT16 cluster ceiling.
         for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
             for ident in (b"GEM", b"BGM", None, "FAT16"):
                 with self.subTest(format=fmt, ident=ident):
                     self.assertEqual(
                         atari_hd.cap_mb_for_type(fmt, False, ident),
-                        atari_hd.MAX_PARTITION_MB)
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
                     self.assertEqual(
                         atari_hd.cap_mb_for_type(fmt, True, ident),
-                        atari_hd.MAX_PARTITION_MB)
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
 
 
 class TestAhdiPartitionId(unittest.TestCase):
@@ -274,7 +284,7 @@ class TestRejectionPaths(unittest.TestCase):
         self.assertIn("boot (GEM)", msg, msg)
 
     def test_ahdi_permissive_bgm_partition_over_cap(self):
-        # 600 MB > 512 MB permissive BGM cap.
+        # 600 MB > 511 MB permissive BGM cap.
         partitions = [
             atari_hd.Partition(name="BOOT", size_mb=32),
             atari_hd.Partition(name="HUGE", size_mb=600),

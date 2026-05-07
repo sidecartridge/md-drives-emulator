@@ -34,7 +34,10 @@ AHDI_EXISTS_BOOT = 0x81
 
 # MBR partition types
 MBR_TYPE_FAT16 = 0x06
-MBR_TYPE_EXTENDED = 0x0F
+MBR_TYPE_EXTENDED_LBA = 0x0F   # PPDRIVER's container marker
+MBR_TYPE_EXTENDED_CHS = 0x05   # HDDRIVER's container marker
+# Backward-compat alias used by the PPDRIVER-side tests in this module.
+MBR_TYPE_EXTENDED = MBR_TYPE_EXTENDED_LBA
 
 
 def _make_partition(name, size_mb, size_sectors, start_lba,
@@ -376,8 +379,11 @@ class TestHddriverRoot(unittest.TestCase):
         mbr = parse_mbr_root(sec)
 
         # P0 unchanged, P1 = extended container.
+        # HDDRIVER uses CHS-extended FAT16B (0x05), NOT the LBA variant
+        # PPDRIVER uses (0x0F) -- per the Atari Compendium, this byte
+        # mirrors what real HDDRIVER images ship with.
         self.assertEqual(mbr["slots"][0]["part_type"], MBR_TYPE_FAT16)
-        self.assertEqual(mbr["slots"][1]["part_type"], MBR_TYPE_EXTENDED)
+        self.assertEqual(mbr["slots"][1]["part_type"], MBR_TYPE_EXTENDED_CHS)
         self.assertEqual(mbr["slots"][1]["rel_start_lba"], log0.ebr_lba)
         self.assertEqual(mbr["slots"][1]["sector_count"],
                          (log0.start_lba + log0.size_sectors) - log0.ebr_lba)
