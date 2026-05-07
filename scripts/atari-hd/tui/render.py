@@ -158,16 +158,24 @@ def _display_start_lbas(state: State) -> list:
     """Return [start_lba_i] for each slot in `state.partitions` for the
     "Start (LBA)" column.
 
-    `Partition.start_lba` is only populated by `plan_image()` at write
-    time, so partitions added in the dialog show 0 until the user hits
-    W. We mirror plan_image's sequential placement here so the list
-    reflects something useful while the user is still composing.
+    Two cases:
 
-    Approximate, not authoritative -- we don't account for the EBR/XGM
-    chain overhead that plan_image inserts (a sector or two before each
-    logical when N exceeds the format's primary-slot count). Slots that
-    are None (a hole left by Delete) get 0 and don't advance the
-    cursor, matching plan_image which skips them entirely.
+    1. `Partition.start_lba` is already populated -- e.g. the plan
+       came from `load_image()` so each partition carries its real
+       on-disk LBA. Use it verbatim. This is the only way to display
+       the correct data-start LBA for chain logicals: the cumulative
+       sum below would land on the EBR sector itself (start_of_data
+       minus 1) because it doesn't account for EBR / XGM chain
+       overhead.
+
+    2. `start_lba == 0` -- the partition was added in the dialog and
+       hasn't been planned yet. Fall back to a sequential approximation
+       so the list reflects something useful while composing. Still
+       approximate (no chain overhead), but plan_image rewrites
+       start_lba on write, so the discrepancy resolves itself.
+
+    Slots that are None (a hole left by Delete) get 0 and don't
+    advance the cursor, matching plan_image which skips them entirely.
     """
     if not state.partitions:
         return []
@@ -176,6 +184,11 @@ def _display_start_lbas(state: State) -> list:
     for part in state.partitions:
         if part is None:
             out.append(0)
+            continue
+        if part.start_lba > 0:
+            out.append(part.start_lba)
+            next_lba = part.start_lba + (part.size_sectors
+                                          or (part.size_mb * 1024 * 1024) // 512)
             continue
         out.append(next_lba)
         size_sectors = (part.size_mb * 1024 * 1024) // 512
