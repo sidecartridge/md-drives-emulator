@@ -687,11 +687,15 @@ FAT16_EXTENDED_BOOT_SIG = 0x29
 FAT16_DRIVE_NUMBER = 0x80
 FAT16_VOLUME_LABEL_ATTR = 0x08
 
-# Boot-code stub fill: HLT (0xF4). mkfs.vfat ships its own x86 stub that
-# prints "Non-system disk"; we never boot x86 from these images, so a
-# one-byte HLT pattern is fine. The byte-parity harness in epic-001 /
-# story 003 may mask this region if mkfs.vfat drift is observed.
-FAT16_BOOT_CODE_FILL = 0xF4
+# Boot-code stub fill. Real PPDRIVER PPTOSDOS images zero this region
+# (verified by byte-level diff of /Volumes/SIDECART/1GB-RAWDUMP.img
+# against ours); using 0xF4 (HLT) here was an arbitrary historical
+# choice that confused real-driver detection of the PPDRIVER format
+# on the user's hardware. Switching to 0x00 universally so all output
+# matches real PPDRIVER's "minimal BPB + zero pad + 0x55AA" layout in
+# this region. AHDI / HDDRIVER are unaffected -- neither boots x86
+# code from this region; the byte-parity harness already masks it.
+FAT16_BOOT_CODE_FILL = 0x00
 
 # Boot-sector field offsets not covered by the BPB_* constants above.
 FAT16_BS_MEDIA_OFFSET = 0x15
@@ -829,9 +833,20 @@ def _fat16_validate_and_compute_spfat(partition_sectors_512: int,
 def _fat16_build_boot_sector(sector_size: int, sectors_per_cluster: int,
                              reserved_sectors: int, spfat: int,
                              total_sectors_logical: int, label: bytes,
-                             volume_id: int) -> bytes:
+                             volume_id: int,
+                             strip_ebpb: bool = False) -> bytes:
     """Assemble the 512-byte FAT16 boot sector. When sector_size > 512 the
-    rest of logical sector 0 is zero-filled separately by the caller."""
+    rest of logical sector 0 is zero-filled separately by the caller.
+
+    `strip_ebpb=True` zeroes the EBPB tail (bytes 24..62: spt, heads,
+    drive_number, boot_sig, volume_id, volume_label, fs_type) so the
+    output matches real PPDRIVER's minimal-BPB layout. mkfs.vfat-style
+    images keep the full EBPB (default False); hybrid images
+    (PPDRIVER / HDDRIVER) need the strip because real PPDRIVER's
+    setup tool produces a stripped BPB and the user's driver detects
+    the format by inspecting that region. The volume label is still
+    available via the FAT16 root-directory volume-label entry, which
+    is unaffected by this strip."""
     bs = bytearray(SECTOR_SIZE)
     bs[0:3] = b"\xEB\x3C\x90"  # jmp 0x3E ; nop
     bs[BPB_OEM_OFFSET:BPB_OEM_OFFSET + BPB_OEM_LENGTH] = FAT16_OEM_NAME
@@ -851,19 +866,24 @@ def _fat16_build_boot_sector(sector_size: int, sectors_per_cluster: int,
                          total_sectors_logical)
     bs[FAT16_BS_MEDIA_OFFSET] = FAT16_MEDIA_DESCRIPTOR
     struct.pack_into("<H", bs, BPB_SEC_PER_FAT_OFFSET, spfat)
-    struct.pack_into("<H", bs, FAT16_BS_SPT_OFFSET, FAT16_SECTORS_PER_TRACK)
-    struct.pack_into("<H", bs, FAT16_BS_HEADS_OFFSET, FAT16_NUM_HEADS)
-    # FAT16_BS_HIDDEN_OFFSET stays at 0; partition offset lives in the
-    # caller's partition table, not in this BPB.
 
-    bs[FAT16_BS_DRIVE_OFFSET] = FAT16_DRIVE_NUMBER
-    bs[FAT16_BS_RESERVED1_OFFSET] = 0
-    bs[FAT16_BS_BOOTSIG_OFFSET] = FAT16_EXTENDED_BOOT_SIG
-    struct.pack_into("<I", bs, FAT16_BS_VOLID_OFFSET,
-                     volume_id & 0xFFFFFFFF)
-    bs[FAT16_BS_LABEL_OFFSET:FAT16_BS_LABEL_OFFSET + 11] = \
-        label.ljust(11, b" ")
-    bs[FAT16_BS_FSTYPE_OFFSET:FAT16_BS_FSTYPE_OFFSET + 8] = FAT16_FS_TYPE
+    if not strip_ebpb:
+        struct.pack_into("<H", bs, FAT16_BS_SPT_OFFSET,
+                         FAT16_SECTORS_PER_TRACK)
+        struct.pack_into("<H", bs, FAT16_BS_HEADS_OFFSET, FAT16_NUM_HEADS)
+        # FAT16_BS_HIDDEN_OFFSET stays at 0; partition offset lives in the
+        # caller's partition table, not in this BPB.
+
+        bs[FAT16_BS_DRIVE_OFFSET] = FAT16_DRIVE_NUMBER
+        bs[FAT16_BS_RESERVED1_OFFSET] = 0
+        bs[FAT16_BS_BOOTSIG_OFFSET] = FAT16_EXTENDED_BOOT_SIG
+        struct.pack_into("<I", bs, FAT16_BS_VOLID_OFFSET,
+                         volume_id & 0xFFFFFFFF)
+        bs[FAT16_BS_LABEL_OFFSET:FAT16_BS_LABEL_OFFSET + 11] = \
+            label.ljust(11, b" ")
+        bs[FAT16_BS_FSTYPE_OFFSET:FAT16_BS_FSTYPE_OFFSET + 8] = FAT16_FS_TYPE
+    # When strip_ebpb is True, bytes 24..62 stay at their bytearray
+    # default (zero) -- matching real PPDRIVER exactly.
 
     bs[FAT16_BS_BOOTCODE_OFFSET:FAT16_BS_SIGNATURE_OFFSET] = \
         bytes((FAT16_BOOT_CODE_FILL,)) * \
@@ -902,7 +922,8 @@ def format_fat16(out_path: str,
                  sectors_per_cluster: int,
                  reserved_sectors: int,
                  label: str,
-                 disable_fat_align: bool) -> None:
+                 disable_fat_align: bool,
+                 strip_ebpb: bool = False) -> None:
     """Write a freshly formatted, empty FAT16 image to `out_path`.
 
     Reproduces the on-disk layout that mkfs.vfat -F 16 produces for the
@@ -941,6 +962,7 @@ def format_fat16(out_path: str,
         total_sectors_logical=total_sectors_logical,
         label=label_bytes,
         volume_id=volume_id,
+        strip_ebpb=strip_ebpb,
     )
 
     # First sector of each FAT: F8 FF FF FF (FAT[0]=media descriptor,
@@ -993,7 +1015,8 @@ def format_fat16(out_path: str,
 def run_mkfs(out_path: str,
              partition_sectors_512: int, sector_size: int,
              sectors_per_cluster: int, reserved_sectors: int,
-             label: str, disable_fat_align: bool) -> None:
+             label: str, disable_fat_align: bool,
+             strip_ebpb: bool = False) -> None:
     """Thin wrapper around format_fat16(). Kept as a separate entry point
     so future callers can interpose logging / retries / metrics without
     touching every call site."""
@@ -1005,6 +1028,7 @@ def run_mkfs(out_path: str,
         reserved_sectors=reserved_sectors,
         label=label,
         disable_fat_align=disable_fat_align,
+        strip_ebpb=strip_ebpb,
     )
 
 
@@ -2194,6 +2218,11 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                 reserved_sectors=part.dos_res,
                 label=part.name,
                 disable_fat_align=(plan.format_id != FORMAT_AHDI),
+                # Hybrid formats need a stripped EBPB to match real
+                # PPDRIVER / HDDRIVER bytes; AHDI keeps the standard
+                # full EBPB (real HDDRIVER pure-AHDI images carry it
+                # too -- e.g. /Volumes/TESTDEV/Atari4gb.vhd).
+                strip_ebpb=(plan.format_id != FORMAT_AHDI),
             )
             partition_offset_bytes = part.start_lba * SECTOR_SIZE
             copy_file_into_image(tmp_path, plan.image_path,
