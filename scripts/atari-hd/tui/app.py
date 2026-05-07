@@ -976,11 +976,18 @@ def _do_write(state: State) -> State:
         tmp.close()
 
         # Fresh Partition objects so plan_image's mutations
-        # (size_sectors / start_lba / etc.) don't leak back into our
-        # in-memory list.
+        # (size_sectors / start_lba / ebr_lba) don't leak back into our
+        # in-memory list. CRITICAL: is_extended must be carried over --
+        # it's the source of truth for the hybrid layout role and
+        # plan_image's validation rejects partitions whose size exceeds
+        # the wrong cap if we forget it (a >255 MB partition copied
+        # without is_extended=True would be planned as a primary and
+        # rejected at the 255 MB cap).
         plan_partitions = []
         for src in real_partitions:
-            new = atari_hd.Partition(name=src.name, size_mb=src.size_mb)
+            new = atari_hd.Partition(
+                name=src.name, size_mb=src.size_mb,
+                is_extended=getattr(src, "is_extended", False))
             # Preserve the user's explicit ident so XGM-chain logicals
             # render the right type if the user picked one. (Currently
             # ahdi_partition_id ignores this for XGM logicals; a
