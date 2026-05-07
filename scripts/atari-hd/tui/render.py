@@ -338,10 +338,12 @@ def _partition_ident(part, index: int, format_id: str) -> str:
 
     For PPDRIVER / HDDRIVER: every partition is FAT16 in the MBR table.
 
-    A trailing "+" marks chain logicals (those whose ebr_lba > 0 --
-    set by load_image / plan_image when the partition lives inside an
-    EBR chain on hybrid formats or an XGM chain on AHDI). Bare idents
-    mean the partition occupies a primary slot.
+    A trailing "+" marks chain logicals -- partitions whose
+    is_extended is True (the user-side source of truth). ebr_lba is
+    the on-disk projection and is 0 right after load_image's
+    auto-migration flips a primary's is_extended to True; keying on
+    is_extended keeps the display honest in that intermediate state.
+    Bare idents mean the partition occupies a primary slot.
     """
     explicit = getattr(part, "ahdi_ident", None)
     if explicit is not None:
@@ -351,7 +353,7 @@ def _partition_ident(part, index: int, format_id: str) -> str:
         ident = "GEM" if part.size_mb <= atari_hd.AHDI_GEM_MAX_MB else "BGM"
     else:
         ident = "FAT16"
-    if getattr(part, "ebr_lba", 0):
+    if getattr(part, "is_extended", False) or getattr(part, "ebr_lba", 0):
         ident += "+"
     return ident
 

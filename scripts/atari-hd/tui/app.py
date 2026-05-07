@@ -516,10 +516,9 @@ def _find_violator_slots(state: State, candidate_format: str,
     exceed the candidate format's per-type cap. Empty list means the
     format change is cap-safe."""
     violators = []
-    # Compute primary_count under the candidate layout so the
-    # primary-vs-logical decision honours the format we're switching to,
-    # not the current state.format_id. AHDI's cap path doesn't consult
-    # primary_count, so a wrong value there is harmless.
+    is_hybrid = candidate_format in ("PPDRIVER", "HDDRIVER")
+    # AHDI's cap_mb_for_type still consults primary_count for slot 0
+    # vs. >=1 ident routing; hybrid uses per-partition is_extended.
     n = sum(1 for p in state.partitions if p is not None) or 1
     if n > MAX_PARTITIONS:
         n = MAX_PARTITIONS
@@ -528,10 +527,15 @@ def _find_violator_slots(state: State, candidate_format: str,
     for i, part in enumerate(state.partitions):
         if part is None:
             continue
-        ident = _effective_ident(state, i, part, candidate_format)
-        cap = atari_hd.cap_mb_for_type(candidate_format, candidate_strict,
-                                        ident, slot_index=i,
-                                        primary_count=candidate_primary)
+        if is_hybrid:
+            cap = (atari_hd.HYBRID_PRIMARY_MAX_MB
+                   if not part.is_extended
+                   else atari_hd.HYBRID_MAX_PARTITION_MB)
+        else:
+            ident = _effective_ident(state, i, part, candidate_format)
+            cap = atari_hd.cap_mb_for_type(candidate_format, candidate_strict,
+                                            ident, slot_index=i,
+                                            primary_count=candidate_primary)
         if part.size_mb > cap:
             violators.append(i)
     return violators
@@ -908,15 +912,26 @@ def _preflight_check(state: State):
         return "no partitions to write"
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
     primary_count = _primary_count_for_state(state)
+    is_hybrid = state.format_id in ("PPDRIVER", "HDDRIVER")
     for i, part in enumerate(real):
         if part.size_mb < min_mb:
             return (f"partition {part.name!r} ({part.size_mb} MB) is "
                     f"below the {min_mb} MB minimum for "
                     f"{state.format_id}")
-        ident = _effective_ident(state, i, part, state.format_id)
-        cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                        ident, slot_index=i,
-                                        primary_count=primary_count)
+        if is_hybrid:
+            # Hybrid caps follow the per-partition is_extended flag,
+            # not the slot index. After load_image's auto-migration,
+            # an oversize-on-disk primary may have is_extended=True
+            # even though it lives at a low slot index; using
+            # slot_index/primary_count would mis-cap it as a primary
+            # and reject the write.
+            cap = (atari_hd.HYBRID_PRIMARY_MAX_MB if not part.is_extended
+                   else atari_hd.HYBRID_MAX_PARTITION_MB)
+        else:
+            ident = _effective_ident(state, i, part, state.format_id)
+            cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+                                            ident, slot_index=i,
+                                            primary_count=primary_count)
         if part.size_mb > cap:
             return (f"partition {part.name!r} ({part.size_mb} MB) "
                     f"exceeds {cap} MB cap")
