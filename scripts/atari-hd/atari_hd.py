@@ -2751,6 +2751,9 @@ def print_summary(plan: ImagePlan) -> None:
     if plan.format_id == FORMAT_AHDI:
         mode = "TOS < 1.04 (strict)" if plan.strict_tos else "TOS 1.04+"
         print(f"  TOS compat : {mode}")
+        if plan.ahdi_driver_path:
+            print(f"  Bootable   : yes (driver: "
+                  f"{plan.ahdi_driver_path})")
     print(f"  Image size : {plan.image_mb} MB "
           f"({plan.image_sectors} x 512-byte sectors)")
     print(f"  Partitions : {len(plan.partitions)}")
@@ -2855,11 +2858,39 @@ def prompt_partitions(format_id: str, image_mb: int,
     return partitions
 
 
-def main() -> int:
+def _validate_ahdi_driver(path: str) -> Optional[str]:
+    """Sanity-check the user's --ahdi-driver argument before any prompt
+    interaction. Returns an error message (string) on failure or None
+    on success."""
+    if not os.path.exists(path):
+        return f"--ahdi-driver path does not exist: {path!r}"
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(2)
+    except OSError as e:
+        return f"--ahdi-driver path is unreadable: {path!r} ({e})"
+    if magic != b"\x60\x1a":
+        return (f"--ahdi-driver {path!r} doesn't start with the Atari "
+                f".PRG magic 0x601A (got 0x{magic.hex()}). Run "
+                f"tools/check_icd_driver.py to validate.")
+    return None
+
+
+def main(ahdi_driver_path: Optional[str] = None) -> int:
     print("SidecarTridge Atari HD image builder")
 
+    if ahdi_driver_path:
+        # Bootable AHDI implies the format choice; skip the prompt.
+        format_id = FORMAT_AHDI
+        print(f"Format     : AHDI (bootable; embedding "
+              f"{os.path.basename(ahdi_driver_path)})")
+    else:
+        pass  # format chosen below after the filename prompt
+
     image_path = ask_filename()
-    format_id = ask_format()
+
+    if not ahdi_driver_path:
+        format_id = ask_format()
 
     # TOS compatibility only matters for AHDI (the hybrid formats route
     # through the DOS view which doesn't care about TOS BGM limits).
@@ -2874,7 +2905,8 @@ def main() -> int:
     partitions = prompt_partitions(format_id, image_mb, strict_tos)
 
     plan = plan_image(format_id, image_path, image_mb, partitions,
-                      strict_tos=strict_tos)
+                      strict_tos=strict_tos,
+                      ahdi_driver_path=ahdi_driver_path)
     print_summary(plan)
     if not ask_yes_no("Proceed with image creation?", default=True):
         print("Aborted.")
@@ -2920,6 +2952,16 @@ def _parse_args(argv=None):
     g.add_argument(
         "--no-tui", action="store_true",
         help="Force the linear prompt flow even on a TTY.")
+    p.add_argument(
+        "--ahdi-driver", metavar="PATH", default=None,
+        help=("Make a self-bootable AHDI image. PATH must point to a "
+              "user-supplied AHDI driver binary (e.g. ICDBOOT.PRG from "
+              "ICD Pro 6.5.5 -- run tools/check_icd_driver.py against "
+              "it first to confirm the .PRG magic and SHA-256). The "
+              "driver is embedded as /ICDBOOT.SYS at FAT cluster 2 of "
+              "the boot partition and ICD's IPL is stamped at sector "
+              "0. Implies AHDI format and forces prompt mode (TUI "
+              "doesn't currently surface this option)."))
     return p.parse_args(argv)
 
 
@@ -2928,9 +2970,15 @@ def _should_use_tui(args) -> bool:
     require *both* stdin and stdout to be TTYs (the TUI has nothing to
     draw on a redirected stdout, and read_key() would spin on a
     redirected stdin)."""
+    # --ahdi-driver carries options the TUI can't currently set, so
+    # force prompt mode whenever it's supplied. The user can still pass
+    # --tui explicitly to override (no-op for now -- TUI ignores the
+    # driver path until story 011's TUI follow-up lands).
     if args.tui:
         return True
     if args.no_tui:
+        return False
+    if args.ahdi_driver:
         return False
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -2947,6 +2995,15 @@ def _run_tui() -> int:
 
 if __name__ == "__main__":
     args = _parse_args()
+    if args.ahdi_driver:
+        err = _validate_ahdi_driver(args.ahdi_driver)
+        if err:
+            sys.stderr.write(f"ERROR: {err}\n")
+            sys.exit(1)
     if _should_use_tui(args):
+        if args.ahdi_driver:
+            sys.stderr.write(
+                "WARNING: --ahdi-driver is currently only honored in "
+                "prompt mode; pass --no-tui (or unset --tui) to use it.\n")
         sys.exit(_run_tui())
-    sys.exit(main())
+    sys.exit(main(ahdi_driver_path=args.ahdi_driver))
