@@ -1713,13 +1713,61 @@ def load_image(image_path: str) -> dict:
     strict_inferred = (fmt == FORMAT_AHDI)
     strict_tos = _infer_strict_tos(partitions) if strict_inferred else False
 
+    extra_warnings = []
+    if fmt in (FORMAT_PPDRIVER, FORMAT_HDDRIVER):
+        extra_warnings.extend(_migrate_legacy_layout(partitions, fmt))
+
     return {
         "format_id": fmt,
         "strict_tos": strict_tos,
         "strict_tos_inferred": strict_inferred,
         "partitions": partitions,
-        "warnings": image_load_warnings(image_path, sec0, partitions, fmt),
+        "warnings": (image_load_warnings(image_path, sec0, partitions, fmt)
+                     + extra_warnings),
     }
+
+
+def _migrate_legacy_layout(partitions, format_id) -> list:
+    """In-place auto-migration of partitions loaded from images built
+    with the prior N-driven layout (where 1..4 partitions on PPDRIVER
+    were all primaries regardless of size). The new per-partition rule
+    caps primaries at HYBRID_PRIMARY_MAX_MB; any on-disk primary above
+    that ceiling can't be re-saved as a primary, so we flip its
+    is_extended flag. To preserve the "primaries must come before
+    extendeds" invariant, every partition that follows the first
+    flipped slot is also marked extended (otherwise re-saving would
+    fail validation with a "primary after extended" error).
+
+    HDDRIVER's primary cap of 1 (slot 0 only) means slots >= 1 also
+    must be extended even when their size <= 255 MB; the same loop
+    catches that by treating "extra primaries" exactly like "oversize
+    primaries" -- both end up forced to extended.
+
+    Returns a list of human-readable warnings the caller can surface
+    in the TUI status bar."""
+    warnings = []
+    seen_extended = False
+    primary_count = 0
+    max_primaries = MAX_PRIMARY_PARTITIONS[format_id]
+    for i, p in enumerate(partitions):
+        if p.is_extended:
+            seen_extended = True
+            continue
+        oversize = p.size_mb > HYBRID_PRIMARY_MAX_MB
+        too_many = primary_count >= max_primaries
+        if seen_extended or oversize or too_many:
+            p.is_extended = True
+            seen_extended = True
+            reason = ("size > 255 MB" if oversize
+                      else "exceeds primary cap" if too_many
+                      else "follows extended")
+            warnings.append(
+                f"slot {i} ({p.name!r}, {p.size_mb} MB): "
+                f"auto-flipped to extended ({reason}); "
+                "re-saving will move it into the extended chain")
+        else:
+            primary_count += 1
+    return warnings
 
 
 def first_partition_start_lba(format_id: str) -> int:

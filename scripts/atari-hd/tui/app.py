@@ -716,7 +716,15 @@ def _commit_edit_dialog(state: State) -> State:
         part.name = label
         part.size_mb = size_mb
         part.is_extended = is_extended
-    part.ahdi_ident = ident
+    # ahdi_ident is an AHDI-table concept (GEM / BGM / XGM); it has no
+    # meaning on hybrid formats whose MBR-side identity is type 0x06
+    # FAT16. Setting it on a PPDRIVER / HDDRIVER partition would
+    # confuse _partition_ident's display logic into showing "GEM" /
+    # "BGM" in the Type column instead of "FAT16".
+    if state.format_id == "AHDI":
+        part.ahdi_ident = ident
+    else:
+        part.ahdi_ident = None
 
     # Place the partition in its slot. For ADD, slot might be a hole
     # (existing None entry) or len(partitions) (append).
