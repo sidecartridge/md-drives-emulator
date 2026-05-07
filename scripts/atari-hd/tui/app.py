@@ -688,7 +688,6 @@ def _commit_edit_dialog(state: State) -> State:
         return state
     d = state.edit_dialog
     size_mb = int(d.size_buffer)
-    label = d.label_buffer or _default_label(state, d.slot)
     # Force GEM on AHDI slot 0 regardless of d.type_choice (defensive).
     ident = ("GEM" if state.format_id == "AHDI" and d.slot == 0
              else d.type_choice)
@@ -707,6 +706,10 @@ def _commit_edit_dialog(state: State) -> State:
         is_extended = (d.kind_choice == "extended")
     else:
         is_extended = False  # AHDI; plan_image overrides per N
+
+    # Default label uses the resolved Kind: 'P' prefix for primaries,
+    # 'E' for extendeds. AHDI slot 0 stays 'BOOT'.
+    label = d.label_buffer or _default_label(state, d.slot, is_extended)
 
     if d.mode == EditMode.ADD:
         part = atari_hd.Partition(name=label, size_mb=size_mb,
@@ -740,13 +743,15 @@ def _commit_edit_dialog(state: State) -> State:
     return state
 
 
-def _default_label(state: State, slot: int) -> str:
-    # First slot is the boot partition by AHDI convention; pick a
-    # readable default. Other slots get "P<N+1>" so the user doesn't
-    # have to type one.
+def _default_label(state: State, slot: int, is_extended: bool = False) -> str:
+    # First slot on AHDI is the boot partition; pick a readable
+    # default. Other slots get a prefix that reflects the partition's
+    # role -- "P<N+1>" for primaries, "E<N+1>" for extendeds -- so a
+    # mixed PPDRIVER layout reads cleanly: BOOT (or P1), E2, E3, ...
     if slot == 0 and state.format_id == "AHDI":
         return "BOOT"
-    return f"P{slot + 1}"
+    prefix = "E" if is_extended else "P"
+    return f"{prefix}{slot + 1}"
 
 
 # -------------------------------------------------------------------

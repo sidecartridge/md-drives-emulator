@@ -1570,7 +1570,12 @@ def _partition_from_entry(image_path: str, image_size: int, entry: dict,
     regardless of format."""
     size_sec = entry["size_sectors"]
     size_mb = (size_sec * SECTOR_SIZE) // MIB
-    default = f"P{slot_index + 1}"
+    # Default name reflects the slot's role: primaries get "P<N+1>",
+    # extended/chain logicals get "E<N+1>". Matches the TUI dialog's
+    # _default_label so a partition that arrived without a BPB label
+    # comes back with the same name shape it would have if the user
+    # had created it freshly.
+    default = f"{'E' if ebr_lba else 'P'}{slot_index + 1}"
     name = _label_from_bpb(image_path, entry["start_lba"], image_size,
                             default=default)
     p = Partition(name=name, size_mb=size_mb,
@@ -1597,7 +1602,7 @@ def _partition_from_mbr(image_path: str, image_size: int,
     can put primaries back at MBR slots and logicals back in the
     extended chain."""
     size_mb = (size_sectors * SECTOR_SIZE) // MIB
-    default = f"P{slot_index + 1}"
+    default = f"{'E' if ebr_lba else 'P'}{slot_index + 1}"
     name = _label_from_bpb(image_path, start_lba, image_size,
                             default=default)
     p = Partition(name=name, size_mb=size_mb,
