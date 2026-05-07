@@ -81,7 +81,7 @@ partitions more tightly than TOS 1.04+:
 
 | Mode | GEM cap (boot + small partitions) | BGM cap (big partitions) |
 |------|:--------------------------------:|:-----------------------:|
-| TOS 1.04+ (default) | 32 MB | 511 MB |
+| TOS 1.04+ (default) | 31 MB | 511 MB |
 | TOS < 1.04 (strict) | 16 MB | 256 MB |
 
 The "512 MB" figure quoted in much of the AHDI literature is rounded
@@ -94,7 +94,7 @@ Say yes to the compat prompt if you're writing an image for a 520ST /
 the default. The choice:
 
 - **Forces partition 1 to be a GEM entry**, capped at the GEM size
-  (16 or 32 MB). This is a defensive compatibility default for the
+  (16 or 31 MB). This is a defensive compatibility default for the
   legacy boot path — original AHDI and early SCSI Tools required GEM
   on the boot slot. TOS itself only checks the boot flag, and modern
   drivers (HDDRIVER, PPDRIVER, ICD Pro) accept BGM boot up to 511 MB,

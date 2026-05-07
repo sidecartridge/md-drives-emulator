@@ -67,10 +67,19 @@ MIN_PARTITION_MB = 2
 AHDI_MAX_PARTITION_MB_STRICT = 256   # TOS < 1.04 BGM cap
 AHDI_MAX_PARTITION_MB = 511          # TOS 1.04+ BGM cap (was 512; off by one)
 
-# Threshold for AHDI's GEM vs. BGM partition-id choice. <= threshold uses
-# "GEM" (small partition); above uses "BGM" (big).
+# GEM partition cap. AHDI 3.0 / Atari Compendium: ident=GEM strictly
+# implies bps=512; ident=BGM strictly implies bps>512. The cap is the
+# largest size that choose_logical_sector_size keeps at bps=512:
+# clusters at spc=2 must stay <= 32765, so sec_512 <= 65530, i.e.
+# <= 31.99 MB rounded down to 31. The literature commonly quotes
+# "32 MB GEM" but a 32 MB partition lands at bps=1024 by the Hatari
+# doubling rule, which makes it a BGM (mismatching the GEM ident).
+# Mixing ident=GEM with bps>512 is malformed; AHDI / SCSI Tools and
+# similar legacy drivers may corrupt past the first 32 MB of physical
+# sectors. Validated against the Atari Compendium notebook (see
+# CLAUDE.md).
 AHDI_GEM_MAX_MB_STRICT = 16          # TOS < 1.04 GEM cap
-AHDI_GEM_MAX_MB = 32                 # TOS 1.04+ GEM cap
+AHDI_GEM_MAX_MB = 31                 # TOS 1.04+ GEM cap (was 32; off by one)
 
 # Caps for the PPDRIVER / HDDRIVER dual-BPB hybrid layout. Both ends
 # come from the TOS-side BPB, NOT the DOS view:
@@ -334,8 +343,7 @@ def build_root_sector_ahdi(plan: "ImagePlan") -> bytes:
         part = plan.partitions[i]
         flag = AHDI_FLAG_EXISTENT | (AHDI_FLAG_BOOTABLE if i == 0 else 0)
         write_ahdi_entry(buf, ahdi_offsets[i], flag,
-                         ahdi_partition_id(part.size_mb, plan.strict_tos,
-                                           is_first=(i == 0)),
+                         ahdi_partition_id(part.size_mb),
                          part.start_lba, part.size_sectors)
 
     if plan.has_extended:
@@ -1082,14 +1090,16 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
     """Per-slot partition-size cap.
 
     On AHDI we conservatively treat the first partition as the boot
-    partition and clamp it to the GEM cap (16 MB strict / 32 MB
+    partition and clamp it to the GEM cap (16 MB strict / 31 MB
     permissive) for legacy-driver compatibility. This is *not* a TOS
     rule per se -- TOS itself only checks the boot flag, and modern
     drivers boot from BGM up to 511 MB -- but the original AHDI and
-    early SCSI Tools required the GEM clamp, so we keep it. See
-    ahdi_partition_id() for the full rationale. Slots 2..N can be GEM
-    (within the same threshold) or BGM (up to 256/511). Hybrid formats
-    have no per-slot distinction."""
+    early SCSI Tools required the GEM clamp, so we keep it. The cap
+    also keeps slot 0 in the bps=512 region (where ident=GEM is
+    correct) -- ident strictly follows bps in ahdi_partition_id(),
+    so a slot-0 partition above this cap would mismatch its BPB.
+    Slots 2..N can be GEM (within the same cap) or BGM (up to
+    256/511). Hybrid formats have no per-slot distinction."""
     if format_id == FORMAT_AHDI and partition_index == 0:
         return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
     return format_max_partition_mb(format_id, strict_tos)
@@ -1845,35 +1855,40 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
     return plan
 
 
-def ahdi_partition_id(partition_mb: int, strict_tos: bool = False,
-                      is_first: bool = False) -> bytes:
-    """Pick the AHDI partition-id bytes for a partition of `partition_mb` MB.
+def ahdi_partition_id(partition_mb: int) -> bytes:
+    """Pick the AHDI partition ident strictly from the partition's
+    logical sector size (which choose_logical_sector_size derives from
+    its 512-byte sector count).
 
-    `is_first=True` forces b"GEM" regardless of size. This is a
-    *defensive compatibility* choice rather than a hard TOS requirement:
-    TOS itself only checks the boot flag (bit 7 of the partition-entry
-    flag byte), not the ident; modern drivers (HDDRIVER, PPDRIVER, ICD
-    Pro) happily boot from BGM up to 511 MB. But the original AHDI and
-    early SCSI Tools required ident == GEM and size <= 16 MB on the
-    boot slot, so emitting GEM at slot 0 is the broadest-compatibility
-    pick. Removing this clamp would let the user set up a 511 MB BGM
-    boot partition that works on modern drivers but fails on legacy
-    ones; revisit if a workflow actually wants that.
+    Per AHDI 3.0 / the Atari Compendium (validated against the
+    Compendium notebook -- see CLAUDE.md):
+      - GEM is the small-partition ident: bps == 512.
+      - BGM (Big GEM) is the large-sector ident: bps > 512.
+      - Mixing the two -- ident=GEM with bps>512, or ident=BGM with
+        bps=512 -- is technically malformed. Legacy drivers (original
+        AHDI, SCSI Tools) may refuse to mount or corrupt data past
+        the first 32 MB of physical sectors when they see ident=GEM
+        but the BPB reports bps>512.
 
-    Later partitions use the usual threshold: GEM when partition_mb is
-    <= the TOS-version GEM cap, BGM otherwise. Note that the underlying
-    distinction is sector-size driven (GEM = bps 512, BGM = bps > 512);
-    the size threshold is what causes choose_logical_sector_size() to
-    flip bps, so size and ident move together.
+    The choose_logical_sector_size() doubling rule keeps bps=512 only
+    while clusters_at_spc2 <= 32765, i.e. partition_sec_512 <= 65530
+    (~31.99 MB). At 32 MB it doubles to bps=1024. So:
+      - <= 31 MB: bps=512, ident=GEM
+      - >= 32 MB: bps>=1024, ident=BGM
 
-    The GEM/BGM threshold differs between TOS versions: original TOS
-    (< 1.04) accepts GEM only up to 16 MB, while TOS 1.04+ extends that
-    to 32 MB. `strict_tos=True` requests the conservative pre-1.04
-    rule."""
-    if is_first:
-        return b"GEM"
-    threshold = AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
-    return b"GEM" if partition_mb <= threshold else b"BGM"
+    Earlier revisions of this function accepted an `is_first` flag
+    that forced b"GEM" at slot 0 regardless of size. That force is
+    gone -- the GEM-on-slot-0 invariant for legacy-driver boot
+    compatibility is preserved by capping slot 0 at AHDI_GEM_MAX_MB
+    (31 MB permissive / 16 MB strict) via partition_cap_mb(), so any
+    partition that lands at slot 0 naturally falls in the GEM region
+    and ident=GEM picked here is consistent with the BPB's bps=512.
+    Forcing GEM at slot 0 with size 32 MB would have produced the
+    malformed combination flagged above.
+    """
+    sec_512 = mb_to_sectors_512(partition_mb)
+    bps = choose_logical_sector_size(sec_512)
+    return b"GEM" if bps == 512 else b"BGM"
 
 
 def build_image(plan: ImagePlan, progress=None) -> None:
@@ -1984,9 +1999,7 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                 desc = build_xgm_descriptor_sector(
                     logical_abs_start=part.start_lba,
                     logical_size=part.size_sectors,
-                    logical_ident=ahdi_partition_id(part.size_mb,
-                                                    plan.strict_tos,
-                                                    is_first=False),
+                    logical_ident=ahdi_partition_id(part.size_mb),
                     desc_abs_lba=part.ebr_lba,
                     xgm_base_abs_lba=chain_base,
                     next_desc_abs_lba=next_desc_abs,
@@ -2076,7 +2089,7 @@ def ask_tos_compat() -> bool:
     print()
     print("TOS < 1.04 was the original TOS shipped with early machines")
     print("(520ST, 1040ST, Mega ST). It caps AHDI partitions tighter:")
-    print("   - GEM <= 16 MB   (vs 32 MB on TOS 1.04+)")
+    print("   - GEM <= 16 MB   (vs 31 MB on TOS 1.04+)")
     print("   - BGM <= 256 MB  (vs 511 MB on TOS 1.04+)")
     return ask_yes_no(
         "Force compatibility with TOS < 1.04 "
@@ -2164,9 +2177,7 @@ def print_summary(plan: ImagePlan) -> None:
     print(header)
     print("   " + "-" * (len(header) - 3))
     for i, part in enumerate(plan.partitions, start=1):
-        is_first = (i == 1) and (plan.format_id == FORMAT_AHDI)
-        ahdi_tag = ahdi_partition_id(part.size_mb, plan.strict_tos,
-                                     is_first=is_first).decode() \
+        ahdi_tag = ahdi_partition_id(part.size_mb).decode() \
             if plan.format_id in (FORMAT_AHDI, FORMAT_HDDRIVER) else "-"
         tos_tag = str(part.tos_bps) if part.tos_bps else "-"
         print(f"   {i:>2}  {part.name:<11}  {part.size_mb:>8}  "

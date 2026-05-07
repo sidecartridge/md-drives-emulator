@@ -116,8 +116,12 @@ class TestAhdiRoot(unittest.TestCase):
                                  "the 0x55AA MBR signature")
 
     def test_four_primaries_mixed_gem_bgm(self):
-        # Slot 0 is forced to GEM regardless of size; slots 1+ pick GEM/BGM
-        # from the size threshold (32 MB by default).
+        # Idents follow bps strictly: GEM iff bps=512 (size <= 31 MB),
+        # BGM iff bps>512 (size >= 32 MB). 32 MB is the first size that
+        # trips the doubling rule, so S1 is BGM, not GEM (the earlier
+        # version of this test expected GEM at 32 MB; that combination
+        # was technically malformed -- ident=GEM with bps=1024 -- and
+        # was flagged by the AHDI 3.0 review).
         partitions = [
             _make_partition("BOOT", size_mb=16, size_sectors=32768,  start_lba=2),
             _make_partition("S1",   size_mb=32, size_sectors=65536,  start_lba=32770),
@@ -128,7 +132,7 @@ class TestAhdiRoot(unittest.TestCase):
         sec = atari_hd.build_root_sector_ahdi(plan)
         slots = parse_ahdi_root(sec)
 
-        expected_idents = [b"GEM", b"GEM", b"BGM", b"BGM"]
+        expected_idents = [b"GEM", b"BGM", b"BGM", b"BGM"]
         for i, (part, want_ident) in enumerate(zip(partitions, expected_idents)):
             raw = sec[AHDI_SLOT_OFFSETS[i]:AHDI_SLOT_OFFSETS[i] + 12]
             with self.subTest(slot=i, partition=part.name):

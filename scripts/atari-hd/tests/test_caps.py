@@ -36,8 +36,11 @@ class TestPartitionCapMb(unittest.TestCase):
             atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, True, 0), 16)
 
     def test_ahdi_permissive_gem_cap(self):
+        # 31 MB, not 32: ident=GEM strictly implies bps=512, and
+        # choose_logical_sector_size flips to bps=1024 at 32 MB.
+        # See AHDI_GEM_MAX_MB rationale in atari_hd.py.
         self.assertEqual(
-            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 0), 32)
+            atari_hd.partition_cap_mb(atari_hd.FORMAT_AHDI, False, 0), 31)
 
     def test_ahdi_strict_bgm_cap(self):
         # Slot 1+ is BGM. Strict caps BGM at 256 MB.
@@ -82,7 +85,8 @@ class TestCapMbForType(unittest.TestCase):
     dialog) where slot 1+ might be GEM-typed by the user."""
 
     def test_ahdi_gem_cap_regardless_of_slot(self):
-        # User picks GEM on any slot -> GEM cap (16 strict, 32 perm).
+        # User picks GEM on any slot -> GEM cap (16 strict, 31 perm).
+        # Perm cap is 31, not 32: ident=GEM strictly implies bps=512.
         for ident in (b"GEM", "GEM"):
             with self.subTest(ident=ident):
                 self.assertEqual(
@@ -90,7 +94,7 @@ class TestCapMbForType(unittest.TestCase):
                     16)
                 self.assertEqual(
                     atari_hd.cap_mb_for_type(atari_hd.FORMAT_AHDI, False, ident),
-                    32)
+                    31)
 
     def test_ahdi_bgm_cap_regardless_of_slot(self):
         # User picks BGM -> BGM cap (256 strict, 511 perm).
@@ -129,36 +133,38 @@ class TestCapMbForType(unittest.TestCase):
 
 
 class TestAhdiPartitionId(unittest.TestCase):
-    """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')."""
+    """ahdi_partition_id picks the ident bytes (b'GEM' / b'BGM')
+    strictly from the bps that choose_logical_sector_size picks for
+    the partition's 512-byte sector count.
 
-    def test_first_partition_is_always_gem(self):
-        # Defensive clamp: legacy drivers (original AHDI / SCSI Tools)
-        # required GEM on the boot slot. TOS itself only checks the
-        # boot flag, but emitting GEM at slot 0 is the broadest-
-        # compatibility pick. See atari_hd.ahdi_partition_id() for the
-        # full rationale.
-        for size in (1, 16, 17, 32, 33, 100, 256, 257, 512, 1024):
-            for strict in (True, False):
-                with self.subTest(size=size, strict=strict):
-                    self.assertEqual(
-                        atari_hd.ahdi_partition_id(size, strict,
-                                                    is_first=True),
-                        b"GEM",
-                        f"size={size}, strict={strict} must be GEM")
+    Per AHDI 3.0 / the Atari Compendium: GEM means bps=512, BGM means
+    bps>512. The Hatari doubling rule keeps bps=512 only while
+    clusters_at_spc=2 stays <= 32765, i.e. partition_sec_512 <= 65530
+    (~31.99 MB). At 32 MB exactly the rule doubles to bps=1024.
 
-    def test_permissive_threshold_at_32mb(self):
-        # TOS 1.04+ uses a 32 MB threshold for non-first slots.
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(32, False, is_first=False), b"GEM")
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(33, False, is_first=False), b"BGM")
+    The earlier version of this function accepted an `is_first` flag
+    that forced GEM at slot 0 regardless of size; that force was
+    removed because it could produce GEM+bps=1024, which the
+    Compendium flagged as malformed (legacy drivers may corrupt past
+    the first 32 MB of physical sectors). Slot 0 is now kept in the
+    GEM region by partition_cap_mb() instead, so the ident landing
+    here is always consistent with the BPB."""
 
-    def test_strict_threshold_at_16mb(self):
-        # TOS < 1.04 tightens the threshold to 16 MB.
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(16, True, is_first=False), b"GEM")
-        self.assertEqual(
-            atari_hd.ahdi_partition_id(17, True, is_first=False), b"BGM")
+    def test_gem_region(self):
+        # Sizes that choose_logical_sector_size keeps at bps=512 -> GEM.
+        for size in (1, 2, 8, 16, 17, 24, 30, 31):
+            with self.subTest(size=size):
+                self.assertEqual(
+                    atari_hd.ahdi_partition_id(size), b"GEM",
+                    f"{size} MB sits at bps=512; ident must be GEM")
+
+    def test_bgm_region(self):
+        # 32 MB is the first size that trips bps=1024 -> BGM.
+        for size in (32, 33, 64, 128, 256, 511):
+            with self.subTest(size=size):
+                self.assertEqual(
+                    atari_hd.ahdi_partition_id(size), b"BGM",
+                    f"{size} MB sits at bps>512; ident must be BGM")
 
 
 class TestPartitionLayout(unittest.TestCase):
@@ -278,8 +284,8 @@ class TestRejectionPaths(unittest.TestCase):
         self.assertIn("BGM", msg, msg)
 
     def test_ahdi_permissive_first_partition_over_gem_cap(self):
-        # 33 MB > 32 MB permissive GEM cap => reject under TOS 1.04+ mode.
-        partitions = [atari_hd.Partition(name="BOOT", size_mb=33)]
+        # 32 MB > 31 MB permissive GEM cap => reject under TOS 1.04+ mode.
+        partitions = [atari_hd.Partition(name="BOOT", size_mb=32)]
         with self.assertRaises(ValueError) as ctx:
             atari_hd.plan_image(atari_hd.FORMAT_AHDI, "<test>", image_mb=64,
                                 partitions=partitions, strict_tos=False)
@@ -288,9 +294,11 @@ class TestRejectionPaths(unittest.TestCase):
         self.assertIn("boot (GEM)", msg, msg)
 
     def test_ahdi_permissive_bgm_partition_over_cap(self):
-        # 600 MB > 511 MB permissive BGM cap.
+        # 600 MB > 511 MB permissive BGM cap. BOOT is 31 MB (the
+        # permissive GEM cap) so plan_image gets past slot 0 and
+        # reaches the BGM-cap check on slot 1.
         partitions = [
-            atari_hd.Partition(name="BOOT", size_mb=32),
+            atari_hd.Partition(name="BOOT", size_mb=31),
             atari_hd.Partition(name="HUGE", size_mb=600),
         ]
         with self.assertRaises(ValueError) as ctx:

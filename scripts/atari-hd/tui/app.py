@@ -274,18 +274,14 @@ def _open_edit_dialog(state: State) -> State:
 
 
 def _auto_ident(state: State, slot: int, size_mb: int) -> str:
-    """Initial type pick when the user hasn't chosen one. AHDI slot 0
-    is clamped to GEM as a legacy-driver compatibility default (not a
-    hard TOS rule -- see atari_hd.ahdi_partition_id() for the
-    rationale); later slots flip at the GEM threshold; hybrid formats
-    don't use the field."""
+    """Initial type pick when the user hasn't chosen one. The AHDI ident
+    follows bps strictly (GEM iff bps=512, BGM iff bps>512), so we
+    delegate to ahdi_partition_id(). Slot 0 still ends up as GEM
+    because partition_cap_mb() caps it at the GEM region; we just
+    don't special-case it here."""
     if state.format_id != "AHDI":
         return "GEM"
-    if slot == 0:
-        return "GEM"
-    threshold = (atari_hd.AHDI_GEM_MAX_MB_STRICT if state.strict_tos
-                 else atari_hd.AHDI_GEM_MAX_MB)
-    return "GEM" if size_mb <= threshold else "BGM"
+    return atari_hd.ahdi_partition_id(size_mb).decode()
 
 
 # -------------------------------------------------------------------
@@ -488,23 +484,13 @@ def _find_violator_slots(state: State, candidate_format: str,
 
 
 def _effective_ident(state: State, slot: int, part, format_id: str) -> str:
-    """The ident the new format would assign this partition. AHDI
-    slot 0 is clamped to GEM (legacy-driver compatibility default);
-    later AHDI slots honor an existing ahdi_ident if set, else
-    auto-pick by the GEM threshold (using the *candidate* strict_tos,
-    not the current state, so the violation check is honest about the
-    new regime)."""
+    """The ident the new format would assign this partition. AHDI ident
+    follows bps strictly (delegated to ahdi_partition_id); explicit
+    ahdi_ident overrides are honored only when consistent with the bps
+    derived from size, so we just return the size-derived value."""
     if format_id != "AHDI":
         return "FAT16"
-    if slot == 0:
-        return "GEM"
-    explicit = getattr(part, "ahdi_ident", None)
-    if explicit in ("GEM", "BGM", b"GEM", b"BGM"):
-        return explicit if isinstance(explicit, str) else explicit.decode()
-    threshold = (atari_hd.AHDI_GEM_MAX_MB_STRICT
-                 if state.pending_strict_tos
-                 else atari_hd.AHDI_GEM_MAX_MB)
-    return "GEM" if part.size_mb <= threshold else "BGM"
+    return atari_hd.ahdi_partition_id(part.size_mb).decode()
 
 
 # -------------------------------------------------------------------

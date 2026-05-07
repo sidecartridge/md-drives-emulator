@@ -268,12 +268,11 @@ def _render_partition_row(part, index: int, cols: int,
 
 def _partition_ident(part, index: int, format_id: str) -> str:
     """Best-effort short ident for the type column. Honors an explicit
-    `ahdi_ident` attribute when story 004 starts setting one; otherwise
-    derives a v1 value from the format and slot index.
+    `ahdi_ident` attribute when set; otherwise derives the value the
+    writer will emit by mirroring atari_hd.ahdi_partition_id() (ident
+    follows bps strictly: GEM iff bps=512, i.e. size <= 31 MB; BGM
+    otherwise).
 
-    For AHDI: slot 0 is clamped to GEM (legacy-driver compatibility
-    default; see atari_hd.ahdi_partition_id() for the rationale);
-    later slots flip to BGM above the 32 MB threshold.
     For PPDRIVER / HDDRIVER: every partition is FAT16 in the MBR table
     (the EBR-chain "extended" type is the chain header, not a partition
     the user listed).
@@ -283,9 +282,7 @@ def _partition_ident(part, index: int, format_id: str) -> str:
         return explicit if isinstance(explicit, str) else explicit.decode(
             "ascii", errors="replace")
     if format_id == "AHDI":
-        if index == 0:
-            return "GEM"
-        return "GEM" if part.size_mb <= 32 else "BGM"
+        return "GEM" if part.size_mb <= atari_hd.AHDI_GEM_MAX_MB else "BGM"
     return "FAT16"
 
 
@@ -607,6 +604,16 @@ def validate_edit_dialog(state: State):
     if size_mb < min_mb:
         return (f"size below {min_mb} MB minimum for "
                 f"{state.format_id} hybrid layout")
+    # AHDI ident strictly follows bps: GEM iff bps=512, BGM iff bps>512.
+    # bps doubles past 31 MB (clusters_at_spc=2 > 32765), so a user
+    # picking BGM with size <= 31 MB would write ident=BGM but bps=512
+    # in the BPB -- the malformed combination flagged by AHDI 3.0.
+    # Reject explicitly so the user gets a clear message instead of a
+    # surprise ident swap at write time.
+    if (state.format_id == "AHDI" and d.type_choice == "BGM"
+            and size_mb <= atari_hd.AHDI_GEM_MAX_MB):
+        return (f"BGM requires size > {atari_hd.AHDI_GEM_MAX_MB} MB "
+                "(smaller partitions are GEM); pick GEM or grow the size")
     if size_mb > cap:
         kind = (f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
                 if state.format_id == "AHDI" and d.type_choice == "GEM"
