@@ -48,6 +48,7 @@ class PromptMode(Enum):
 
 class EditField(Enum):
     """Focused field inside the add/edit dialog."""
+    KIND = "kind"               # primary vs extended (hybrid formats)
     SIZE = "size"
     TYPE = "type"
     LABEL = "label"
@@ -70,6 +71,14 @@ class EditDialogState:
     field: EditField = EditField.SIZE
     size_buffer: str = ""           # digits only
     type_choice: str = "GEM"        # "GEM" / "BGM"; ignored on hybrid formats
+    # For hybrid formats: which kind of partition the user is choosing.
+    # "primary" or "extended". Locked to "primary" for slot 0; locked to
+    # "extended" for HDDRIVER slot >= 1; free choice for PPDRIVER slot
+    # >= 1. Drives the per-partition cap (255 vs 511 MB) and where
+    # plan_image will place the partition (MBR slot vs extended chain).
+    # Ignored on AHDI -- AHDI primary/extended split is still derived
+    # from N until the AHDI side gets the same per-partition toggle.
+    kind_choice: str = "primary"
     label_buffer: str = ""          # accumulated uppercase ASCII, <= 11 chars
 
 

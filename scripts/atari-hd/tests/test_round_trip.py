@@ -71,11 +71,15 @@ class TestRoundTrip(unittest.TestCase):
                                  f"slot {i} ident")
 
     def test_ppdriver_ebr_chain(self):
-        # 5 partitions => 3 primary + 2 logicals via MBR extended chain.
-        # PPDRIVER hybrid requires partitions large enough for tos_bps
-        # to be >=1024; 32 MB is the smallest size that satisfies that.
+        # 5 partitions: 3 primary (slots 0..2) + 2 extended (slots 3..4).
+        # The user picks primary vs extended per partition via
+        # Partition.is_extended; this fixture mirrors what a typical
+        # multi-primary PPDRIVER layout looks like (max 4 primaries on
+        # PPDRIVER; here we use 3 + 2 to exercise both halves of the
+        # writer). 32 MB is the smallest size that hits tos_bps>=1024.
         partitions = [
-            atari_hd.Partition(name=f"P{i + 1}", size_mb=32)
+            atari_hd.Partition(name=f"P{i + 1}", size_mb=32,
+                                is_extended=(i >= 3))
             for i in range(5)
         ]
         plan = atari_hd.plan_image(
@@ -97,12 +101,12 @@ class TestRoundTrip(unittest.TestCase):
                                  f"slot {i} part_type")
 
     def test_hddriver_ebr_chain(self):
-        # 2 partitions => 1 primary + 1 logical via the MBR extended
-        # chain. HDDRIVER's primary cap is 1, so any N>=2 hits the
-        # extended path. 32 MB partitions for the same hybrid reason.
+        # 2 partitions: 1 primary + 1 extended. HDDRIVER's primary cap
+        # is 1, so the second partition MUST be is_extended=True.
+        # 32 MB partitions for the same hybrid (tos_bps>=1024) reason.
         partitions = [
             atari_hd.Partition(name="BOOT", size_mb=32),
-            atari_hd.Partition(name="DATA", size_mb=32),
+            atari_hd.Partition(name="DATA", size_mb=32, is_extended=True),
         ]
         plan = atari_hd.plan_image(
             atari_hd.FORMAT_HDDRIVER, image_path="<placeholder>",

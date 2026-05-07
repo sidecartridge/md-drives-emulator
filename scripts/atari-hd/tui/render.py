@@ -156,6 +156,54 @@ def _render_body_empty_partitions(state: State, cols: int, height: int) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _effective_kind(state: State, d) -> str:
+    """Resolve the partition kind ("primary" / "extended") that the
+    open dialog will commit. Slot 0 is always primary; HDDRIVER slot
+    >= 1 is always extended; PPDRIVER slot >= 1 honors the user's
+    d.kind_choice. AHDI partitions fall through to "primary" (the AHDI
+    side derives primary/extended from N at write time)."""
+    if d.slot == 0:
+        return "primary"
+    if state.format_id == "HDDRIVER":
+        return "extended"
+    if state.format_id == "PPDRIVER":
+        return d.kind_choice
+    return "primary"
+
+
+def _kind_cap_mb(state: State, d, primary_count: int) -> int:
+    """Cap (MB) for the partition the dialog is composing, derived from
+    the effective kind (primary -> HYBRID_PRIMARY_MAX_MB; extended ->
+    HYBRID_MAX_PARTITION_MB) on hybrid formats. AHDI defers to
+    cap_mb_for_type's ident-based logic."""
+    is_hybrid = state.format_id in ("PPDRIVER", "HDDRIVER")
+    if is_hybrid:
+        kind = _effective_kind(state, d)
+        if kind == "primary":
+            return atari_hd.HYBRID_PRIMARY_MAX_MB
+        return atari_hd.HYBRID_MAX_PARTITION_MB
+    return atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+                                     d.type_choice, slot_index=d.slot,
+                                     primary_count=primary_count)
+
+
+def _dialog_primary_count(state: State, d) -> int:
+    """primary_count for partition_layout from the perspective of the
+    open edit dialog. ADD adds a slot to the count (the partition the
+    user is about to commit); EDIT leaves it unchanged. Used by both
+    the dialog's live cap label and validate_edit_dialog so the
+    primary-vs-logical decision matches what plan_image will produce
+    on save."""
+    n = sum(1 for p in state.partitions if p is not None)
+    if d.mode == EditMode.ADD:
+        n += 1
+    if n < 1:
+        n = 1
+    if n > 14:
+        n = 14
+    return atari_hd.partition_layout(state.format_id, n)["primary_count"]
+
+
 def _display_start_lbas(state: State) -> list:
     """Return [start_lba_i] for each slot in `state.partitions` for the
     "Start (LBA)" column.
@@ -470,7 +518,7 @@ def _truncate_middle(s: str, max_width: int) -> str:
 # -------------------------------------------------------------------
 
 DIALOG_WIDTH = 56
-DIALOG_HEIGHT = 13
+DIALOG_HEIGHT = 14
 
 
 def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
@@ -482,8 +530,28 @@ def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
     box_left = max(1, (cols - DIALOG_WIDTH) // 2 + 1)
 
     title = "Add Partition" if d.mode == EditMode.ADD else f"Edit Partition #{d.slot}"
-    cap_mb = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                       d.type_choice, slot_index=d.slot)
+    primary_count = _dialog_primary_count(state, d)
+    is_hybrid = state.format_id in ("PPDRIVER", "HDDRIVER")
+
+    # Kind row (hybrid only): primary vs extended. Slot 0 is locked
+    # primary; HDDRIVER slot >= 1 is locked extended; PPDRIVER slot >= 1
+    # is the user's free choice.
+    kind_visible = is_hybrid
+    kind_locked = is_hybrid and (d.slot == 0
+                                  or state.format_id == "HDDRIVER")
+    kind_value = ""
+    if kind_visible:
+        if kind_locked:
+            forced = ("primary" if d.slot == 0 else "extended")
+            kind_value = f"{forced} (locked)"
+        else:
+            pri = "[Primary]" if d.kind_choice == "primary" else " Primary "
+            ext = "[Extended]" if d.kind_choice == "extended" else " Extended "
+            kind_value = f"{pri}  {ext}"
+        if d.field == EditField.KIND and not kind_locked:
+            kind_value = INVERSE_ON + kind_value + INVERSE_OFF
+
+    cap_mb = _kind_cap_mb(state, d, primary_count)
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
     if min_mb > 1:
         # Hybrid formats have a hard 32 MB floor; surface the range
@@ -524,8 +592,10 @@ def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
     body_lines = [
         title.ljust(inner),
         "",
-        f"  {size_label.ljust(20)} {size_value}",
     ]
+    if kind_visible:
+        body_lines.append(f"  {'Kind:'.ljust(20)} {kind_value}")
+    body_lines.append(f"  {size_label.ljust(20)} {size_value}")
     if type_visible:
         body_lines.append(f"  {'Type:'.ljust(20)} {type_value}")
     body_lines.append(f"  {'Label:'.ljust(20)} {label_value}")
@@ -533,7 +603,7 @@ def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
     body_lines.append(_truncate_middle(f"Status: {status_line}", inner))
     body_lines.append("")
     body_lines.append(_truncate_middle(
-        "[Tab] field  [t] type  [Enter] save  [Esc] cancel", inner))
+        "[Tab] field  [t] cycle  [Enter] save  [Esc] cancel", inner))
 
     # Pad body to DIALOG_HEIGHT - 2 (top + bottom border rows).
     while len(body_lines) < DIALOG_HEIGHT - 2:
@@ -616,13 +686,15 @@ def validate_edit_dialog(state: State):
     if size_mb < 1:
         return "size must be >= 1 MB"
 
-    # Cap depends on the user-chosen type AND the slot index. For
-    # AHDI slot 0 the dialog locks type to GEM (=> GEM cap); for
-    # hybrid slot 0 the primary cap (255 MB) applies because real
-    # PPDRIVER / HDDRIVER on Atari hardware reject primaries with
-    # bps>4096; for slot >= 1 the BGM / hybrid ceiling applies.
-    cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                    d.type_choice, slot_index=d.slot)
+    # Cap depends on:
+    #  - For AHDI: ident (GEM cap vs BGM cap) and strict_tos.
+    #  - For hybrid: the resolved Kind (primary -> 255 MB; extended
+    #    -> 511 MB), ignoring d.type_choice (AHDI ident doesn't apply
+    #    to hybrid). The kind comes from _effective_kind which honours
+    #    slot 0 / HDDRIVER locks and the user's d.kind_choice on
+    #    PPDRIVER slot >= 1.
+    primary_count = _dialog_primary_count(state, d)
+    cap = _kind_cap_mb(state, d, primary_count)
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
     if size_mb < min_mb:
         return (f"size below {min_mb} MB minimum for "
@@ -642,11 +714,48 @@ def validate_edit_dialog(state: State):
             kind = f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
         elif state.format_id == "AHDI":
             kind = "BGM"
-        elif d.slot == 0:
+        elif _effective_kind(state, d) == "primary":
             kind = f"{state.format_id} primary (bps must stay <= 4096)"
         else:
-            kind = f"{state.format_id} logical"
+            kind = f"{state.format_id} extended"
         return f"size exceeds {cap} MB cap for {kind}"
+
+    # Hybrid layout rules -- surface here so the user sees the error
+    # while composing instead of at W. plan_image enforces the same
+    # rules at write time as a backstop.
+    if state.format_id in ("PPDRIVER", "HDDRIVER"):
+        kind = _effective_kind(state, d)
+        # Slot 0 must be primary -- already locked in the dialog, but
+        # check defensively.
+        if d.slot == 0 and kind != "primary":
+            return "first partition must be a primary"
+        # No primary may follow an extended partition.
+        if kind == "primary":
+            for i, prior in enumerate(state.partitions):
+                if i >= d.slot:
+                    break
+                if prior is None:
+                    continue
+                if prior.is_extended:
+                    return (f"slot {i} is extended; primaries must "
+                            "come before any extended partitions")
+        # Total primary count after this commit must not exceed the
+        # format's max.
+        if kind == "primary":
+            max_p = atari_hd.MAX_PRIMARY_PARTITIONS[state.format_id]
+            n = max(len(state.partitions), d.slot + 1)
+            primaries = 0
+            for i in range(n):
+                if i == d.slot:
+                    primaries += 1
+                    continue
+                p = (state.partitions[i]
+                      if i < len(state.partitions) else None)
+                if p is not None and not p.is_extended:
+                    primaries += 1
+            if primaries > max_p:
+                return (f"{state.format_id} allows at most {max_p} "
+                        f"primary partition(s); make this one extended")
 
     # Label validation -- empty is OK (we'll default to a generated
     # name on commit), otherwise must be uppercase ASCII per the

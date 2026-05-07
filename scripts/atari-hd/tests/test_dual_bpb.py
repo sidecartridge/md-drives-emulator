@@ -67,17 +67,30 @@ class TestDualBpbInvariants(unittest.TestCase):
         # The hybrid PRIMARY cap is HYBRID_PRIMARY_MAX_MB (255 MB):
         # real PPDRIVER / HDDRIVER reject primaries with bps>4096.
         # When the test fixture wants a partition larger than that,
-        # put a small dummy primary first and place the test partition
-        # in slot 1 (logical, in the extended chain) so plan_image
-        # accepts it.
+        # we need to place it in the extended chain. PPDRIVER allows
+        # up to 4 primaries (with the per-primary 255 MB cap) and
+        # only spills to the extended chain at N >= 5; HDDRIVER caps
+        # primaries at 1 and spills at N >= 2. To exercise the
+        # extended chain on either format the test pads with the
+        # right number of small dummy primaries first, then places
+        # the test partition at slot=primary_count.
+        # Per-partition is_extended: the test partition must be
+        # extended (is_extended=True) when its size exceeds the
+        # hybrid primary cap, so it lands at bps=8192 in the chain.
+        # Pad with a single small primary at slot 0 to satisfy the
+        # "first slot must be primary" rule -- one is enough now
+        # that PPDRIVER allows the second slot onwards to be
+        # extended directly without having to fill all 4 primary
+        # slots first.
         if size_mb > atari_hd.HYBRID_PRIMARY_MAX_MB:
+            min_p = atari_hd.HYBRID_MIN_PARTITION_MB
             partitions = [
-                atari_hd.Partition(name="BOOT",
-                                    size_mb=atari_hd.HYBRID_MIN_PARTITION_MB),
-                atari_hd.Partition(name="P", size_mb=size_mb),
+                atari_hd.Partition(name="BOOT", size_mb=min_p),
+                atari_hd.Partition(name="P", size_mb=size_mb,
+                                    is_extended=True),
             ]
             test_slot = 1
-            image_mb = size_mb + atari_hd.HYBRID_MIN_PARTITION_MB + 4
+            image_mb = size_mb + min_p + 4
         else:
             partitions = [atari_hd.Partition(name="P", size_mb=size_mb)]
             test_slot = 0

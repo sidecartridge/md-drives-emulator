@@ -172,7 +172,7 @@ SECTOR_SIZE_WARN_THRESHOLD = 8192
 # which is the ceiling for every format once the extended chain is in play.
 MAX_PARTITIONS = {
     FORMAT_AHDI: 14,       # up to 4 primary, rest via XGM chain
-    FORMAT_PPDRIVER: 14,   # 1 primary + rest via MBR extended chain
+    FORMAT_PPDRIVER: 14,   # up to 4 primary, rest via MBR extended chain
     FORMAT_HDDRIVER: 14,   # 1 primary max, rest via MBR extended chain
 }
 
@@ -183,7 +183,8 @@ MAX_PARTITIONS = {
 # remaining partitions live as logicals inside that chain.
 MAX_PRIMARY_PARTITIONS = {
     FORMAT_AHDI: 4,        # 4 AHDI root slots; slot 3 becomes XGM when N>4
-    FORMAT_PPDRIVER: 1,    # PPTOSDOS convention: one primary + extended chain
+    FORMAT_PPDRIVER: 4,    # full MBR primary use (each primary <= 255 MB);
+                           # extended chain kicks in at N >= 5
     FORMAT_HDDRIVER: 1,    # HDDRIVER convention: one primary + AHDI marker
 }
 
@@ -1046,11 +1047,28 @@ def copy_file_into_image(src_path: str, dst_path: str,
 class Partition:
     name: str
     size_mb: int
+    # User-controlled (or load_image-derived) layout role:
+    is_extended: bool = False       # False = MBR/AHDI primary slot;
+                                    # True  = lives in the extended/XGM
+                                    #         chain. Slot 0 must be False.
+                                    # On hybrid formats the cap follows
+                                    # this flag: primary <= 255 MB
+                                    # (bps<=4096); extended <= 511 MB
+                                    # (bps<=8192). HDDRIVER allows at
+                                    # most one primary; PPDRIVER allows
+                                    # up to four. AHDI keeps GEM/BGM
+                                    # caps for primaries; XGM logicals
+                                    # follow BGM caps.
+
     # Derived during planning:
     size_sectors: int = 0           # 512-byte physical sectors
     start_lba: int = 0              # in 512-byte physical sectors
     ebr_lba: int = 0                # 0 = primary; otherwise LBA of this
                                     # partition's Extended Boot Record
+                                    # (set by plan_image / load_image;
+                                    # is_extended is the user-side
+                                    # source of truth, ebr_lba is its
+                                    # on-disk projection).
 
     # FAT16 BPB parameters for the DOS-side filesystem:
     dos_bps: int = 512              # bytesPerSec in DOS BPB
@@ -1111,7 +1129,8 @@ def format_min_partition_mb(format_id: str) -> int:
 
 
 def partition_cap_mb(format_id: str, strict_tos: bool,
-                     partition_index: int) -> int:
+                     partition_index: int,
+                     primary_count: int = 1) -> int:
     """Per-slot partition-size cap.
 
     On AHDI we conservatively treat the first partition as the boot
@@ -1134,7 +1153,8 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
     rationale in the constants block."""
     if format_id == FORMAT_AHDI and partition_index == 0:
         return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
-    if format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER) and partition_index == 0:
+    if (format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER)
+            and partition_index < primary_count):
         return HYBRID_PRIMARY_MAX_MB
     return format_max_partition_mb(format_id, strict_tos)
 
@@ -1264,7 +1284,8 @@ def parse_bpb(buf, offset):
 
 
 def cap_mb_for_type(format_id: str, strict_tos: bool,
-                    ident, slot_index: Optional[int] = None) -> int:
+                    ident, slot_index: Optional[int] = None,
+                    primary_count: int = 1) -> int:
     """Cap (MB) for a partition given its on-disk type ident.
 
     Used by interactive callers (the TUI dialog) where the user picks
@@ -1274,18 +1295,19 @@ def cap_mb_for_type(format_id: str, strict_tos: bool,
     AHDI: ident b"GEM" / "GEM" -> GEM cap; b"BGM" / "BGM" -> BGM cap;
           unknown -> BGM cap (the more permissive default).
     Hybrid formats (PPDRIVER / HDDRIVER): ident is ignored. When
-          slot_index is 0, the hybrid PRIMARY cap (255 MB) applies --
-          real PPDRIVER and real HDDRIVER on Atari hardware fail to
-          read primary partitions whose TOS BPB carries bps>4096.
-          Slot >= 1 (or unspecified) returns the FAT16 ceiling
-          (HYBRID_MAX_PARTITION_MB, 511 MB). See
+          slot_index < primary_count, the hybrid PRIMARY cap (255 MB)
+          applies -- real PPDRIVER and real HDDRIVER on Atari hardware
+          fail to read primary partitions whose TOS BPB carries
+          bps>4096. PPDRIVER allows up to 4 primaries; HDDRIVER stays
+          at 1. Logical slots (slot >= primary_count, or slot_index
+          unspecified) return HYBRID_MAX_PARTITION_MB (511 MB). See
           HYBRID_PRIMARY_MAX_MB rationale in the constants block.
     """
     if format_id == FORMAT_AHDI:
         if ident in (b"GEM", "GEM"):
             return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
         return AHDI_MAX_PARTITION_MB_STRICT if strict_tos else AHDI_MAX_PARTITION_MB
-    if slot_index == 0:
+    if slot_index is not None and slot_index < primary_count:
         return HYBRID_PRIMARY_MAX_MB
     return HYBRID_MAX_PARTITION_MB
 
@@ -1554,7 +1576,8 @@ def _partition_from_entry(image_path: str, image_size: int, entry: dict,
     p = Partition(name=name, size_mb=size_mb,
                    size_sectors=size_sec,
                    start_lba=entry["start_lba"],
-                   ebr_lba=ebr_lba)
+                   ebr_lba=ebr_lba,
+                   is_extended=(ebr_lba != 0))
     ident = entry["ident"]
     p.ahdi_ident = (ident.decode("ascii", errors="replace")
                     if isinstance(ident, (bytes, bytearray)) else ident)
@@ -1579,7 +1602,8 @@ def _partition_from_mbr(image_path: str, image_size: int,
                             default=default)
     p = Partition(name=name, size_mb=size_mb,
                    size_sectors=size_sectors, start_lba=start_lba,
-                   ebr_lba=ebr_lba)
+                   ebr_lba=ebr_lba,
+                   is_extended=(ebr_lba != 0))
     return p
 
 
@@ -1717,15 +1741,19 @@ def partition_layout(format_id: str, n: int) -> dict:
     extended chain.
 
     - AHDI: up to 4 primary (AHDI-table slots); no extended support in v1.
-    - PPDRIVER: ONE primary + the rest in an MBR extended container.
-      Matches the documented PPTOSDOS convention. Hardware testing
-      confirmed multi-primary PPDRIVER images at >256 MB partition
-      sizes fail to read parts of the filesystem on real Atari
-      hardware (validated against the Compendium notebook); the
-      single-primary layout is what real PPDRIVER setup tools
-      produce.
-    - HDDRIVER: one primary plus an extended container. Matches the
-      real-world HDDRIVER TOS&DOS hybrid layout.
+    - PPDRIVER: up to 4 primary, plus an MBR extended container when
+      N > 4 (3 primary + N-3 logical). Multi-primary is the documented
+      PPTOSDOS convention; the Compendium calls out examples of real
+      tooling producing 300 MB+ primaries in MBR slots beyond 0. The
+      hardware-verified constraint is per-PRIMARY: each primary's TOS
+      bps must stay <= 4096, i.e. each primary <= HYBRID_PRIMARY_MAX_MB
+      (255 MB). The earlier "single-primary" iteration of this rule
+      was based on a misdiagnosis of a 2 x 511 MB failure that turned
+      out to be the bps>4096-in-primary issue, not multi-primary
+      itself.
+    - HDDRIVER: one primary plus an extended container. The hybrid
+      AHDI overlap consumes MBR slot 2 (the 0x1DE trick), and real
+      HDDRIVER setup tools always produce single-primary layouts.
 
     Returns {'primary_count', 'has_extended', 'logical_count'}.
     """
@@ -1746,15 +1774,19 @@ def partition_layout(format_id: str, n: int) -> dict:
                 "logical_count": n - primary}
 
     if format_id == FORMAT_PPDRIVER:
-        # PPTOSDOS convention: one primary slot, every other partition
-        # in the LBA-extended chain (MBR type 0x0F). Using multiple
-        # primaries breaks real Atari hardware reads at >256 MB
-        # partition sizes (verified empirically; see partition_layout
-        # docstring).
-        primary = MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER]   # always 1
-        if n == primary:
-            return {"primary_count": primary, "has_extended": False,
+        # PPDRIVER allows up to MAX_PRIMARY_PARTITIONS (4) primary
+        # slots. Each primary is independently capped at
+        # HYBRID_PRIMARY_MAX_MB (255 MB) -- bps>4096 in any primary
+        # is what real-hardware testing showed breaks; the original
+        # multi-primary failure was specifically two 511 MB primaries
+        # at bps=8192. With the per-slot 255 MB cap landed, multi-
+        # primary is back to working as PPTOSDOS originally intended.
+        # When N > 4, fall back to (cap-1) primaries plus an MBR
+        # extended container (3 primary + N-3 logical, up to 14 total).
+        if n <= MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER]:
+            return {"primary_count": n, "has_extended": False,
                     "logical_count": 0}
+        primary = MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER] - 1
         return {"primary_count": primary, "has_extended": True,
                 "logical_count": n - primary}
 
@@ -1908,18 +1940,46 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"the {mode_label} {kind} cap at slot {i + 1} is "
                     f"{cap_mb} MB; lower the size or disable strict mode")
     else:
-        # Hybrid formats (PPDRIVER / HDDRIVER):
-        # - Per-partition floor HYBRID_MIN_PARTITION_MB (32 MB), so
-        #   the synthesize step's tos_bps >= 1024 invariant holds.
-        # - Per-partition ceiling HYBRID_MAX_PARTITION_MB (511 MB),
-        #   the TOS NSECTS unsigned-16 ceiling at bps=8192.
-        # - Slot 0 (the single primary) tightens further to
-        #   HYBRID_PRIMARY_MAX_MB (255 MB): real-hardware testing
-        #   shows primaries with bps>4096 don't read correctly, and
-        #   the doubling rule jumps to bps=8192 above 255 MB. The
-        #   workaround for users who want a bigger total partition is
-        #   to add a small primary and put the bulk in the extended
-        #   chain, which is what real PPDRIVER setup tools produce.
+        # Hybrid formats (PPDRIVER / HDDRIVER) follow per-partition
+        # rules driven by Partition.is_extended (set by the user via
+        # the TUI dialog or carried over from load_image):
+        #
+        #   * Slot 0 must be a primary (is_extended=False). The first
+        #     partition is the boot/primary slot and is required by
+        #     both drivers.
+        #   * Once a partition has is_extended=True, all subsequent
+        #     partitions must also be extended (no primary may follow
+        #     a logical -- standard MBR convention; the extended
+        #     chain is contiguous after the primary block).
+        #   * PPDRIVER allows up to MAX_PRIMARY_PARTITIONS=4 primaries;
+        #     HDDRIVER allows exactly 1.
+        #   * Per-partition floor HYBRID_MIN_PARTITION_MB (32 MB).
+        #   * Primary cap HYBRID_PRIMARY_MAX_MB (255 MB; bps<=4096).
+        #   * Extended cap HYBRID_MAX_PARTITION_MB (511 MB; bps<=8192).
+        if partitions[0].is_extended:
+            raise ValueError(
+                f"first partition must be a primary; "
+                f"{format_id} requires the first slot to be a primary "
+                f"(boot) partition")
+        primary_count = 0
+        seen_extended = False
+        for i, part in enumerate(partitions):
+            if part.is_extended:
+                seen_extended = True
+            else:
+                if seen_extended:
+                    raise ValueError(
+                        f"partition {part.name!r} at slot {i} is a "
+                        f"primary but follows an extended partition; "
+                        f"primaries must come before any extended "
+                        f"partitions (single contiguous primary block)")
+                primary_count += 1
+        max_primaries = MAX_PRIMARY_PARTITIONS[format_id]
+        if primary_count > max_primaries:
+            raise ValueError(
+                f"{format_id} allows at most {max_primaries} primary "
+                f"partition(s); plan has {primary_count}. Mark the "
+                f"surplus partition(s) as extended.")
         for i, part in enumerate(partitions):
             if part.size_mb < HYBRID_MIN_PARTITION_MB:
                 raise ValueError(
@@ -1927,33 +1987,44 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"{format_id} requires >= {HYBRID_MIN_PARTITION_MB} "
                     f"MB per partition (hybrid layout requires logical "
                     f"sector size >= 1024)")
-            cap_mb = partition_cap_mb(format_id, strict_tos, i)
+            if part.is_extended:
+                cap_mb = HYBRID_MAX_PARTITION_MB
+                kind = "extended"
+            else:
+                cap_mb = HYBRID_PRIMARY_MAX_MB
+                kind = "primary slot (bps must stay <= 4096)"
             if part.size_mb > cap_mb:
-                kind = ("primary slot (bps must stay <= 4096)" if i == 0
-                        else "logical")
                 raise ValueError(
                     f"partition {part.name!r} is {part.size_mb} MB but "
                     f"{format_id} {kind} cap is {cap_mb} MB; lower the "
-                    f"size or move it into the extended chain")
-            if part.size_mb > HYBRID_MAX_PARTITION_MB:
-                raise ValueError(
-                    f"partition {part.name!r} is {part.size_mb} MB but "
-                    f"{format_id} caps at {HYBRID_MAX_PARTITION_MB} MB "
-                    f"per partition (TOS NSECTS 16-bit limit at "
-                    f"bps=8192)")
+                    f"size or change its kind")
 
-    # Decide the MBR primary vs. extended-chain split. Partitions with index
-    # < primary_count land directly in MBR slots; partitions at index >=
-    # primary_count become logicals in an MBR extended container and each
-    # gets a 1-sector EBR sector placed immediately in front of it.
-    layout = partition_layout(format_id, len(partitions))
-    plan.primary_count = layout["primary_count"]
-    plan.has_extended = layout["has_extended"]
+    # Decide the MBR primary vs. extended-chain split.
+    #
+    # On hybrid formats (PPDRIVER / HDDRIVER), the user controls this
+    # per-partition via Partition.is_extended; we trust the flag here
+    # (validation above already enforced "primaries are contiguous and
+    # come first" so primary_count = leading partitions with
+    # is_extended=False).
+    #
+    # On AHDI we derive the layout from the partition count -- AHDI
+    # has no user-facing primary/extended toggle yet; the XGM chain
+    # kicks in automatically when N > 4 (slot 3 becomes the chain
+    # head). We back-fill Partition.is_extended for AHDI so the EBR-
+    # assignment loop below can trust the flag uniformly.
+    if format_id == FORMAT_AHDI:
+        layout = partition_layout(format_id, len(partitions))
+        plan.primary_count = layout["primary_count"]
+        plan.has_extended = layout["has_extended"]
+        for i, part in enumerate(partitions):
+            part.is_extended = (i >= plan.primary_count)
+    else:
+        plan.primary_count = sum(1 for p in partitions if not p.is_extended)
+        plan.has_extended = any(p.is_extended for p in partitions)
 
     next_lba = first_partition_start_lba(format_id)
-    for i, part in enumerate(partitions):
-        is_logical = i >= plan.primary_count
-        if is_logical:
+    for part in partitions:
+        if part.is_extended:
             part.ebr_lba = next_lba
             next_lba += 1
         else:

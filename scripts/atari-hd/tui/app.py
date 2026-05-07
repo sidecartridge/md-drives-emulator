@@ -30,6 +30,27 @@ from .terminal import terminal_session
 MAX_PARTITIONS = 14
 
 
+def _primary_count_for_state(state, *, count_dialog_add=False) -> int:
+    """Compute primary_count for partition_layout given the current
+    state. PPDRIVER allows up to 4 primaries; HDDRIVER caps at 1; AHDI
+    uses up to 4 AHDI-table slots.
+
+    `count_dialog_add` is True when an ADD dialog is open and we want
+    the layout the writer would produce *after* the user commits --
+    important for the dialog's live cap label so the user sees the
+    right primary/logical cap at the slot they're about to fill.
+    """
+    n = sum(1 for p in state.partitions if p is not None)
+    if count_dialog_add and state.edit_dialog and \
+            state.edit_dialog.mode == EditMode.ADD:
+        n += 1
+    if n < 1:
+        n = 1
+    if n > MAX_PARTITIONS:
+        n = MAX_PARTITIONS
+    return atari_hd.partition_layout(state.format_id, n)["primary_count"]
+
+
 def handle_key(state: State, key) -> State:
     """Dispatch one keypress into a state mutation. Returns the same
     state (mutated in place) for symmetry with future immutable-state
@@ -242,9 +263,21 @@ def _open_add_dialog(state: State) -> State:
     type_choice = "GEM" if state.format_id != "AHDI" or is_first else "BGM"
     if state.format_id != "AHDI":
         type_choice = "GEM"  # arbitrary; ignored for hybrid formats
+    # Default Kind: slot 0 -> primary (mandatory). HDDRIVER slot >= 1 ->
+    # extended (mandatory). PPDRIVER slot >= 1 -> default extended,
+    # since the typical "second partition is the bulk DATA" workflow
+    # wants 511 MB headroom; the user can flip back to primary via
+    # the Kind toggle if they want a small primary instead.
+    if is_first:
+        kind_choice = "primary"
+    elif state.format_id == "HDDRIVER":
+        kind_choice = "extended"
+    else:
+        kind_choice = "extended"
     state.edit_dialog = EditDialogState(
         mode=EditMode.ADD, slot=slot, field=EditField.SIZE,
-        size_buffer="", type_choice=type_choice, label_buffer="")
+        size_buffer="", type_choice=type_choice,
+        kind_choice=kind_choice, label_buffer="")
     state.status_message = None
     state.dirty = True
     return state
@@ -263,10 +296,21 @@ def _open_edit_dialog(state: State) -> State:
     # (set at creation time below) or fall back to the auto-pick.
     ident = getattr(part, "ahdi_ident", None) or _auto_ident(state, slot,
                                                               part.size_mb)
+    # Kind is locked for slot 0 / HDDRIVER; for PPDRIVER slot >= 1 we
+    # carry over the partition's existing is_extended.
+    if slot == 0:
+        kind_choice = "primary"
+    elif state.format_id == "HDDRIVER":
+        kind_choice = "extended"
+    else:
+        kind_choice = ("extended"
+                        if getattr(part, "is_extended", False)
+                        else "primary")
     state.edit_dialog = EditDialogState(
         mode=EditMode.EDIT, slot=slot, field=EditField.SIZE,
         size_buffer=str(part.size_mb),
         type_choice=ident,
+        kind_choice=kind_choice,
         label_buffer=part.name)
     state.status_message = None
     state.dirty = True
@@ -472,12 +516,22 @@ def _find_violator_slots(state: State, candidate_format: str,
     exceed the candidate format's per-type cap. Empty list means the
     format change is cap-safe."""
     violators = []
+    # Compute primary_count under the candidate layout so the
+    # primary-vs-logical decision honours the format we're switching to,
+    # not the current state.format_id. AHDI's cap path doesn't consult
+    # primary_count, so a wrong value there is harmless.
+    n = sum(1 for p in state.partitions if p is not None) or 1
+    if n > MAX_PARTITIONS:
+        n = MAX_PARTITIONS
+    candidate_primary = atari_hd.partition_layout(candidate_format,
+                                                    n)["primary_count"]
     for i, part in enumerate(state.partitions):
         if part is None:
             continue
         ident = _effective_ident(state, i, part, candidate_format)
         cap = atari_hd.cap_mb_for_type(candidate_format, candidate_strict,
-                                        ident, slot_index=i)
+                                        ident, slot_index=i,
+                                        primary_count=candidate_primary)
         if part.size_mb > cap:
             violators.append(i)
     return violators
@@ -517,6 +571,8 @@ def _handle_edit_dialog(state: State, key) -> State:
         return _cycle_edit_field(state)
 
     # Per-field key dispatch.
+    if d.field == EditField.KIND:
+        return _edit_kind_key(state, key)
     if d.field == EditField.SIZE:
         return _edit_size_key(state, key)
     if d.field == EditField.TYPE:
@@ -529,13 +585,36 @@ def _handle_edit_dialog(state: State, key) -> State:
 def _cycle_edit_field(state: State) -> State:
     d = state.edit_dialog
     type_visible = state.format_id == "AHDI" and d.slot != 0
-    order = [EditField.SIZE]
+    # KIND is the user's free choice only on PPDRIVER slot >= 1.
+    # Slot 0 (always primary) and HDDRIVER slot >= 1 (always extended)
+    # have the kind locked and skipped from the Tab order.
+    kind_editable = (state.format_id == "PPDRIVER" and d.slot != 0)
+    order = []
+    if kind_editable:
+        order.append(EditField.KIND)
+    order.append(EditField.SIZE)
     if type_visible:
         order.append(EditField.TYPE)
     order.append(EditField.LABEL)
     idx = order.index(d.field) if d.field in order else 0
     d.field = order[(idx + 1) % len(order)]
     state.dirty = True
+    return state
+
+
+def _edit_kind_key(state: State, key) -> State:
+    """Toggle Kind (primary <-> extended) on hybrid PPDRIVER slot >= 1."""
+    d = state.edit_dialog
+    # Locked: nothing to do.
+    if state.format_id != "PPDRIVER" or d.slot == 0:
+        return state
+    if key in (Key.LEFT, Key.RIGHT) or (isinstance(key, str) and key == "t"):
+        d.kind_choice = ("extended" if d.kind_choice == "primary"
+                          else "primary")
+        state.dirty = True
+        return state
+    if isinstance(key, str) and key.lower() == "s":
+        return _commit_edit_dialog(state)
     return state
 
 
@@ -614,12 +693,29 @@ def _commit_edit_dialog(state: State) -> State:
     ident = ("GEM" if state.format_id == "AHDI" and d.slot == 0
              else d.type_choice)
 
+    # Resolve the on-disk Kind: slot 0 is always primary; HDDRIVER
+    # slot >= 1 is always extended; PPDRIVER slot >= 1 follows
+    # d.kind_choice. AHDI partitions don't expose Kind in the dialog
+    # (still derived at write time), so we leave is_extended at the
+    # dataclass default for AHDI; plan_image will reset it from the
+    # AHDI N-driven layout regardless.
+    if d.slot == 0:
+        is_extended = False
+    elif state.format_id == "HDDRIVER":
+        is_extended = True
+    elif state.format_id == "PPDRIVER":
+        is_extended = (d.kind_choice == "extended")
+    else:
+        is_extended = False  # AHDI; plan_image overrides per N
+
     if d.mode == EditMode.ADD:
-        part = atari_hd.Partition(name=label, size_mb=size_mb)
+        part = atari_hd.Partition(name=label, size_mb=size_mb,
+                                    is_extended=is_extended)
     else:
         part = state.partitions[d.slot]
         part.name = label
         part.size_mb = size_mb
+        part.is_extended = is_extended
     part.ahdi_ident = ident
 
     # Place the partition in its slot. For ADD, slot might be a hole
@@ -798,6 +894,7 @@ def _preflight_check(state: State):
     if not real:
         return "no partitions to write"
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
+    primary_count = _primary_count_for_state(state)
     for i, part in enumerate(real):
         if part.size_mb < min_mb:
             return (f"partition {part.name!r} ({part.size_mb} MB) is "
@@ -805,7 +902,8 @@ def _preflight_check(state: State):
                     f"{state.format_id}")
         ident = _effective_ident(state, i, part, state.format_id)
         cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                        ident, slot_index=i)
+                                        ident, slot_index=i,
+                                        primary_count=primary_count)
         if part.size_mb > cap:
             return (f"partition {part.name!r} ({part.size_mb} MB) "
                     f"exceeds {cap} MB cap")
