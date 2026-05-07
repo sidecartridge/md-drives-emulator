@@ -177,13 +177,17 @@ class TestPartitionLayout(unittest.TestCase):
             14: (3, True, 11),
         },
         atari_hd.FORMAT_PPDRIVER: {
+            # PPTOSDOS convention: one primary + extended chain.
+            # Multi-primary PPDRIVER fails on real Atari hardware at
+            # >256 MB partition sizes (empirically verified), and the
+            # single-primary layout is what real PPDRIVER tools emit.
             1:  (1, False, 0),
-            2:  (2, False, 0),
-            3:  (3, False, 0),
-            4:  (4, False, 0),
-            5:  (3, True, 2),     # MBR P3 becomes ext container
-            10: (3, True, 7),
-            14: (3, True, 11),
+            2:  (1, True, 1),
+            3:  (1, True, 2),
+            4:  (1, True, 3),
+            5:  (1, True, 4),
+            10: (1, True, 9),
+            14: (1, True, 13),
         },
         atari_hd.FORMAT_HDDRIVER: {
             1:  (1, False, 0),     # primary cap = 1

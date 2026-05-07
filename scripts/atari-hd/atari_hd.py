@@ -144,7 +144,7 @@ SECTOR_SIZE_WARN_THRESHOLD = 8192
 # which is the ceiling for every format once the extended chain is in play.
 MAX_PARTITIONS = {
     FORMAT_AHDI: 14,       # up to 4 primary, rest via XGM chain
-    FORMAT_PPDRIVER: 14,   # up to 4 primary, rest via MBR extended chain
+    FORMAT_PPDRIVER: 14,   # 1 primary + rest via MBR extended chain
     FORMAT_HDDRIVER: 14,   # 1 primary max, rest via MBR extended chain
 }
 
@@ -155,7 +155,7 @@ MAX_PARTITIONS = {
 # remaining partitions live as logicals inside that chain.
 MAX_PRIMARY_PARTITIONS = {
     FORMAT_AHDI: 4,        # 4 AHDI root slots; slot 3 becomes XGM when N>4
-    FORMAT_PPDRIVER: 4,    # full MBR primary use when N <= 4
+    FORMAT_PPDRIVER: 1,    # PPTOSDOS convention: one primary + extended chain
     FORMAT_HDDRIVER: 1,    # HDDRIVER convention: one primary + AHDI marker
 }
 
@@ -414,10 +414,15 @@ def extended_container_bounds(plan: "ImagePlan") -> tuple:
 def build_root_sector_ppdriver(plan: "ImagePlan") -> bytes:
     """PPera TOS&DOS root sector.
 
-    Primary partitions (up to 4) occupy MBR slots 0..primary_count-1. When
-    more partitions were requested, the next slot is an extended container
-    (type 0x0F) covering the logical partitions in the EBR chain. The dual
-    BPB per partition lives inside the partition itself, not here."""
+    The first partition occupies MBR slot 0 as a FAT16B primary; any
+    additional partitions live in the LBA-extended chain (MBR slot 1
+    holds the type-0x0F container, the EBRs sit inside it). Older
+    revisions of this tool put up to 4 primaries here, but multi-
+    primary PPDRIVER images fail on real Atari hardware once a slot
+    crosses ~256 MB -- the documented PPTOSDOS convention is single-
+    primary + extended, which is what real PPDRIVER setup tools
+    produce. The dual BPB per partition lives inside the partition
+    itself, not here."""
     buf = bytearray(SECTOR_SIZE)
 
     for i in range(plan.primary_count):
@@ -1574,10 +1579,13 @@ def partition_layout(format_id: str, n: int) -> dict:
     extended chain.
 
     - AHDI: up to 4 primary (AHDI-table slots); no extended support in v1.
-    - PPDRIVER: up to MAX_PRIMARY_PARTITIONS (4). When N > 4, fall back
-      to the standard DOS convention of (cap-1) primaries plus one MBR
-      extended container holding the rest as logicals (3 primary + N-3
-      logical, up to 14 total).
+    - PPDRIVER: ONE primary + the rest in an MBR extended container.
+      Matches the documented PPTOSDOS convention. Hardware testing
+      confirmed multi-primary PPDRIVER images at >256 MB partition
+      sizes fail to read parts of the filesystem on real Atari
+      hardware (validated against the Compendium notebook); the
+      single-primary layout is what real PPDRIVER setup tools
+      produce.
     - HDDRIVER: one primary plus an extended container. Matches the
       real-world HDDRIVER TOS&DOS hybrid layout.
 
@@ -1600,13 +1608,15 @@ def partition_layout(format_id: str, n: int) -> dict:
                 "logical_count": n - primary}
 
     if format_id == FORMAT_PPDRIVER:
-        if n <= MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER]:
-            # All primary; no extended container needed.
-            return {"primary_count": n, "has_extended": False,
+        # PPTOSDOS convention: one primary slot, every other partition
+        # in the LBA-extended chain (MBR type 0x0F). Using multiple
+        # primaries breaks real Atari hardware reads at >256 MB
+        # partition sizes (verified empirically; see partition_layout
+        # docstring).
+        primary = MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER]   # always 1
+        if n == primary:
+            return {"primary_count": primary, "has_extended": False,
                     "logical_count": 0}
-        # Use (cap - 1) primaries + 1 MBR extended container. With the 4-slot
-        # MBR that's 3 primary + 1 extended, holding N-3 logicals.
-        primary = MAX_PRIMARY_PARTITIONS[FORMAT_PPDRIVER] - 1
         return {"primary_count": primary, "has_extended": True,
                 "logical_count": n - primary}
 

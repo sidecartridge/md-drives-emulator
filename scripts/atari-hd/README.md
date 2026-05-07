@@ -28,7 +28,7 @@ primaries vs. how many have to live in an extended chain:
 | Format | Max primary | Primary slots | Extended chain type | When extended kicks in |
 |--------|------------:|---------------|---------------------|------------------------|
 | AHDI | 4 | AHDI root slots 0..3 at 0x1C6 / 0x1D2 / 0x1DE / 0x1EA | XGM (AHDI-native) | N > 4: use slots 0..2 as primaries, slot 3 as the XGM chain head |
-| PPDRIVER | 4 | MBR P0..P3 at 0x1BE..0x1EE | MBR extended (type 0x0F) | N > 4: use P0..P2 as primaries, P3 as the extended container |
+| PPDRIVER | 1 | MBR P0 only at 0x1BE | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container (matches PPTOSDOS convention; multi-primary fails on real Atari hardware at >256 MB partition sizes) |
 | HDDRIVER | 1 | MBR P0 only (AHDI slot 2 at 0x1DE carries the TOS overlap marker and consumes the slot where MBR P2 would live) | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container |
 
 For AHDI, each XGM sub-descriptor sector follows the Atari convention:
