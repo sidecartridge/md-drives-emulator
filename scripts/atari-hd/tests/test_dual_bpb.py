@@ -64,15 +64,31 @@ class TestDualBpbInvariants(unittest.TestCase):
                         self._check_one(tmp, fmt, ratio, size_mb)
 
     def _check_one(self, tmp, fmt, ratio, size_mb):
-        partitions = [atari_hd.Partition(name="P", size_mb=size_mb)]
+        # The hybrid PRIMARY cap is HYBRID_PRIMARY_MAX_MB (255 MB):
+        # real PPDRIVER / HDDRIVER reject primaries with bps>4096.
+        # When the test fixture wants a partition larger than that,
+        # put a small dummy primary first and place the test partition
+        # in slot 1 (logical, in the extended chain) so plan_image
+        # accepts it.
+        if size_mb > atari_hd.HYBRID_PRIMARY_MAX_MB:
+            partitions = [
+                atari_hd.Partition(name="BOOT",
+                                    size_mb=atari_hd.HYBRID_MIN_PARTITION_MB),
+                atari_hd.Partition(name="P", size_mb=size_mb),
+            ]
+            test_slot = 1
+            image_mb = size_mb + atari_hd.HYBRID_MIN_PARTITION_MB + 4
+        else:
+            partitions = [atari_hd.Partition(name="P", size_mb=size_mb)]
+            test_slot = 0
+            image_mb = size_mb + 4
         plan = atari_hd.plan_image(
             fmt, image_path="<placeholder>",
-            image_mb=size_mb + 4,  # leave a small tail for partition table
-            partitions=partitions, strict_tos=False)
+            image_mb=image_mb, partitions=partitions, strict_tos=False)
 
         # Verify the geometry chose the ratio we expected. If not, the
         # rest of the test is meaningless.
-        actual_ratio = plan.partitions[0].tos_bps // 512
+        actual_ratio = plan.partitions[test_slot].tos_bps // 512
         self.assertEqual(
             actual_ratio, ratio,
             f"format={fmt} size={size_mb} MB: planner chose "
@@ -85,7 +101,7 @@ class TestDualBpbInvariants(unittest.TestCase):
         # Read DOS BPB at start_lba and TOS BPB at start_lba + 1.
         # Both BPBs are 512-byte structures regardless of the declared
         # bytes_per_sector; parse_bpb is sector-size-agnostic.
-        first_lba = plan.partitions[0].start_lba
+        first_lba = plan.partitions[test_slot].start_lba
         with open(path, "rb") as f:
             f.seek(first_lba * 512)
             dos_buf = f.read(512)

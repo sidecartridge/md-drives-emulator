@@ -461,7 +461,7 @@ def _render_edit_dialog_overlay(state: State, cols: int, rows: int) -> str:
 
     title = "Add Partition" if d.mode == EditMode.ADD else f"Edit Partition #{d.slot}"
     cap_mb = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                       d.type_choice)
+                                       d.type_choice, slot_index=d.slot)
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
     if min_mb > 1:
         # Hybrid formats have a hard 32 MB floor; surface the range
@@ -594,12 +594,13 @@ def validate_edit_dialog(state: State):
     if size_mb < 1:
         return "size must be >= 1 MB"
 
-    # Cap depends on the user-chosen type via cap_mb_for_type. For
-    # AHDI slot 0 the dialog locks type to GEM, so cap is the GEM
-    # cap; for hybrid formats type is moot and the cap is the
-    # hybrid TOS-NSECTS ceiling.
+    # Cap depends on the user-chosen type AND the slot index. For
+    # AHDI slot 0 the dialog locks type to GEM (=> GEM cap); for
+    # hybrid slot 0 the primary cap (255 MB) applies because real
+    # PPDRIVER / HDDRIVER on Atari hardware reject primaries with
+    # bps>4096; for slot >= 1 the BGM / hybrid ceiling applies.
     cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                    d.type_choice)
+                                    d.type_choice, slot_index=d.slot)
     min_mb = atari_hd.format_min_partition_mb(state.format_id)
     if size_mb < min_mb:
         return (f"size below {min_mb} MB minimum for "
@@ -615,10 +616,14 @@ def validate_edit_dialog(state: State):
         return (f"BGM requires size > {atari_hd.AHDI_GEM_MAX_MB} MB "
                 "(smaller partitions are GEM); pick GEM or grow the size")
     if size_mb > cap:
-        kind = (f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
-                if state.format_id == "AHDI" and d.type_choice == "GEM"
-                else "BGM" if state.format_id == "AHDI"
-                else f"{state.format_id} hybrid")
+        if state.format_id == "AHDI" and d.type_choice == "GEM":
+            kind = f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
+        elif state.format_id == "AHDI":
+            kind = "BGM"
+        elif d.slot == 0:
+            kind = f"{state.format_id} primary (bps must stay <= 4096)"
+        else:
+            kind = f"{state.format_id} logical"
         return f"size exceeds {cap} MB cap for {kind}"
 
     # Label validation -- empty is OK (we'll default to a generated

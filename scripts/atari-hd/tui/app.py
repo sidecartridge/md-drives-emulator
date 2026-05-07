@@ -477,7 +477,7 @@ def _find_violator_slots(state: State, candidate_format: str,
             continue
         ident = _effective_ident(state, i, part, candidate_format)
         cap = atari_hd.cap_mb_for_type(candidate_format, candidate_strict,
-                                        ident)
+                                        ident, slot_index=i)
         if part.size_mb > cap:
             violators.append(i)
     return violators
@@ -805,7 +805,7 @@ def _preflight_check(state: State):
                     f"{state.format_id}")
         ident = _effective_ident(state, i, part, state.format_id)
         cap = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
-                                        ident)
+                                        ident, slot_index=i)
         if part.size_mb > cap:
             return (f"partition {part.name!r} ({part.size_mb} MB) "
                     f"exceeds {cap} MB cap")

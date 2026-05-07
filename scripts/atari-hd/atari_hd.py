@@ -96,6 +96,25 @@ AHDI_GEM_MAX_MB = 31                 # TOS 1.04+ GEM cap (was 32; off by one)
 HYBRID_MAX_PARTITION_MB = 511
 HYBRID_MIN_PARTITION_MB = 32
 
+# Hybrid (PPDRIVER / HDDRIVER) PRIMARY-slot cap. Empirical real-world
+# constraint: real PPDRIVER and real HDDRIVER on Atari hardware fail
+# to read primary partitions whose TOS BPB carries bps>4096. Logicals
+# in the extended chain are unaffected (real reference images put
+# 480 MB FAT16 logicals at bps=8192 and they work). The cause is
+# inside the driver / IPL boot path, not in TOS itself.
+#
+# The math: choose_logical_sector_size keeps bps=4096 only while
+# clusters_at_spc=2 <= 32765, i.e. sec_512 <= 524240, i.e. partition
+# size <= 255 MB. At 256 MB exactly the doubling rule jumps to
+# bps=8192, which is invalid for the primary slot.
+#
+# Derived from a side-by-side TOS-BPB comparison of a real PPDRIVER
+# 1 GB raw dump (sole primary at 232 MB, bps=4096; 480 MB logical at
+# bps=8192) against a 511 MB primary built by this tool that failed
+# to read on real hardware. The same constraint applies to HDDRIVER
+# (same hybrid TOS+DOS BPB structure; same driver class).
+HYBRID_PRIMARY_MAX_MB = 255
+
 # mkfs behavior: sectors per cluster fixed at 2 (matches Hatari's script and
 # real HDDRIVER/PPDRIVER images we've seen on disk).
 SECTORS_PER_CLUSTER = 2
@@ -1105,9 +1124,18 @@ def partition_cap_mb(format_id: str, strict_tos: bool,
     correct) -- ident strictly follows bps in ahdi_partition_id(),
     so a slot-0 partition above this cap would mismatch its BPB.
     Slots 2..N can be GEM (within the same cap) or BGM (up to
-    256/511). Hybrid formats have no per-slot distinction."""
+    256/511).
+
+    Hybrid (PPDRIVER / HDDRIVER): the primary slot is capped at
+    HYBRID_PRIMARY_MAX_MB (255 MB). Real PPDRIVER and real HDDRIVER
+    on Atari hardware fail to read primary partitions whose TOS BPB
+    carries bps>4096; logicals in the extended chain are unaffected
+    and use the full HYBRID_MAX cap. See HYBRID_PRIMARY_MAX_MB
+    rationale in the constants block."""
     if format_id == FORMAT_AHDI and partition_index == 0:
         return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
+    if format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER) and partition_index == 0:
+        return HYBRID_PRIMARY_MAX_MB
     return format_max_partition_mb(format_id, strict_tos)
 
 
@@ -1236,7 +1264,7 @@ def parse_bpb(buf, offset):
 
 
 def cap_mb_for_type(format_id: str, strict_tos: bool,
-                    ident) -> int:
+                    ident, slot_index: Optional[int] = None) -> int:
     """Cap (MB) for a partition given its on-disk type ident.
 
     Used by interactive callers (the TUI dialog) where the user picks
@@ -1245,14 +1273,20 @@ def cap_mb_for_type(format_id: str, strict_tos: bool,
 
     AHDI: ident b"GEM" / "GEM" -> GEM cap; b"BGM" / "BGM" -> BGM cap;
           unknown -> BGM cap (the more permissive default).
-    Hybrid formats (PPDRIVER / HDDRIVER): ident is ignored, returns
-          the FAT16 ceiling. The DOS view doesn't honor the TOS BGM
-          rules.
+    Hybrid formats (PPDRIVER / HDDRIVER): ident is ignored. When
+          slot_index is 0, the hybrid PRIMARY cap (255 MB) applies --
+          real PPDRIVER and real HDDRIVER on Atari hardware fail to
+          read primary partitions whose TOS BPB carries bps>4096.
+          Slot >= 1 (or unspecified) returns the FAT16 ceiling
+          (HYBRID_MAX_PARTITION_MB, 511 MB). See
+          HYBRID_PRIMARY_MAX_MB rationale in the constants block.
     """
     if format_id == FORMAT_AHDI:
         if ident in (b"GEM", "GEM"):
             return AHDI_GEM_MAX_MB_STRICT if strict_tos else AHDI_GEM_MAX_MB
         return AHDI_MAX_PARTITION_MB_STRICT if strict_tos else AHDI_MAX_PARTITION_MB
+    if slot_index == 0:
+        return HYBRID_PRIMARY_MAX_MB
     return HYBRID_MAX_PARTITION_MB
 
 
@@ -1856,16 +1890,18 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"the {mode_label} {kind} cap at slot {i + 1} is "
                     f"{cap_mb} MB; lower the size or disable strict mode")
     else:
-        # Hybrid formats (PPDRIVER / HDDRIVER) have a hard min size:
-        # the synthesize step requires tos_bps >= 1024, which the
-        # Hatari sector-doubling rule first reaches at ~32 MB. Catch
-        # it here with a clear message instead of letting the user
-        # hit the cryptic 'tos_bps must be a power of two >= 1024'
-        # later. The hybrid max (511 MB) is enforced via
-        # cap_mb_for_type() at the TUI layer; we don't repeat it
-        # here because the planner accepts any size up to the FAT16
-        # cluster cap and the synthesize layer rejects whatever is
-        # actually unbuildable.
+        # Hybrid formats (PPDRIVER / HDDRIVER):
+        # - Per-partition floor HYBRID_MIN_PARTITION_MB (32 MB), so
+        #   the synthesize step's tos_bps >= 1024 invariant holds.
+        # - Per-partition ceiling HYBRID_MAX_PARTITION_MB (511 MB),
+        #   the TOS NSECTS unsigned-16 ceiling at bps=8192.
+        # - Slot 0 (the single primary) tightens further to
+        #   HYBRID_PRIMARY_MAX_MB (255 MB): real-hardware testing
+        #   shows primaries with bps>4096 don't read correctly, and
+        #   the doubling rule jumps to bps=8192 above 255 MB. The
+        #   workaround for users who want a bigger total partition is
+        #   to add a small primary and put the bulk in the extended
+        #   chain, which is what real PPDRIVER setup tools produce.
         for i, part in enumerate(partitions):
             if part.size_mb < HYBRID_MIN_PARTITION_MB:
                 raise ValueError(
@@ -1873,6 +1909,14 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"{format_id} requires >= {HYBRID_MIN_PARTITION_MB} "
                     f"MB per partition (hybrid layout requires logical "
                     f"sector size >= 1024)")
+            cap_mb = partition_cap_mb(format_id, strict_tos, i)
+            if part.size_mb > cap_mb:
+                kind = ("primary slot (bps must stay <= 4096)" if i == 0
+                        else "logical")
+                raise ValueError(
+                    f"partition {part.name!r} is {part.size_mb} MB but "
+                    f"{format_id} {kind} cap is {cap_mb} MB; lower the "
+                    f"size or move it into the extended chain")
             if part.size_mb > HYBRID_MAX_PARTITION_MB:
                 raise ValueError(
                     f"partition {part.name!r} is {part.size_mb} MB but "

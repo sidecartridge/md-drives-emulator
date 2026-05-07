@@ -132,6 +132,15 @@ always uses 512-byte sectors (so macOS mounts them), the TOS companion BPB
 uses the larger Hatari-picked sector size, and both BPBs project onto the
 same physical FAT/root/data regions.
 
+> ⚠️ **PPDRIVER / HDDRIVER primary-slot rule.** The single MBR primary
+> (slot 0) is capped at **255 MB** (TOS bps ≤ 4096). Real PPDRIVER and
+> real HDDRIVER on Atari hardware fail to read primary partitions whose
+> TOS BPB carries `bps>4096`; logicals in the extended chain are
+> unaffected and get the full 511 MB cap. To make a >255 MB hybrid
+> image, add a small primary (e.g. 32 MB BOOT) and put the bulk in the
+> extended chain — that's what real PPDRIVER's setup tool produces.
+> Verified empirically + against real reference images.
+
 ### macOS compatibility
 
 **PPDRIVER and HDDRIVER images mount on macOS at any supported size.** The

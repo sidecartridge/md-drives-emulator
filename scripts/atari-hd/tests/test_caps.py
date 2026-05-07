@@ -63,16 +63,20 @@ class TestPartitionCapMb(unittest.TestCase):
                     atari_hd.partition_cap_mb(
                         atari_hd.FORMAT_AHDI, True, slot), 256)
 
-    def test_hybrid_caps_have_no_per_slot_distinction(self):
-        # PPDRIVER / HDDRIVER go through the DOS view, which doesn't care
-        # about TOS BGM limits. The cap is the hybrid layout ceiling
-        # (511 MB; TOS NSECTS 16-bit max at bps=8192) regardless of
-        # slot or strict flag. The strict flag is meaningless for
-        # hybrids -- they target TOS 1.04+ exclusively (synthesize
-        # rejects ratio < 2 / tos_bps < 1024).
+    def test_hybrid_primary_cap_at_slot_0(self):
+        # PPDRIVER / HDDRIVER both cap the primary slot at
+        # HYBRID_PRIMARY_MAX_MB (255 MB) because real driver behaviour
+        # rejects primaries with bps>4096. Strict flag is meaningless
+        # for hybrids; same cap regardless. Slots 1+ get the full
+        # HYBRID_MAX (511 MB) since the chain-link path supports up
+        # to bps=8192.
         for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
-            for slot in (0, 1, 5, 13):
-                for strict in (True, False):
+            for strict in (True, False):
+                with self.subTest(format=fmt, slot=0, strict=strict):
+                    self.assertEqual(
+                        atari_hd.partition_cap_mb(fmt, strict, 0),
+                        atari_hd.HYBRID_PRIMARY_MAX_MB)
+                for slot in (1, 5, 13):
                     with self.subTest(format=fmt, slot=slot, strict=strict):
                         self.assertEqual(
                             atari_hd.partition_cap_mb(fmt, strict, slot),
@@ -117,10 +121,9 @@ class TestCapMbForType(unittest.TestCase):
             511)
 
     def test_hybrid_ignores_ident(self):
-        # PPDRIVER / HDDRIVER use the hybrid-layout ceiling regardless
-        # of ident or strict_tos. The cap (511 MB) comes from the TOS
-        # NSECTS 16-bit limit at the maximum supported TOS bps of
-        # 8192 -- not the FAT16 cluster ceiling.
+        # PPDRIVER / HDDRIVER ignore the ident; only slot index matters
+        # for the cap. With slot_index unset (or >= 1) we get the
+        # HYBRID_MAX ceiling. Strict flag is meaningless for hybrids.
         for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
             for ident in (b"GEM", b"BGM", None, "FAT16"):
                 with self.subTest(format=fmt, ident=ident):
@@ -130,6 +133,24 @@ class TestCapMbForType(unittest.TestCase):
                     self.assertEqual(
                         atari_hd.cap_mb_for_type(fmt, True, ident),
                         atari_hd.HYBRID_MAX_PARTITION_MB)
+                    # Slot 1+ explicitly: still HYBRID_MAX.
+                    self.assertEqual(
+                        atari_hd.cap_mb_for_type(fmt, False, ident,
+                                                  slot_index=1),
+                        atari_hd.HYBRID_MAX_PARTITION_MB)
+
+    def test_hybrid_primary_slot_picks_primary_cap(self):
+        # When slot_index=0 is passed, both hybrids return the
+        # HYBRID_PRIMARY_MAX_MB cap regardless of ident or strict_tos.
+        for fmt in (atari_hd.FORMAT_PPDRIVER, atari_hd.FORMAT_HDDRIVER):
+            for ident in (b"GEM", b"BGM", None, "FAT16"):
+                for strict in (True, False):
+                    with self.subTest(format=fmt, ident=ident,
+                                      strict=strict):
+                        self.assertEqual(
+                            atari_hd.cap_mb_for_type(fmt, strict, ident,
+                                                      slot_index=0),
+                            atari_hd.HYBRID_PRIMARY_MAX_MB)
 
 
 class TestAhdiPartitionId(unittest.TestCase):
