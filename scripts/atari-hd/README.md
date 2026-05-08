@@ -1,8 +1,19 @@
 # atari-hd
 
-Build Atari ST hard-disk images for the SidecarTridge Multi-device drives
-emulator (and any tool that can read raw `.img` files). Three on-disk
-formats are supported:
+A general-purpose **Atari ST hard-disk image builder** with both a
+terminal UI (the default) and a scriptable command-line. The output
+is a raw `.img` that drops into any tool that reads block images:
+
+- Atari ST emulators — Hatari, STeem.
+- Hardware bridges — SidecarTridge Multi-device, ACSI2STM,
+  SatanDisk.
+- Direct media — write the image to a microSD / SD / CompactFlash
+  card with `dd` (or the Windows equivalent) and plug it into a
+  real SCSI / IDE / CF adapter on the Atari side. See
+  [Writing the image to a physical device](#writing-the-image-to-a-physical-device)
+  at the end of this README.
+
+Three on-disk formats are supported:
 
 | Format | Self-bootable from this tool? | How |
 |---|---|---|
