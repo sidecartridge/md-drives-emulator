@@ -524,6 +524,7 @@ scripts/atari-hd/
 ├── tui/                 Curses-free terminal UI (epic-003)
 ├── assets/              ICD + PPDRIVER boot-asset blobs
 ├── tools/               Stdlib validators for user-supplied drivers
+├── drivers/             User-supplied third-party drivers (gitignored)
 ├── tests/               Unit tests + parity harness
 ├── atari-hd             POSIX launcher shim (exec'd by ~/.local/bin/atari-hd)
 ├── atari-hd.cmd         Windows launcher shim (exec'd by the WindowsApps shim)
