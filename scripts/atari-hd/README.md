@@ -1,33 +1,58 @@
 # atari-hd
 
-A general-purpose **Atari ST hard-disk image builder** with both a
-terminal UI (the default) and a scriptable command-line. The output
-is a raw `.img` that drops into any tool that reads block images:
+Welcome to **atari-hd** — a general-purpose Atari ST hard-disk
+image builder with both a terminal UI (the default) and a
+scriptable command-line. The output is a raw `.img` you can drop
+straight into any tool that reads a block image:
 
 - Atari ST emulators — Hatari, STeem.
 - Hardware bridges — SidecarTridge Multi-device, ACSI2STM,
   SatanDisk.
 - Direct media — write the image to a microSD / SD / CompactFlash
   card with `dd` (or the Windows equivalent) and plug it into a
-  real SCSI / IDE / CF adapter on the Atari side. See
-  [Writing the image to a physical device](#writing-the-image-to-a-physical-device)
-  at the end of this README.
+  real SCSI / IDE / CF adapter on the Atari side. There's a
+  step-by-step at the end of this README:
+  [Writing the image to a physical device](#writing-the-image-to-a-physical-device).
 
 Three on-disk formats are supported:
 
 | Format | Self-bootable from this tool? | How |
 |---|---|---|
-| **AHDI** (ICD driver) | ✅ yes | Embed a user-supplied `ICDBOOT.PRG`. Boot partition capped at 15 MB. |
-| **PPDRIVER** (Peter Putnik) | ✅ yes | Bundled boot blob from a known-good reference. No extra binary needed. |
+| **AHDI** (ICD driver) | ✅ yes | Embed your `ICDBOOT.PRG`. Boot partition capped at 15 MB. |
+| **PPDRIVER** (Peter Putnik) | ✅ yes | Bundled boot blob from a known-good reference. No extra binary required. |
 | **HDDRIVER** (Uwe Seimet) | ⚠️ experimental | Build the format here, install the driver via `HDDRUTIL.APP` on first boot. |
 
 See [`BOOTABLE.md`](BOOTABLE.md) for the full per-format bootable-image
-guide; this README covers the everyday usage of the tool itself.
+guide; this README covers everyday usage of the tool itself.
 
-**Requirements:** Python 3.10+ on the PATH. Stdlib only — no `pip
+**Requirements:** Python 3.10+ on your PATH. Stdlib only — no `pip
 install`, no external binaries. Runs on Windows, macOS, and Linux.
 
----
+## Why this tool exists
+
+If you've ever tried to set up a hard disk on a real Atari ST, you
+already know the story. The tutorials out there are scattered,
+incomplete, or aimed at people who already know which TOS-side
+BPB sector size goes with which driver. The drivers themselves
+live in different corners of the internet — some freeware, some
+commercial, some abandoned but still required. Even the partition
+tables differ between AHDI, PPDRIVER, and HDDRIVER, and getting any
+one of them wrong leaves you with a disk the Atari simply won't
+recognise.
+
+`atari-hd` exists to cut through all of that. One command. A few
+prompts. A working `.img` you can dump on a microSD card and boot.
+The TUI walks you through size, format, partitions, and bootable
+mode in plain language; the CLI gives you the same flow in a
+single line for scripted runs. The byte-level output is validated
+against real ICDFMT- and PPTOSDOS-formatted reference disks, so
+what comes out of the tool matches what a real Atari setup tool
+would have written — only without the multi-evening rabbit hole.
+
+The goal is **as simple as possible without hiding what's
+underneath**. If you want to read the on-disk format details,
+they're in the [Internals](#internals) section below; if you just
+want a working disk, you don't have to.
 
 ## Installing
 
@@ -98,10 +123,11 @@ $env:ATARI_HD_PREFIX = 'C:\Tools\atari-hd'
 irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex
 ```
 
-### Manual install (contributors / offline)
+### Manual install (contributors and offline use)
 
-Clone the repo and run the script directly. No installer, no PATH
-shim — fine for hacking on the writer:
+Prefer to run from a clone? Clone the repo and invoke the script
+directly. No installer, no PATH shim — handy when you're hacking
+on the writer or working without internet access:
 
 ```
 git clone https://github.com/sidecartridge/md-drives-emulator.git
@@ -120,25 +146,37 @@ Remove-Item -Recurse $env:LOCALAPPDATA\atari-hd
 Remove-Item $env:LOCALAPPDATA\Microsoft\WindowsApps\atari-hd.cmd
 ```
 
+If you installed with a custom prefix, swap the paths above for
+the values you used:
+
+- POSIX: replace `~/.local` with whatever you passed to
+  `--prefix` / `$ATARI_HD_PREFIX`. Files live under
+  `<prefix>/share/atari-hd/` and `<prefix>/bin/atari-hd`.
+- Windows: replace `$env:LOCALAPPDATA\atari-hd` with whatever
+  you set `$env:ATARI_HD_PREFIX` to. The shim at
+  `WindowsApps\atari-hd.cmd` is the same regardless of prefix.
+
 ---
 
 ## Quick start (TUI)
 
-The TUI is the default when both stdin and stdout are a terminal.
-After the one-liner install above:
+The TUI is what you'll see when you run the tool from a regular
+terminal — it's the default whenever both `stdin` and `stdout` are
+a TTY. Once you've installed via the one-liner above:
 
 ```
 atari-hd
 ```
 
-If you're running from a clone without installing:
+If you'd rather run from a clone (the manual-install path), the
+equivalent command is:
 
 ```
 python3 scripts/atari-hd/atari_hd.py
 ```
 
-The rest of this guide uses `atari-hd` for brevity; substitute the
-clone-relative path if you haven't installed.
+The rest of this guide uses `atari-hd` for brevity. Substitute the
+clone-relative form if you haven't installed.
 
 ### Landing screen
 
@@ -323,10 +361,13 @@ Pre-existing files prompt for overwrite confirmation.
 
 ## CLI (prompt mode + scripted runs)
 
-When stdin / stdout aren't a TTY, or when you pass `--no-tui`, the tool
-falls into a linear prompt flow: filename → size picker → format →
+If you'd rather not run the TUI — over SSH, in a CI pipeline, or
+just because you prefer linear prompts — pass `--no-tui` (or
+simply pipe a script into the tool). The flow walks the same
+steps as the TUI in order: filename → size picker → format →
 strict-TOS → auto-partition prompt → partition list → confirm →
-build. Every prompt has a sane default; pressing Enter accepts it.
+build. Every prompt has a sensible default; press Enter to accept
+it and keep moving.
 
 ### Flags
 

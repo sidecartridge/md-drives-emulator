@@ -169,7 +169,7 @@ case ":$PATH:" in
         esac
         case "${SHELL:-}" in
             */fish)
-                say "  echo 'set -gx PATH \$HOME/.local/bin \$PATH' >> $rcfile"
+                say "  echo 'set -gx PATH $BIN_DIR \$PATH' >> $rcfile"
                 ;;
             *)
                 say "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> $rcfile"
