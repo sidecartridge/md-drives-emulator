@@ -534,10 +534,9 @@ scripts/atari-hd/
 └── version.txt          Single-line semver
 ```
 
-The `epics/` and `drivers/` directories are gitignored — `epics/`
-holds local design docs; `drivers/` is where users keep their copies
-of `ICDBOOT.PRG` and other third-party binaries the tool doesn't
-redistribute.
+The `drivers/` directory is gitignored — it's where users keep
+their copies of `ICDBOOT.PRG` and other third-party binaries the
+tool doesn't redistribute.
 
 > **Looking for `ICDBOOT.PRG` / `ICDBOOT.SYS`?** ICD Pro 6.55a is
 > still available as a free download:
