@@ -1,113 +1,94 @@
 # atari-hd one-line installer (Windows).
 #
+# Pulls the current `main` snapshot of scripts/atari-hd/ straight
+# from this repository -- no GitHub releases, no signed tarballs.
+# The trust boundary is HTTPS to github.com.
+#
 # Usage:
-#     irm https://github.com/sidecartridge/md-drives-emulator/releases/latest/download/install.ps1 | iex
+#     irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex
 #
-# Optional environment / flags:
-#     $env:ATARI_HD_VERSION = 'v0.1.0'   # specific tag
-#     $env:ATARI_HD_PREFIX  = 'C:\Tools'  # install root
-#
-# The script:
-#   1. Picks a release.
-#   2. Downloads the tarball + .sha256 from the GitHub release.
-#   3. Verifies SHA-256.
-#   4. Refuses to overwrite a newer install (compares version.txt).
-#   5. Extracts to $prefix\atari-hd\ and drops a wrapper at
-#      $env:LOCALAPPDATA\Microsoft\WindowsApps\atari-hd.cmd (which is
-#      on the default Windows PATH).
+# Optional environment / parameters:
+#     $env:ATARI_HD_REF    = 'main' | 'v0.1.0' | branch / tag
+#     $env:ATARI_HD_PREFIX = 'C:\Tools\atari-hd' (default: %LOCALAPPDATA%\atari-hd)
 #
 # No admin / sudo required for the default prefix.
 
 [CmdletBinding()]
 param(
-    [string]$Version = $env:ATARI_HD_VERSION,
+    [string]$Ref = $env:ATARI_HD_REF,
     [string]$Prefix = $env:ATARI_HD_PREFIX
 )
 
 $ErrorActionPreference = 'Stop'
 
-if (-not $Version) { $Version = 'latest' }
-if (-not $Prefix)  { $Prefix  = Join-Path $env:LOCALAPPDATA 'atari-hd' }
+if (-not $Ref)    { $Ref    = 'main' }
+if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'atari-hd' }
 
 $Repo       = 'sidecartridge/md-drives-emulator'
 $InstallDir = $Prefix
 $ShimDir    = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
 $ShimPath   = Join-Path $ShimDir 'atari-hd.cmd'
-
-if ($Version -eq 'latest') {
-    $BaseUrl = "https://github.com/$Repo/releases/latest/download"
-    $Tarball = 'atari-hd-latest.tar.gz'
-} else {
-    $BaseUrl = "https://github.com/$Repo/releases/download/$Version"
-    $Tarball = "atari-hd-$Version.tar.gz"
-}
-$ShaFile = "$Tarball.sha256"
+$TarballUrl = "https://codeload.github.com/$Repo/tar.gz/refs/heads/$Ref"
 
 Write-Host "atari-hd installer"
-Write-Host "  version : $Version"
-Write-Host "  prefix  : $Prefix"
+Write-Host "  source : github.com/$Repo @ $Ref"
+Write-Host "  prefix : $Prefix"
 
 # Workspace.
 $Tmp = Join-Path $env:TEMP ("atari-hd-install-" + [System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
 try {
-    $TbPath  = Join-Path $Tmp $Tarball
-    $ShaPath = Join-Path $Tmp $ShaFile
+    $TbPath = Join-Path $Tmp 'repo.tar.gz'
 
-    Write-Host "Downloading $Tarball ..."
-    Invoke-WebRequest -Uri "$BaseUrl/$Tarball"  -OutFile $TbPath -UseBasicParsing
-    Invoke-WebRequest -Uri "$BaseUrl/$ShaFile" -OutFile $ShaPath -UseBasicParsing
+    Write-Host "Downloading $Ref tarball ..."
+    Invoke-WebRequest -Uri $TarballUrl -OutFile $TbPath -UseBasicParsing
 
-    Write-Host "Verifying SHA-256 ..."
-    $expected = (Get-Content $ShaPath -Raw).Trim().Split()[0].ToLower()
-    $actual = (Get-FileHash -Algorithm SHA256 -Path $TbPath).Hash.ToLower()
-    if ($expected -ne $actual) {
-        throw "SHA-256 mismatch (expected $expected, got $actual). Download corrupted or tampered with."
-    }
-    Write-Host "  ok"
-
-    # Extract.
-    $Stage = Join-Path $Tmp 'stage'
-    New-Item -ItemType Directory -Path $Stage -Force | Out-Null
-    # Windows 10+ ships tar.exe; use it for cross-version consistency.
-    & tar.exe -xzf $TbPath -C $Stage
+    Write-Host "Extracting scripts/atari-hd/ ..."
+    # Windows 10+ ships tar.exe.
+    & tar.exe -xzf $TbPath -C $Tmp
     if ($LASTEXITCODE -ne 0) { throw "tar -xzf failed (exit $LASTEXITCODE)." }
 
-    $Src = Get-ChildItem -Path $Stage -Directory | Select-Object -First 1
-    if (-not $Src -or -not (Test-Path (Join-Path $Src.FullName 'version.txt'))) {
-        throw "unexpected tarball layout (no version.txt)."
+    $SrcRoot = Get-ChildItem -Path $Tmp -Directory |
+        Where-Object { $_.Name -ne 'atari-hd-install' } |
+        Select-Object -First 1
+    $Src = Join-Path $SrcRoot.FullName 'scripts\atari-hd'
+    if (-not (Test-Path (Join-Path $Src 'atari_hd.py')) -or
+        -not (Test-Path (Join-Path $Src 'version.txt'))) {
+        throw "tarball doesn't contain scripts/atari-hd/. REF=$Ref may be wrong; try -Ref main."
     }
-    $NewVersion = (Get-Content (Join-Path $Src.FullName 'version.txt') -Raw).Trim()
-    Write-Host "  release : v$NewVersion"
 
-    # Version compare against existing install.
+    $NewVersion = (Get-Content (Join-Path $Src 'version.txt') -Raw).Trim()
     $ExistingVerFile = Join-Path $InstallDir 'version.txt'
     if (Test-Path $ExistingVerFile) {
         $OldVersion = (Get-Content $ExistingVerFile -Raw).Trim()
         if ($OldVersion -eq $NewVersion) {
-            Write-Host "  already up to date (v$OldVersion); refreshing files."
+            Write-Host "  installed v$OldVersion; refreshing files."
         } else {
-            $cmp = [System.Version]::Parse($OldVersion).CompareTo(
-                   [System.Version]::Parse($NewVersion))
-            if ($cmp -gt 0 -and $Version -eq 'latest') {
-                throw ("refusing to install v$NewVersion over newer " +
-                       "existing v$OldVersion. Pass -Version $NewVersion " +
-                       "explicitly if you want to downgrade.")
-            }
-            Write-Host "  upgrading from v$OldVersion -> v$NewVersion"
+            Write-Host "  installed v$OldVersion -> v$NewVersion"
         }
+    } else {
+        Write-Host "  fresh install: v$NewVersion"
     }
 
-    # Install: wipe the install dir + move the staged tree in place.
+    # Wipe + repopulate the install dir from the staged tree, copying
+    # only the runtime files (skip drivers/ epics/ tests/ __pycache__/).
     if (Test-Path $InstallDir) {
         Remove-Item -Recurse -Force $InstallDir
     }
-    New-Item -ItemType Directory -Path (Split-Path -Parent $InstallDir) -Force | Out-Null
-    Move-Item -Path $Src.FullName -Destination $InstallDir
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    foreach ($item in @('atari_hd.py', 'tui', 'assets', 'tools',
+                          'atari-hd', 'atari-hd.cmd', 'version.txt',
+                          'README.md', 'BOOTABLE.md')) {
+        $srcItem = Join-Path $Src $item
+        if (Test-Path $srcItem) {
+            Copy-Item -Recurse -Force $srcItem -Destination $InstallDir
+        }
+    }
+    Get-ChildItem -Path $InstallDir -Recurse -Force `
+                   -Directory -Filter '__pycache__' |
+        Remove-Item -Recurse -Force
 
-    # Shim: copy the bundled atari-hd.cmd into WindowsApps so it shows
-    # up on PATH automatically. Adjust the relative target so the
-    # shim launches the installed package.
+    # Shim into WindowsApps.
     New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
     $ShimContents = @"
 @echo off
@@ -121,7 +102,6 @@ rem atari-hd shim (auto-generated by install.ps1).
     Write-Host "  package : $InstallDir"
     Write-Host "  shim    : $ShimPath"
 
-    # PATH hint.
     $pathDirs = $env:Path.Split(';') | ForEach-Object { $_.TrimEnd('\') }
     if ($pathDirs -contains $ShimDir.TrimEnd('\')) {
         Write-Host "  $ShimDir is already on your PATH; run 'atari-hd' from a new shell."

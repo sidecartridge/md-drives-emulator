@@ -1,43 +1,45 @@
 #!/usr/bin/env sh
 # atari-hd one-line installer (macOS / Linux).
 #
+# Pulls the current `main` snapshot of scripts/atari-hd/ straight
+# from this repository -- no GitHub releases, no signed tarballs,
+# no version pinning beyond what's currently committed to main.
+# The trust boundary is HTTPS to github.com.
+#
 # Usage:
-#     curl -fsSL https://github.com/sidecartridge/md-drives-emulator/releases/latest/download/install.sh | sh
+#     curl -fsSL https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh | sh
 #
 # Optional environment / flags:
-#     ATARI_HD_VERSION=v0.1.0  (or --version=v0.1.0)
-#         Install a specific tagged release instead of latest.
-#     ATARI_HD_PREFIX=/opt     (or --prefix=/opt)
+#     ATARI_HD_REF=branch_or_tag    (or --ref=branch_or_tag)
+#         Install from a specific git ref instead of main.
+#     ATARI_HD_PREFIX=/opt          (or --prefix=/opt)
 #         Install root. Defaults to ~/.local. Tarball lands under
 #         $prefix/share/atari-hd/, shim at $prefix/bin/atari-hd.
 #
 # The script:
-#   1. Picks a release (--version or "latest").
-#   2. Downloads the tarball + .sha256 from the GitHub release.
-#   3. Verifies SHA-256.
-#   4. Refuses to overwrite a newer install (compares version.txt).
-#      Same-version is a no-op; older->newer upgrades in place.
-#   5. Extracts to $prefix/share/atari-hd/ and writes a shim at
-#      $prefix/bin/atari-hd that exec's atari_hd.py.
-#   6. Tells the user how to add $prefix/bin to PATH if it isn't.
+#   1. Downloads the repo's tarball at the chosen ref.
+#   2. Extracts only scripts/atari-hd/ into the install dir.
+#   3. Writes a shim at $prefix/bin/atari-hd that exec's atari_hd.py.
+#   4. Tells the user how to add $prefix/bin to PATH if it isn't.
 #
-# Idempotent. No sudo for the default prefix.
+# Idempotent. No sudo for the default prefix. Re-running fetches
+# whatever's currently on main and replaces the install in place.
 
 set -eu
 
 REPO="sidecartridge/md-drives-emulator"
 DEFAULT_PREFIX="${HOME}/.local"
 
-VERSION="${ATARI_HD_VERSION:-latest}"
+REF="${ATARI_HD_REF:-main}"
 PREFIX="${ATARI_HD_PREFIX:-$DEFAULT_PREFIX}"
 
 # Parse argv flags (overrides env).
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version=*) VERSION="${1#*=}" ;;
-        --version) VERSION="${2:?}"; shift ;;
+        --ref=*)    REF="${1#*=}" ;;
+        --ref)      REF="${2:?}"; shift ;;
         --prefix=*) PREFIX="${1#*=}" ;;
-        --prefix) PREFIX="${2:?}"; shift ;;
+        --prefix)   PREFIX="${2:?}"; shift ;;
         -h|--help)
             sed -n '2,/^set -eu/p' "$0" | sed 's/^# \{0,1\}//; /^set -eu/d'
             exit 0
@@ -54,6 +56,9 @@ done
 INSTALL_DIR="$PREFIX/share/atari-hd"
 BIN_DIR="$PREFIX/bin"
 SHIM_PATH="$BIN_DIR/atari-hd"
+TARBALL_URL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF"
+# Codeload understands tag refs too; if $REF doesn't look like a
+# branch the URL still resolves provided the tag exists.
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -75,99 +80,63 @@ else
     warn "atari-hd installer: need curl or wget on PATH; neither found."
     exit 127
 fi
-
-# Need: tar (extracting), shasum (verifying), python3 (runtime check).
 require tar
-if command -v shasum >/dev/null 2>&1; then
-    SHASUM="shasum -a 256"
-elif command -v sha256sum >/dev/null 2>&1; then
-    SHASUM="sha256sum"
-else
-    warn "atari-hd installer: need shasum or sha256sum on PATH; neither found."
-    exit 127
-fi
-
-# Resolve the version + asset filenames.
-if [ "$VERSION" = "latest" ]; then
-    BASE_URL="https://github.com/$REPO/releases/latest/download"
-else
-    BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
-fi
-
-TARBALL="atari-hd${VERSION:+-}${VERSION#latest}.tar.gz"
-# Latest doesn't carry the version in the filename; releases tagged
-# vX.Y.Z do.
-if [ "$VERSION" = "latest" ]; then
-    TARBALL="atari-hd-latest.tar.gz"
-fi
-SHA_FILE="$TARBALL.sha256"
 
 # Workspace.
 TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/atari-hd-install.XXXXXX")
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
 say "atari-hd installer"
-say "  version : $VERSION"
-say "  prefix  : $PREFIX"
+say "  source : github.com/$REPO @ $REF"
+say "  prefix : $PREFIX"
 
-say "Downloading $TARBALL ..."
-$DL_CMD "$TMPDIR/$TARBALL" "$BASE_URL/$TARBALL"
-$DL_CMD "$TMPDIR/$SHA_FILE" "$BASE_URL/$SHA_FILE"
+say "Downloading $REF tarball ..."
+$DL_CMD "$TMPDIR/repo.tar.gz" "$TARBALL_URL"
 
-say "Verifying SHA-256 ..."
-(
-    cd "$TMPDIR"
-    # The .sha256 file's filename may differ from local; rewrite to
-    # match what shasum expects.
-    awk -v f="$TARBALL" '{print $1 "  " f}' "$SHA_FILE" > "$SHA_FILE.local"
-    $SHASUM -c "$SHA_FILE.local" >/dev/null
-)
-say "  ok"
-
-# Extract to a staging dir so we can compare versions before clobbering.
-STAGE="$TMPDIR/stage"
-mkdir -p "$STAGE"
-tar -xzf "$TMPDIR/$TARBALL" -C "$STAGE"
-
-# The tarball is expected to extract into a single top-level
-# directory matching atari-hd-<version>/. Locate it.
-SRC=$(find "$STAGE" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-if [ -z "$SRC" ] || [ ! -f "$SRC/version.txt" ]; then
-    warn "atari-hd installer: unexpected tarball layout (no version.txt)."
+say "Extracting scripts/atari-hd/ ..."
+tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
+# The tarball extracts as "<repo>-<ref>/" (refs with slashes get
+# flattened). Locate the only top-level dir and dive into
+# scripts/atari-hd/.
+SRC_ROOT=$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d \
+                ! -name "atari-hd-install.*" | head -n 1)
+SRC="$SRC_ROOT/scripts/atari-hd"
+if [ ! -f "$SRC/atari_hd.py" ] || [ ! -f "$SRC/version.txt" ]; then
+    warn "atari-hd installer: tarball doesn't contain scripts/atari-hd/."
+    warn "  REF=$REF may be wrong; try --ref=main."
     exit 1
 fi
 
 NEW_VERSION=$(cat "$SRC/version.txt")
-say "  release : v$NEW_VERSION"
-
-# Compare against the existing install (if any).
 if [ -f "$INSTALL_DIR/version.txt" ]; then
     OLD_VERSION=$(cat "$INSTALL_DIR/version.txt")
     if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
-        say "  already up to date (v$OLD_VERSION); refreshing files."
+        say "  installed v$OLD_VERSION; refreshing files."
     else
-        # Naive comparison: refuse to install older over newer.
-        # Users can pass --version explicitly to override.
-        sort_check=$(printf '%s\n%s\n' "$OLD_VERSION" "$NEW_VERSION" | sort -V | tail -n 1)
-        if [ "$sort_check" = "$OLD_VERSION" ] && \
-           [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-            warn "atari-hd installer: refusing to install v$NEW_VERSION over"
-            warn "  newer existing v$OLD_VERSION."
-            warn "  Pass --version=v$NEW_VERSION explicitly if you want to downgrade."
-            exit 1
-        fi
-        say "  upgrading from v$OLD_VERSION -> v$NEW_VERSION"
+        say "  installed v$OLD_VERSION -> v$NEW_VERSION"
     fi
+else
+    say "  fresh install: v$NEW_VERSION"
 fi
 
-# Install.
+# Stage a clean tree (skip drivers/ epics/ tests/ __pycache__/).
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-# Wipe the install dir to avoid stale files from prior versions.
 rm -rf "$INSTALL_DIR"
-mv "$SRC" "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+# Copy the runtime files only. drivers/ epics/ tests/ are deliberately
+# excluded -- they're contributor / user-supplied territory.
+for item in atari_hd.py tui assets tools \
+            atari-hd atari-hd.cmd version.txt \
+            README.md BOOTABLE.md; do
+    if [ -e "$SRC/$item" ]; then
+        cp -R "$SRC/$item" "$INSTALL_DIR/"
+    fi
+done
+find "$INSTALL_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
+chmod 755 "$INSTALL_DIR/atari-hd" 2>/dev/null || :
 
-# Shim. Prefer symlink; fall back to a hand-written wrapper when the
-# fs doesn't support links (e.g., some tmpfs setups).
+# Shim. Prefer symlink; fall back to a wrapper when the fs doesn't
+# support links.
 if ln -sfn "$INSTALL_DIR/atari-hd" "$SHIM_PATH" 2>/dev/null; then
     :
 else
