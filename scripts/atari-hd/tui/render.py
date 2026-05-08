@@ -102,11 +102,11 @@ def _hline(cols: int) -> str:
 
 
 def _render_header(state: State, cols: int) -> str:
-    # Epic-005 / story 004: copyright line lives next to the program
-    # name on the left. The right-side image-path label gets the
-    # _truncate_middle treatment first when the terminal is narrow,
-    # keeping authorship readable on every screen.
-    left = f"atari-hd image creator  {COPYRIGHT_LINE}"
+    # Epic-005 / story 004: copyright + version live next to the
+    # program name on the left. The right-side image-path label
+    # gets the _truncate_middle treatment first when the terminal
+    # is narrow, keeping authorship readable on every screen.
+    left = f"atari-hd image creator  {_attribution_line()}"
     if state.image_path is None:
         right = "(no image)"
     else:
@@ -878,6 +878,14 @@ def validate_edit_dialog(state: State):
 COPYRIGHT_LINE = "(C) 2026 - GOODDATA LABS SL"
 
 
+def _attribution_line() -> str:
+    """Copyright + version, e.g. '(C) 2026 - GOODDATA LABS SL  v0.1.0'.
+    Reads the version at call time (not import time) so a developer
+    running from a fresh clone with an updated version.txt gets the
+    new value without re-importing the module. Story 005-005."""
+    return f"{COPYRIGHT_LINE}  v{atari_hd._read_version()}"
+
+
 HELP_ENTRIES = [
     ("Files / Quit", "N",                "New image"),
     ("Files / Quit", "L",                "Load image"),
@@ -921,11 +929,11 @@ def _render_help_overlay(state: State, cols: int, rows: int) -> str:
         body_lines.append(row)
 
     inner = HELP_BOX_WIDTH - 2  # subtract the side borders
-    # Epic-005 / story 004: copyright line at the bottom of the
-    # overlay, separated from the entries by a blank row, centered
-    # within the inner box width.
+    # Epic-005 / story 004 + 005: copyright + version at the bottom
+    # of the overlay, separated from the entries by a blank row,
+    # centered within the inner box width.
     body_lines.append("")
-    body_lines.append(COPYRIGHT_LINE.center(inner))
+    body_lines.append(_attribution_line().center(inner))
     height = len(body_lines) + 2  # +2 for top/bottom borders
     box_top = max(1, (rows - height) // 2 + 1)
     box_left = max(1, (cols - HELP_BOX_WIDTH) // 2 + 1)

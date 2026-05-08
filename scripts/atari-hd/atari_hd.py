@@ -301,6 +301,21 @@ def mb_to_sectors_512(mb: int) -> int:
     return (mb * MIB) // SECTOR_SIZE
 
 
+def _read_version() -> str:
+    """Return atari-hd's version string from version.txt, located
+    next to this file. Returns 'unknown' when the file is absent or
+    unreadable so partial / unbundled checkouts don't crash on the
+    --version flag and the TUI header line."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "version.txt")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            v = f.read().strip()
+    except OSError:
+        return "unknown"
+    return v or "unknown"
+
+
 def choose_logical_sector_size(partition_sectors_512: int) -> int:
     """Mirror Hatari's atari-hd-image.sh doubling rule: start at 512 bytes
     per logical sector with 2 sectors per cluster, double the logical sector
@@ -3518,6 +3533,9 @@ def _parse_args(argv=None):
                      "(AHDI / PPDRIVER / HDDRIVER)."),
         epilog=("Default: TUI when both stdin and stdout are a "
                 "terminal; otherwise the linear prompt flow."))
+    p.add_argument(
+        "--version", action="version",
+        version=f"atari-hd {_read_version()}")
     g = p.add_mutually_exclusive_group()
     g.add_argument(
         "--tui", action="store_true",
