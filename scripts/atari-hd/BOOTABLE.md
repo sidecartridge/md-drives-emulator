@@ -3,18 +3,13 @@
 Background and walkthrough for turning an `atari_hd.py` image into a
 self-bootable disk on real Atari ST/STe hardware.
 
-This document is **prerequisite-driven**: each format (AHDI / PPDRIVER /
-HDDRIVER) needs a third-party driver binary that this tool does not
-ship. The sections below cover where to obtain each driver, how to
-verify it before passing it to the image builder, and how the various
-epic-004 stories chain together.
+Per-format status:
 
-> Status: this is the docs side of epic-004 stage 1 (driver
-> acquisition). The actual image builder still produces non-bootable
-> images today; the `--ahdi-driver` / `--ppdriver-binary` /
-> `--hddriver-pbl` flags described here are pending stories
-> 011 / 005 / 006 respectively. Acquire the binaries now so the
-> later stories can proceed without a tool-chain detour.
+| Format | Self-bootable from this tool? | How |
+|---|---|---|
+| **AHDI** (ICD) | ✅ yes | `--ahdi-driver=PATH` (or B in TUI). Needs a user-supplied `ICDBOOT.PRG` (we don't bundle ICD). Boot partition capped at 15 MB. |
+| **PPDRIVER** (Peter Putnik) | ✅ yes | `--ppdriver-bootable` (or B in TUI). Boot blob bundled in-repo (freeware). |
+| **HDDRIVER** (Uwe Seimet) | ❌ no | Manual install via HDDRUTIL.APP from the HDDRIVER distribution — see HDDRIVER section below. |
 
 ---
 
@@ -28,19 +23,12 @@ handler at startup (story 011).
 
 The de-facto driver for AHDI bootability today is **ICD's hard-disk
 driver**. In the ICD Pro 6.5.5 (`ICDP655A`) distribution it ships as
-`ICDBOOT.PRG` (with a copy under the dist's `AUTO/` subfolder).
-**On a real ICD-formatted boot disk the same bytes are stored as
-`/ICDBOOT.SYS` at the root of the boot partition** — verified
-byte-for-byte against a real ICD reference image: identical content,
-filename renamed `.PRG` → `.SYS`, no `AUTO/` directory on the disk.
-
-The `.SYS` extension is meaningful — it tells ICD's IPL stub at
-sector 0 to load the file directly via a small FAT16 reader rather
-than going through TOS's `AUTO/*.PRG` scan. Story 011's image
-builder must write the driver at root with the `.SYS` name; an
-`AUTO/`-folder placement (which my earlier draft of these docs
-suggested) does **not** match how ICD's IPL actually finds the
-driver.
+`ICDBOOT.PRG` (with a copy under the dist's `AUTO/` subfolder). On
+a real ICD-formatted boot disk the same bytes are stored as
+`/ICDBOOT.SYS` at the root of the boot partition (extension renamed
+`.PRG` → `.SYS`, no `AUTO/` directory). Our writer reproduces that
+on-disk layout — see "How the AHDI cold-boot path actually works"
+below for the full chain.
 
 ICD Inc. is defunct; the Atari community treats the ICD driver as
 freeware in practice, but this tool makes no licensing claim —
@@ -106,60 +94,78 @@ it under `scripts/atari-hd/drivers/<name>/` for your own use; that
 path is gitignored. Run the helper to confirm the SHA-256 matches
 the row above before passing it to the (future) image-builder.
 
-### What's next
+### Building a bootable AHDI image
 
-The AHDI image builder gains `--ahdi-driver=PATH`. Pass the
-validated `ICDBOOT.PRG` and the resulting image:
+```
+python3 scripts/atari-hd/atari_hd.py \
+    --ahdi-driver scripts/atari-hd/drivers/icdp655a/ICDBOOT.PRG
+```
 
-1. Has the patched ICD boot sector at LBA 0
-   (`scripts/atari-hd/assets/icd_boot_sector.bin` with the
-   partition table and sigword patched in; see story 011).
-2. Stores the driver bytes verbatim as `/ICDBOOT.SYS` at FAT
-   cluster 2 of the boot partition, with `attr=0`.
+(The TUI exposes the same option: pick AHDI, press B, paste the
+driver path on the prompt.)
 
-Both pieces are required: the stock ICD IPL relies on
-`ICDBOOT.SYS` being at cluster 2 so it can skip the FAT16
-directory walk entirely.
+Constraints:
 
-### How story 011's bootable AHDI is built
+- The boot partition (slot 0) must be **≤ 15 MB**. ICD's
+  continuation IPL fails to recognize disks with a larger boot
+  partition. The tool refuses to build with a clear error if you
+  exceed this cap. Real ICDFMT-formatted reference disks always
+  use 14–15 MB boot partitions; we follow the same convention.
+- Slots 1+ are unconstrained by this — keep the bulk of your
+  storage there as BGM partitions.
 
-The image-builder embeds ICD's actual sector-0 IPL (saved as
-`scripts/atari-hd/assets/icd_boot_sector.bin`, SHA-256
-`442d2b795b2490de18ebd89a1324154feedd51659f07a08871a01bec5ea4c245`)
-and patches the geometry-dependent fields. The IPL relies on one
-on-disk invariant — `ICDBOOT.SYS` at FAT cluster 2 — which the
-writer maintains by writing the driver as the first file in a
-freshly formatted boot partition.
+### How the AHDI cold-boot path actually works
 
-Four-step recipe (full detail in story 011):
+The cold-boot chain involves **two** ICD-supplied IPLs that we
+embed as in-repo assets and patch with the user's partition
+table and driver bytes:
 
-1. **Patch the boot sector**: load the asset, overwrite `hd_siz`
-   (0x1C2..0x1C5), AHDI partition slots (0x1C6..0x1F5), BSL
-   pointer (0x1FA..0x1FD); recompute the sigword (0x1FE..0x1FF)
-   so the 256-BE-word-sum of the whole sector mod 0x10000
-   equals `$1234`.
-2. **Write driver bytes at cluster 2** of the boot partition's
-   FAT16. Cluster 2 LBA =
-   `firstLBA + resv + nfats*spfat + ceil(nroot*32 / bps)`.
-3. **Patch FAT1 and FAT2** with the contiguous chain
-   `2 → 3 → … → (1 + n_clusters) → 0xFFFF`.
-4. **Write the root-directory entry**: name `"ICDBOOT "` + ext
-   `"SYS"`, attr `0x00`, cluster low-word `0x0002`, size in
-   bytes.
+```
+Atari ROM
+   │  reads sector 0, checks 256-BE word-sum == $1234
+   ▼
+sector 0 IPL (450 bytes; assets/icd_boot_sector.bin)
+   │  reads slot-0 first-LBA from the AHDI partition table at
+   │  offset 0x1C6, then loads the boot partition's first sector
+   │  and JUMPS into it.
+   ▼
+boot partition's first sector  (at LBA 2)
+   │  byte 0..1 is `60 2c` (BRA.S +$2c) -- skips past the FAT16
+   │  BPB header into ICD's continuation IPL embedded at 0x40+.
+   │  The continuation IPL walks the FAT16 root for the 8.3 name
+   │  "ICDBOOT SYS" (literally embedded in the BPB at offset 0x21
+   │  as the lookup target), reads its cluster chain, applies
+   │  .PRG-format relocations, and jumps to the loaded image.
+   ▼
+ICDBOOT registers as the HD handler, TOS continues to boot
+```
 
-Reference images used to derive this recipe:
-- `sd_card_icdpro.img` (14.21 MiB, SHA-256 `210dc0de…f892`):
-  golden boot-payload reference. Sector 0 sums to `$1234`,
-  contains a single 14.21 MB GEM boot partition with
-  `/ICDBOOT.SYS` at cluster 2 (`attr=0`) plus the rest of the
-  ICD Pro 6.5.5 utility set at later clusters (none required
-  for boot).
-- `atari_2gb_empty_ICD.img` (2 GiB, SHA-256 `33092198…ffdd`):
-  multi-partition slot-table reference (GEM boot + XGM container
-  + two direct BGM primaries; confirms ICD mixes XGM with direct
-  primaries freely).
+The continuation IPL walks the directory by 8.3 name — it's not
+hardcoded to cluster 2. We still place `ICDBOOT.SYS` at cluster 2
+to match what real ICDFMT writes, but that's byte-parity, not a
+load-mechanism requirement.
 
-Neither image is in the repo (both untracked at repo root).
+What the writer does:
+
+1. **Stamp the AHDI root sector** (LBA 0) — load
+   `assets/icd_boot_sector.bin`, patch in our `hd_siz`, AHDI
+   partition table, BSL pointer, and the sigword adjust at
+   `0x1FE` so the sector sums to `$1234`.
+2. **Stamp the boot partition's first sector** (LBA 2) — load
+   `assets/icd_bpb.bin`, splice in our BPB geometry header
+   (bytes `0x0B..0x10` + `0x13..0x17`), keep the asset's
+   `nroot=256` and the embedded continuation IPL bytes verbatim.
+3. **Place the driver** — write `ICDBOOT.PRG` bytes at FAT
+   cluster 2 of the boot partition (renamed `ICDBOOT.SYS` in the
+   directory entry, attr `0x20`). Patch FAT1/FAT2 with the
+   contiguous cluster chain.
+
+### Asset SHA-256s
+
+| Asset | SHA-256 | Source |
+|---|---|---|
+| `assets/icd_boot_sector.bin` (512 B) | `442d2b795b2490de18ebd89a1324154feedd51659f07a08871a01bec5ea4c245` | sector 0 of `sd_card_icdpro.img` |
+| `assets/icd_bpb.bin` (512 B) | `69a7052483caaddb38059b014f5c751450327f8b25f0e143123e926758d0e3a0` | LBA 2 of `TEST16MB_1PART_ORIGINAL.img` |
 
 ---
 
