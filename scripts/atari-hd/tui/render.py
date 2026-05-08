@@ -143,7 +143,13 @@ def _render_body_no_image(cols: int, height: int) -> str:
 def _render_body_empty_partitions(state: State, cols: int, height: int) -> str:
     """Image set but partition list empty: centered hint, format row at
     the bottom."""
-    msg = "No partitions defined -- press A to add"
+    # Mention U=Autopart only when the auto path is actually enabled
+    # (state.image_mb is set; otherwise pressing U just prints a
+    # "set an image size first" status message).
+    if state.image_mb is not None:
+        msg = "No partitions defined -- press A to add or U to autopartition"
+    else:
+        msg = "No partitions defined -- press A to add"
     msg = _truncate_middle(msg, cols - 2)
     blank = " " * cols
     fmt_line = _render_format_hint(state, cols)
@@ -464,7 +470,7 @@ def _render_status_keys(state: State, cols: int) -> str:
         ("T=Type",   selected_real),
         ("W=Write",  has_real),
         ("B=Boot",   boot_enabled),
-        ("U=Auto",   auto_enabled),
+        ("U=Autopart", auto_enabled),
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
