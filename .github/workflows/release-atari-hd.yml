@@ -1,0 +1,115 @@
+name: atari-hd release
+
+# Builds the atari-hd release tarball + checksums and uploads them to
+# the GitHub release whenever a tag matching `atari-hd-vX.Y.Z` is
+# pushed. The release tag namespace is prefixed (instead of plain
+# `vX.Y.Z`) so this repository can also tag firmware releases without
+# colliding.
+#
+# The tarball contains the runtime files of scripts/atari-hd/:
+#   - atari_hd.py
+#   - tui/        (terminal UI package)
+#   - assets/     (boot-sector blobs)
+#   - tools/      (driver validators)
+#   - atari-hd, atari-hd.cmd  (launcher shims)
+#   - version.txt
+#   - README.md, BOOTABLE.md
+# It deliberately excludes drivers/ (user-supplied), epics/ (gitignored
+# planning docs), tests/ (developer aid), and __pycache__/.
+
+on:
+  push:
+    tags:
+      - 'atari-hd-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. atari-hd-v0.1.0). Used only for manual runs.'
+        required: false
+
+jobs:
+  build:
+    name: Build tarball and upload release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh release upload
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ -n "${{ github.event.inputs.tag }}" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          # Strip the atari-hd- prefix to get the bare version.
+          version="${tag#atari-hd-}"
+          # Sanity: version.txt in the tree must match the tag.
+          repo_version="v$(cat scripts/atari-hd/version.txt)"
+          if [ "$version" != "$repo_version" ]; then
+            echo "::error::tag $tag does not match scripts/atari-hd/version.txt ($repo_version)."
+            echo "Bump version.txt before tagging."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release tree
+        run: |
+          stage="$RUNNER_TEMP/atari-hd-${{ steps.version.outputs.version }}"
+          mkdir -p "$stage"
+          cp -R scripts/atari-hd/atari_hd.py            "$stage/"
+          cp -R scripts/atari-hd/tui                    "$stage/"
+          cp -R scripts/atari-hd/assets                 "$stage/"
+          cp -R scripts/atari-hd/tools                  "$stage/"
+          cp scripts/atari-hd/atari-hd                  "$stage/"
+          cp scripts/atari-hd/atari-hd.cmd              "$stage/"
+          cp scripts/atari-hd/version.txt               "$stage/"
+          cp scripts/atari-hd/README.md                 "$stage/"
+          cp scripts/atari-hd/BOOTABLE.md               "$stage/"
+          # Strip __pycache__ from the staged tree.
+          find "$stage" -type d -name __pycache__ -prune -exec rm -rf {} +
+          chmod 755 "$stage/atari-hd"
+          # Stash the stage path for downstream steps.
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+
+      - name: Build tarballs (versioned + latest)
+        run: |
+          cd "$RUNNER_TEMP"
+          versioned="atari-hd-${{ steps.version.outputs.version }}.tar.gz"
+          latest="atari-hd-latest.tar.gz"
+          tar -czf "$versioned" "atari-hd-${{ steps.version.outputs.version }}"
+          # The latest-named asset has the same content; ship a copy so
+          # the install script's "latest/download/" URL works.
+          cp "$versioned" "$latest"
+          shasum -a 256 "$versioned" | awk '{print $1}' > "$versioned.sha256"
+          shasum -a 256 "$latest"    | awk '{print $1}' > "$latest.sha256"
+          ls -la atari-hd-*
+
+      - name: Upload assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP"
+          versioned="atari-hd-${{ steps.version.outputs.version }}.tar.gz"
+          latest="atari-hd-latest.tar.gz"
+          # Use the same release that was created for the tag (the
+          # release-please / manual UI step). Fall back to creating it
+          # if the tag lacks a release object yet.
+          if ! gh release view "${{ steps.version.outputs.tag }}" \
+               --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "${{ steps.version.outputs.tag }}" \
+                --repo "${{ github.repository }}" \
+                --title "atari-hd ${{ steps.version.outputs.version }}" \
+                --notes "Automated release from CI."
+          fi
+          gh release upload "${{ steps.version.outputs.tag }}" \
+              --repo "${{ github.repository }}" --clobber \
+              "$versioned" "$versioned.sha256" \
+              "$latest"    "$latest.sha256" \
+              "${{ github.workspace }}/scripts/atari-hd/install.sh" \
+              "${{ github.workspace }}/scripts/atari-hd/install.ps1"

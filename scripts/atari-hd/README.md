@@ -29,17 +29,102 @@ install`, no external binaries. Runs on Windows, macOS, and Linux.
 
 ---
 
+## Installing
+
+### One-liner (recommended)
+
+**macOS / Linux:**
+
+```
+curl -fsSL https://github.com/sidecartridge/md-drives-emulator/releases/latest/download/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```
+irm https://github.com/sidecartridge/md-drives-emulator/releases/latest/download/install.ps1 | iex
+```
+
+What the installer does:
+
+1. Downloads the latest tagged release tarball plus a `.sha256`
+   checksum file from the GitHub release.
+2. Verifies the SHA-256 (refuses to install on mismatch — a download
+   that's been tampered with or corrupted is a hard fail, not a
+   warning).
+3. Extracts the package into a stable location:
+   - macOS / Linux: `~/.local/share/atari-hd/`.
+   - Windows: `%LOCALAPPDATA%\atari-hd\`.
+4. Drops a launcher shim onto PATH so `atari-hd` works from any
+   shell:
+   - macOS / Linux: `~/.local/bin/atari-hd` → the package's launcher.
+   - Windows: `%LOCALAPPDATA%\Microsoft\WindowsApps\atari-hd.cmd`
+     (this directory is on every Windows 10+ user's default PATH).
+5. If `~/.local/bin` isn't on your PATH, prints exact add-to-PATH
+   instructions for your shell — the installer never edits rc files
+   for you.
+
+The installer is **idempotent**: running it again on the same version
+is a no-op refresh; running with a newer release upgrades in place.
+It refuses to install an older release over a newer one (use
+`--version=vX.Y.Z` to override if you really need to downgrade).
+
+No `sudo` / admin needed for the default install root.
+
+### Pinned version or custom prefix
+
+```
+# macOS / Linux
+curl -fsSL https://github.com/sidecartridge/md-drives-emulator/releases/download/atari-hd-v0.1.0/install.sh | sh
+sh install.sh --version=atari-hd-v0.1.0 --prefix=/opt
+
+# Windows -- env vars (or named params on the script directly)
+$env:ATARI_HD_VERSION = 'atari-hd-v0.1.0'
+$env:ATARI_HD_PREFIX  = 'C:\Tools\atari-hd'
+irm https://github.com/sidecartridge/md-drives-emulator/releases/latest/download/install.ps1 | iex
+```
+
+### Manual install (contributors / offline)
+
+Clone the repo and run the script directly. No installer, no PATH
+shim — fine for hacking on the writer:
+
+```
+git clone https://github.com/sidecartridge/md-drives-emulator.git
+cd md-drives-emulator
+python3 scripts/atari-hd/atari_hd.py
+```
+
+### Uninstall
+
+```
+# macOS / Linux
+rm -rf ~/.local/share/atari-hd ~/.local/bin/atari-hd
+
+# Windows (PowerShell)
+Remove-Item -Recurse $env:LOCALAPPDATA\atari-hd
+Remove-Item $env:LOCALAPPDATA\Microsoft\WindowsApps\atari-hd.cmd
+```
+
+---
+
 ## Quick start (TUI)
 
-The TUI is the default when both stdin and stdout are a terminal. From
-the repository root:
+The TUI is the default when both stdin and stdout are a terminal.
+After the one-liner install above:
+
+```
+atari-hd
+```
+
+If you're running from a clone without installing:
 
 ```
 python3 scripts/atari-hd/atari_hd.py
 ```
 
-(Once the installer ships — see story 005-007 — this becomes a single
-`atari-hd` command anywhere on PATH.)
+The rest of this guide uses `atari-hd` for brevity; substitute the
+clone-relative path if you haven't installed.
 
 ### Landing screen
 
@@ -252,10 +337,13 @@ build. Every prompt has a sane default; pressing Enter accepts it.
 ### One-liner: scripted bootable AHDI
 
 ```
-python3 scripts/atari-hd/atari_hd.py --no-tui \
+atari-hd --no-tui \
     --ahdi-driver path/to/ICDBOOT.PRG \
     --size 256 --auto default --auto-n 2
 ```
+
+(Or `python3 scripts/atari-hd/atari_hd.py …` if you're running from
+a clone without installing.)
 
 The user only types the output filename and confirms at the final
 proceed prompt. Everything else is pre-filled.
