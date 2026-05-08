@@ -661,3 +661,11 @@ If the Atari doesn't recognise the disk, the most common causes are
 / `lsblk` / Disk Management) and (b) writing only the partition
 file rather than the whole-disk image — `dd` over the *device*, not
 a partition slice (`/dev/sdb`, **not** `/dev/sdb1`).
+
+## 📄 License
+
+This project is licensed under the **GNU General Public License v3.0**.  
+See the [LICENSE](https://github.com/sidecartridge/md-drives-emulator/blob/main/LICENSE) file for full terms.
+
+## 🤝 Contributing
+Made with ❤️ by [SidecarTridge](https://sidecartridge.com)
