@@ -28,7 +28,9 @@ $Repo       = 'sidecartridge/md-drives-emulator'
 $InstallDir = $Prefix
 $ShimDir    = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
 $ShimPath   = Join-Path $ShimDir 'atari-hd.cmd'
-$TarballUrl = "https://codeload.github.com/$Repo/tar.gz/refs/heads/$Ref"
+# Codeload's bare-ref endpoint auto-resolves $Ref as branch / tag /
+# commit SHA. Don't prefix refs/heads/ -- that would 404 on tags.
+$TarballUrl = "https://codeload.github.com/$Repo/tar.gz/$Ref"
 
 Write-Host "atari-hd installer"
 Write-Host "  source : github.com/$Repo @ $Ref"

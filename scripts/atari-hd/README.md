@@ -67,20 +67,32 @@ snapshot and replace the install in place. The version reported by
 
 > ℹ️ The trust boundary here is HTTPS to `github.com`. There's no
 > tagged-release / signed-checksum step today — we install whatever's
-> on `main`. If you'd rather pin to a specific commit or branch, use
-> `--ref=` (POSIX) or `-Ref` / `$env:ATARI_HD_REF` (Windows). The
-> tool may move to a dedicated repo later, at which point the URLs
-> here will be updated.
+> on `main`. If you'd rather pin to a specific branch, tag, or commit
+> SHA, use `--ref=` on POSIX, or set `$env:ATARI_HD_REF` *before*
+> the `irm | iex` line on Windows (PowerShell can't pass named
+> parameters into a piped script). The tool may move to a dedicated
+> repo later, at which point the URLs here will be updated.
 
 No `sudo` / admin needed for the default install root.
 
 ### Pinned ref or custom prefix
 
-```
-# macOS / Linux: pull from a branch / tag / sha
-sh install.sh --ref=v0.1.0 --prefix=/opt
+`--ref=` (POSIX) and `$env:ATARI_HD_REF` (Windows) accept any git
+ref the tarball endpoint understands: a branch name, a tag, or a
+commit SHA.
 
-# Windows: env vars
+```
+# macOS / Linux -- env vars in front of the pipe
+ATARI_HD_REF=v0.1.0 ATARI_HD_PREFIX=/opt \
+    curl -fsSL https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh | sh
+
+# ...or download install.sh first and pass flags
+curl -fsSLo install.sh https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh
+sh install.sh --ref=v0.1.0 --prefix=/opt
+```
+
+```powershell
+# Windows -- set env vars BEFORE the irm|iex line
 $env:ATARI_HD_REF    = 'v0.1.0'
 $env:ATARI_HD_PREFIX = 'C:\Tools\atari-hd'
 irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex

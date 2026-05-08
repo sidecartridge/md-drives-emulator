@@ -56,9 +56,10 @@ done
 INSTALL_DIR="$PREFIX/share/atari-hd"
 BIN_DIR="$PREFIX/bin"
 SHIM_PATH="$BIN_DIR/atari-hd"
-TARBALL_URL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF"
-# Codeload understands tag refs too; if $REF doesn't look like a
-# branch the URL still resolves provided the tag exists.
+TARBALL_URL="https://codeload.github.com/$REPO/tar.gz/$REF"
+# Codeload's bare-ref endpoint auto-resolves $REF as a branch, a tag,
+# or a commit SHA. Don't prefix refs/heads/ here -- that would lock
+# the URL to branches and break --ref=v0.1.0 / --ref=<sha>.
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
