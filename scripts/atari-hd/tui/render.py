@@ -382,7 +382,11 @@ def _render_format_hint(state: State, cols: int) -> str:
     else:
         tos = ""
     boot = _bootable_indicator(state)
-    line = f"  Format: {fmt}{tos}{boot}"
+    if state.image_mb is not None:
+        size = f"  Size: {state.image_mb} MB"
+    else:
+        size = ""
+    line = f"  Format: {fmt}{tos}{size}{boot}"
     return _pad_to(line, cols)
 
 
@@ -446,12 +450,17 @@ def _render_status_keys(state: State, cols: int) -> str:
     # CLI flags); HDDRIVER dims B because the tool can't produce
     # self-bootable HDDRIVER images (story 006 docs-only).
     boot_enabled = state.format_id in ("AHDI", "PPDRIVER")
+    # Epic-005 story 002: U=Auto enabled once the New-flow set an
+    # image size (state.image_mb). Always-dim before then so the
+    # user can't trigger auto-fill on a half-baked plan.
+    auto_enabled = state.image_mb is not None
     cond = [
         ("D=Delete", selected_real),
         ("E=Edit",   selected_real),
         ("T=Type",   selected_real),
         ("W=Write",  has_real),
         ("B=Boot",   boot_enabled),
+        ("U=Auto",   auto_enabled),
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
@@ -483,6 +492,29 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
     if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
         return (f"AHDI driver path (e.g. ICDBOOT.PRG): "
                 f"{state.prompt_buffer}_")
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE:
+        return ("Image size:  1)16  2)64  3)128  4)256  5)512  "
+                "6)1024  7)2048  8)4096   c)Custom   (Esc cancel)")
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE_CUSTOM:
+        return (f"Custom size (16-8192 MB): "
+                f"{state.prompt_buffer}_  (Esc back to presets)")
+    if state.prompt_mode == PromptMode.CONFIRM_AUTO_DISCARD:
+        n = sum(1 for p in state.partitions if p is not None)
+        return f"Discard {n} existing partition(s) and auto-fill? (y/N)"
+    if state.prompt_mode == PromptMode.ASK_AUTO_MODE:
+        return ("Auto-partition mode:  [D]efault (few large)   "
+                "[M]ax (many equal)   (Esc cancel)")
+    if state.prompt_mode == PromptMode.ASK_AUTO_N:
+        # Compute the natural default and show it as the [hint].
+        # Avoid importing app.py from render.py; reproduce the small
+        # natural-N math inline.
+        try:
+            from . import app as _app  # late import to dodge cycles
+            natural = _app._auto_natural_n(state)
+        except Exception:
+            natural = 1
+        return (f"Number of partitions [default {natural}]: "
+                f"{state.prompt_buffer}_  (Esc cancel)")
     if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE:
         path = state.pending_path or "(unknown)"
         return (f"{path} exists. Press O to overwrite, "
@@ -842,6 +874,7 @@ HELP_ENTRIES = [
     ("Partitions",   "F",                "Change format"),
     ("Partitions",   "W",                "Write image"),
     ("Partitions",   "B",                "Toggle bootable mode (AHDI/PPDRIVER)"),
+    ("Partitions",   "U",                "Auto-fill partitions (default / max)"),
     ("Dialogs",      "Tab",              "Next field"),
     ("Dialogs",      "t / Left / Right", "Cycle Type"),
     ("Dialogs",      "Enter / S",        "Save"),
