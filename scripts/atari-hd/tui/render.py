@@ -102,7 +102,11 @@ def _hline(cols: int) -> str:
 
 
 def _render_header(state: State, cols: int) -> str:
-    left = "atari-hd image creator"
+    # Epic-005 / story 004: copyright line lives next to the program
+    # name on the left. The right-side image-path label gets the
+    # _truncate_middle treatment first when the terminal is narrow,
+    # keeping authorship readable on every screen.
+    left = f"atari-hd image creator  {COPYRIGHT_LINE}"
     if state.image_path is None:
         right = "(no image)"
     else:
@@ -862,6 +866,12 @@ def validate_edit_dialog(state: State):
 #
 # Sized to fit 80x24: 17 entries + 4 group headers + 2 borders = 23
 # rows, leaving 1 row of breathing space.
+# Authorship line shown in the header row beside the program name and
+# at the bottom of the help overlay (epic-005 / story 004). Single
+# source of truth so future updates are one edit.
+COPYRIGHT_LINE = "(C) 2026 - GOODDATA LABS SL"
+
+
 HELP_ENTRIES = [
     ("Files / Quit", "N",                "New image"),
     ("Files / Quit", "L",                "Load image"),
@@ -905,6 +915,11 @@ def _render_help_overlay(state: State, cols: int, rows: int) -> str:
         body_lines.append(row)
 
     inner = HELP_BOX_WIDTH - 2  # subtract the side borders
+    # Epic-005 / story 004: copyright line at the bottom of the
+    # overlay, separated from the entries by a blank row, centered
+    # within the inner box width.
+    body_lines.append("")
+    body_lines.append(COPYRIGHT_LINE.center(inner))
     height = len(body_lines) + 2  # +2 for top/bottom borders
     box_top = max(1, (rows - height) // 2 + 1)
     box_left = max(1, (cols - HELP_BOX_WIDTH) // 2 + 1)
