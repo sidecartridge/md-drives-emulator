@@ -771,20 +771,13 @@ def _handle_ask_auto_mode(state: State, key) -> State:
 
 
 def _auto_natural_n(state: State) -> int:
-    """Default N for the ASK_AUTO_N prompt, computed from the currently
-    pending auto mode + state. Default mode -> ceil((image_mb -
-    boot)/data_cap) + 1; max mode -> MAX_PARTITIONS[format]."""
-    mode = state.pending_auto_mode
-    fmt = state.format_id
-    boot = atari_hd._auto_boot_size_mb(fmt, state.bootable)
-    rem = max(0, (state.image_mb or 0) - boot)
-    if mode == atari_hd.AUTO_MODE_DEFAULT:
-        cap = atari_hd._auto_data_cap_mb(fmt, state.strict_tos)
-        if rem == 0:
-            return 1
-        max_slots = atari_hd.MAX_PARTITIONS[fmt]
-        return min(max_slots, 1 + (rem + cap - 1) // cap)
-    return atari_hd.MAX_PARTITIONS[fmt]
+    """Default N for the ASK_AUTO_N prompt. Thin wrapper over the
+    canonical helper in atari_hd; lives here so render.py can call it
+    via the existing late-import dance."""
+    return atari_hd._auto_natural_n_prompt(
+        state.format_id, state.image_mb or 0,
+        state.pending_auto_mode or atari_hd.AUTO_MODE_DEFAULT,
+        state.strict_tos, state.bootable)
 
 
 def _handle_ask_auto_n(state: State, key) -> State:
