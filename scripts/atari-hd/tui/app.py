@@ -261,6 +261,20 @@ def _handle_bootable_toggle(state: State) -> State:
             state.unsaved_changes = True
             state.dirty = True
             return state
+        # Pre-check: ICD's continuation IPL fails on disks with boot
+        # partition > AHDI_BOOTABLE_BOOT_MAX_MB. Surface that BEFORE
+        # we prompt for a driver path so the user can shrink slot 0
+        # first instead of typing a path and then hitting the cap.
+        slot0 = state.partitions[0] if state.partitions else None
+        if (slot0 is not None
+                and slot0.size_mb > atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB):
+            state.status_message = (
+                f"slot 0 is {slot0.size_mb} MB; AHDI bootable mode "
+                f"requires it <= {atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} "
+                f"MB (ICD IPL constraint). Edit slot 0 to shrink it, "
+                f"then press B again.")
+            state.dirty = True
+            return state
         state.prompt_mode = PromptMode.ASK_AHDI_DRIVER_PATH
         state.prompt_buffer = ""
         state.status_message = None
@@ -1033,6 +1047,16 @@ def _preflight_check(state: State):
         if part.size_mb > cap:
             return (f"partition {part.name!r} ({part.size_mb} MB) "
                     f"exceeds {cap} MB cap")
+    # AHDI bootable mode pins slot 0 to a tighter cap (15 MB) -- ICD's
+    # continuation IPL fails on disks with a larger boot partition.
+    # Mirror plan_image's validation here so W shows the error inline
+    # instead of making the user wait for the build-time abort.
+    if (state.format_id == "AHDI" and state.bootable
+            and real and real[0].size_mb > atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB):
+        return (f"AHDI bootable boot partition (slot 0, "
+                f"{real[0].name!r}) is {real[0].size_mb} MB; cap is "
+                f"{atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} MB. Shrink it "
+                f"or press B to disable bootable mode.")
     return None
 
 

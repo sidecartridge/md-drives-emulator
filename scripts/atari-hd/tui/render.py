@@ -175,16 +175,26 @@ def _kind_cap_mb(state: State, d, primary_count: int) -> int:
     """Cap (MB) for the partition the dialog is composing, derived from
     the effective kind (primary -> HYBRID_PRIMARY_MAX_MB; extended ->
     HYBRID_MAX_PARTITION_MB) on hybrid formats. AHDI defers to
-    cap_mb_for_type's ident-based logic."""
+    cap_mb_for_type's ident-based logic, with one extra rule: when
+    AHDI bootable mode is on, slot 0 is capped at
+    AHDI_BOOTABLE_BOOT_MAX_MB (15 MB) -- ICD's continuation IPL
+    fails to recognize disks with a larger boot partition. That
+    cap mirrors the validation in plan_image; surfacing it in the
+    dialog lets the user see the constraint upfront instead of at
+    write-time as a status-bar error."""
     is_hybrid = state.format_id in ("PPDRIVER", "HDDRIVER")
     if is_hybrid:
         kind = _effective_kind(state, d)
         if kind == "primary":
             return atari_hd.HYBRID_PRIMARY_MAX_MB
         return atari_hd.HYBRID_MAX_PARTITION_MB
-    return atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+    base = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
                                      d.type_choice, slot_index=d.slot,
                                      primary_count=primary_count)
+    if (state.format_id == "AHDI" and state.bootable
+            and d.slot == 0):
+        return min(base, atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB)
+    return base
 
 
 def _dialog_primary_count(state: State, d) -> int:
@@ -739,6 +749,15 @@ def validate_edit_dialog(state: State):
         return (f"BGM requires size > {atari_hd.AHDI_GEM_MAX_MB} MB "
                 "(smaller partitions are GEM); pick GEM or grow the size")
     if size_mb > cap:
+        # AHDI bootable mode pins slot 0 to a tighter cap (15 MB)
+        # because ICD's continuation IPL can't recognize larger boot
+        # partitions. Surface the constraint explicitly so the user
+        # knows it's the bootable toggle (B), not the format cap.
+        if (state.format_id == "AHDI" and state.bootable
+                and d.slot == 0):
+            return (f"AHDI bootable boot partition cap is "
+                    f"{atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} MB "
+                    f"(ICD IPL constraint; press B to disable bootable mode)")
         if state.format_id == "AHDI" and d.type_choice == "GEM":
             kind = f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
         elif state.format_id == "AHDI":
