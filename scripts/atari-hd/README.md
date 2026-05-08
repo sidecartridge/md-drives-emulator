@@ -345,3 +345,126 @@ The `epics/` and `drivers/` directories are gitignored — `epics/`
 holds local design docs; `drivers/` is where users keep their copies
 of `ICDBOOT.PRG` and other third-party binaries the tool doesn't
 redistribute.
+
+---
+
+## Writing the image to a physical device
+
+The output of this tool is a raw disk image (`.img`). You can use it
+several ways:
+
+- **SidecarTridge Multi-device** — the drives-emulator firmware reads
+  the image from its own SD card. See the SidecarTridge documentation
+  for how to load images onto the device; you don't need to `dd` for
+  that workflow.
+- **ACSI2STM** — TinyUSB / Raspberry Pi-based ACSI bridge that reads
+  raw `.img` files off a microSD / SD card.
+- **SatanDisk** — SD-card-backed ACSI hard disk for the Atari ST.
+- **Direct SCSI / IDE / CompactFlash** — written to a CF / IDE / SCSI
+  card via a USB adapter, then plugged into a real ACSI bus, an IDE
+  upgrade, or a SatanDisk-style host.
+
+For all of the "raw card" targets above, the workflow is the same:
+write the `.img` byte-for-byte onto the card using `dd` (POSIX) or
+its equivalent on Windows. The card then carries the bytes the Atari
+expects to see at LBA 0 onwards — partition table, bootable IPL, FAT
+filesystem, the works.
+
+> ⚠️ **Writing to the wrong device wipes whatever was on it.** The
+> commands below use *raw block device names* (`/dev/disk2`,
+> `/dev/sdb`, `\\.\PhysicalDriveN`). A typo here can erase your
+> system disk in seconds. Always run a `list` command first, confirm
+> the size matches the card you just inserted, and unmount before
+> writing.
+
+### macOS
+
+```
+diskutil list                              # find the card -- look for
+                                            # the matching size
+diskutil unmountDisk /dev/disk2            # release any auto-mounts
+sudo dd if=path/to/your.img of=/dev/rdisk2 bs=1m
+diskutil eject /dev/disk2                  # safe to remove now
+```
+
+Notes:
+
+- Use `/dev/rdiskN` (the **r**aw character device) rather than
+  `/dev/diskN`. The `r` variant bypasses the buffer cache; on
+  modern macOS the buffered path is dramatically slower (often 20×)
+  and on some releases the kernel refuses raw writes through the
+  buffered path even after `unmountDisk`.
+- `unmountDisk` (not `umount`) detaches every partition on the
+  device at once — Finder will have re-mounted any FAT partitions
+  the moment macOS saw them.
+- If macOS still refuses with `Operation not permitted`, give
+  Terminal full-disk access in System Settings → Privacy & Security
+  → Full Disk Access, then relaunch.
+
+### Linux
+
+```
+lsblk                                       # find the card by size
+sudo umount /dev/sdb*                       # unmount any auto-mounted
+                                            # partitions (sdb1, sdb2, ...)
+sudo dd if=path/to/your.img of=/dev/sdb bs=4M conv=fsync status=progress
+sudo eject /dev/sdb                         # safe to remove
+```
+
+Notes:
+
+- Replace `sdb` with whatever `lsblk` reports for the card (often
+  `sdb`, `sdc`, or `mmcblk0` for built-in SD readers — for the
+  latter use `of=/dev/mmcblk0`).
+- `conv=fsync` flushes the kernel cache before `dd` returns, so
+  pulling the card right after the command finishes is safe.
+- `status=progress` is GNU coreutils-specific; drop it on BusyBox /
+  Alpine.
+
+### Windows
+
+The Windows command line doesn't ship `dd`. Three good options, in
+descending order of safety / convenience:
+
+**Option A — [Win32 Disk Imager](https://sourceforge.net/projects/win32diskimager/)**
+(graphical, recommended for first-time users):
+
+1. Insert the card; note the drive letter Windows assigns.
+2. Launch Win32 Disk Imager **as Administrator**.
+3. Select the `.img` file under "Image File".
+4. Pick the matching drive letter under "Device".
+5. Click **Write**, confirm the warning. Done.
+
+**Option B — [Rufus](https://rufus.ie)** (graphical, good for tricky
+cards): pick the `.img`, the device, set "Image option" to *DD Image*
+(important — leave it on *ISO Image* and Rufus will rewrite the
+image), click Start.
+
+**Option C — `dd for Windows`** (CLI, for scripting). After
+[installing chrysocome.net's
+build](http://www.chrysocome.net/dd):
+
+```
+dd --list                                   # find your card under
+                                            # \\.\PhysicalDriveN
+dd if=path\to\your.img of=\\.\PhysicalDriveN bs=1M --progress
+```
+
+Run from an Administrator-elevated `cmd.exe`. As with macOS / Linux,
+make sure no Explorer windows are open on the card before writing.
+
+### After writing
+
+- **Eject** the card via your OS (don't just yank it; pending writes
+  may not be flushed).
+- **Insert** it into the target device (SidecarTridge / ACSI2STM /
+  SatanDisk / etc.).
+- **Boot** the Atari. For bootable AHDI / PPDRIVER images this should
+  be cold-boot; for HDDRIVER you'll need to install the driver via
+  `HDDRUTIL.APP` on first boot (see [`BOOTABLE.md`](BOOTABLE.md)).
+
+If the Atari doesn't recognise the disk, the most common causes are
+(a) writing to the wrong physical device (re-check `diskutil list`
+/ `lsblk` / Disk Management) and (b) writing only the partition
+file rather than the whole-disk image — `dd` over the *device*, not
+a partition slice (`/dev/sdb`, **not** `/dev/sdb1`).
