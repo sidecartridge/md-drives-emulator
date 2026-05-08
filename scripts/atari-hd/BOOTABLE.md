@@ -9,7 +9,7 @@ Per-format status:
 |---|---|---|
 | **AHDI** (ICD) | ✅ yes | `--ahdi-driver=PATH` (or B in TUI). Needs a user-supplied `ICDBOOT.PRG` (we don't bundle ICD). Boot partition capped at 15 MB. |
 | **PPDRIVER** (Peter Putnik) | ✅ yes | `--ppdriver-bootable` (or B in TUI). Boot blob bundled in-repo (freeware). |
-| **HDDRIVER** (Uwe Seimet) | ❌ no | Manual install via HDDRUTIL.APP from the HDDRIVER distribution — see HDDRIVER section below. |
+| **HDDRIVER** (Uwe Seimet) | ⚠️ experimental | Format byte-validated against real references but cold-boot from this tool's output isn't end-to-end verified. Manual install via HDDRUTIL.APP — see HDDRIVER section below. |
 
 ---
 
@@ -188,7 +188,15 @@ the bundled `.PRG`-format driver at LBA 2..14. PPDRIVER's boot
 mechanism lives entirely in the pre-partition gap, not as a file
 inside the FAT16, so no `--ppdriver-driver=PATH` flag is needed.
 
-## HDDRIVER — Uwe Seimet (manual install, not self-bootable)
+## HDDRIVER — Uwe Seimet (experimental)
+
+> ⚠️ **HDDRIVER support is experimental.** The dual-BPB byte-
+> fidelity work (story 003) is verified against real PPDRIVER /
+> HDDRIVER reference dumps, but **end-to-end real-hardware boot
+> from this tool's output has not been validated**. The image
+> needs HDDRUTIL.APP (from the HDDRIVER distribution) to install
+> the per-disk driver on first boot. Treat as a compatibility
+> fallback, not a turnkey bootable path. Bug reports welcome.
 
 **This tool does not produce self-bootable HDDRIVER images.** Use
 the standard HDDRIVER distribution and HDDRUTIL.APP to install on

@@ -491,7 +491,7 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         slot = state.pending_delete_slot
         return f"Delete partition #{slot}? (y/N)"
     if state.prompt_mode == PromptMode.ASK_FORMAT:
-        return ("Format: [A]HDI  [P]PDRIVER  [H]DDRIVER  "
+        return ("Format: [A]HDI  [P]PDRIVER  [H]DDRIVER (experimental)  "
                 "(Esc cancel)")
     if state.prompt_mode == PromptMode.ASK_STRICT_TOS:
         return "Compatibility with TOS < 1.04? (y/N)"

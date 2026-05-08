@@ -2952,6 +2952,9 @@ def ask_format() -> str:
     print("  1) AHDI     - native Atari (no MBR); AHDI partition table.")
     print("  2) PPDRIVER - PPera TOS&DOS hybrid (MBR + dual BPB).")
     print("  3) HDDRIVER - HDDRIVER TOS&DOS hybrid (MBR + AHDI overlap).")
+    print("              [EXPERIMENTAL: not self-bootable from this tool;")
+    print("               requires HDDRUTIL.APP install on first boot --")
+    print("               see BOOTABLE.md.]")
     while True:
         raw = ask("Choice (1/2/3)", default="1")
         if raw == "1":
@@ -3002,7 +3005,8 @@ def format_partition_table_label(format_id: str) -> str:
     return {
         FORMAT_AHDI: "AHDI (native Atari, no MBR)",
         FORMAT_PPDRIVER: "MBR + PPera TOS&DOS dual BPB",
-        FORMAT_HDDRIVER: "MBR + HDDRIVER TOS&DOS dual BPB (AHDI overlap @ 0x1DE)",
+        FORMAT_HDDRIVER: ("MBR + HDDRIVER TOS&DOS dual BPB (AHDI overlap "
+                           "@ 0x1DE) [EXPERIMENTAL]"),
     }[format_id]
 
 
@@ -3206,11 +3210,18 @@ def main(ahdi_driver_path: Optional[str] = None,
           f"{len(plan.partitions)} partition(s)).")
     if plan.format_id == FORMAT_HDDRIVER:
         print()
-        print("Note: HDDRIVER images are not self-bootable from this tool.")
-        print("To make this image bootable, run HDDRUTIL.APP from the")
-        print("HDDRIVER distribution on the target Atari to install the")
-        print("per-disk driver. See BOOTABLE.md (HDDRIVER section) for")
-        print("the full workflow and rationale.")
+        print("Note: HDDRIVER format is EXPERIMENTAL.")
+        print("- Images aren't self-bootable from this tool. Run "
+              "HDDRUTIL.APP")
+        print("  from the HDDRIVER distribution on the target Atari to "
+              "install")
+        print("  the per-disk driver on first boot.")
+        print("- The dual-BPB byte-fidelity claim has been verified "
+              "against real")
+        print("  PPDRIVER/HDDRIVER reference dumps but real-hardware "
+              "boot from")
+        print("  this tool's output hasn't been validated end-to-end.")
+        print("See BOOTABLE.md (HDDRIVER section) for the full workflow.")
     return 0
 
 
