@@ -3136,8 +3136,8 @@ def _parse_args(argv=None):
               "it first to confirm the .PRG magic and SHA-256). The "
               "driver is embedded as /ICDBOOT.SYS at FAT cluster 2 of "
               "the boot partition and ICD's IPL is stamped at sector "
-              "0. Implies AHDI format and forces prompt mode (TUI "
-              "doesn't currently surface this option)."))
+              "0. Implies AHDI format. Honored in both prompt mode "
+              "and TUI (the TUI starts with bootable mode pre-set)."))
     p.add_argument(
         "--ppdriver-bootable", action="store_true",
         help=("Make a self-bootable PPDRIVER image using the bundled "
@@ -3145,8 +3145,8 @@ def _parse_args(argv=None):
               "of a real PPDRIVER reference disk). Unlike "
               "--ahdi-driver, no path is required because PPDRIVER's "
               "boot data lives entirely in the pre-partition gap, not "
-              "as a file inside the FAT. Implies PPDRIVER format and "
-              "forces prompt mode."))
+              "as a file inside the FAT. Implies PPDRIVER format. "
+              "Honored in both prompt mode and TUI."))
     return p.parse_args(argv)
 
 
@@ -3155,28 +3155,32 @@ def _should_use_tui(args) -> bool:
     require *both* stdin and stdout to be TTYs (the TUI has nothing to
     draw on a redirected stdout, and read_key() would spin on a
     redirected stdin)."""
-    # Bootable-mode flags carry options the TUI can't currently set, so
-    # force prompt mode whenever any of them is supplied. The user can
-    # still pass --tui explicitly to override (the wrapper warns and
-    # ignores the bootable inputs in that case -- story 012 wires them
-    # into the TUI later).
+    # The TUI now surfaces both bootable flags (story 012), so we no
+    # longer force prompt mode when --ahdi-driver / --ppdriver-bootable
+    # are supplied. Explicit flags still win; otherwise default to TUI
+    # only when both stdin and stdout are TTYs.
     if args.tui:
         return True
     if args.no_tui:
         return False
-    if args.ahdi_driver or args.ppdriver_bootable:
-        return False
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _run_tui() -> int:
+def _run_tui(ahdi_driver_path: Optional[str] = None,
+              ppdriver_bootable: bool = False) -> int:
     """Launch the TUI. Lazy-imports the tui package so prompt-mode
-    invocations don't pay its startup cost."""
+    invocations don't pay its startup cost.
+
+    Optional bootable-mode kwargs forward CLI flags into the TUI's
+    initial state (story 012). When provided, the TUI starts with
+    bootable mode pre-set instead of forcing prompt mode.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)
     from tui.app import main as tui_main
-    return tui_main()
+    return tui_main(ahdi_driver_path=ahdi_driver_path,
+                     ppdriver_bootable=ppdriver_bootable)
 
 
 if __name__ == "__main__":
@@ -3192,11 +3196,7 @@ if __name__ == "__main__":
             sys.stderr.write(f"ERROR: {err}\n")
             sys.exit(1)
     if _should_use_tui(args):
-        if args.ahdi_driver or args.ppdriver_bootable:
-            sys.stderr.write(
-                "WARNING: bootable-mode flags are only honored in "
-                "prompt mode; pass --no-tui (or unset --tui) to use "
-                "them.\n")
-        sys.exit(_run_tui())
+        sys.exit(_run_tui(ahdi_driver_path=args.ahdi_driver,
+                           ppdriver_bootable=args.ppdriver_bootable))
     sys.exit(main(ahdi_driver_path=args.ahdi_driver,
                   ppdriver_bootable=args.ppdriver_bootable))

@@ -44,6 +44,9 @@ class PromptMode(Enum):
     CONFIRM_DISCARD_UNSAVED = "confirm_discard_unsaved"
     # Load existing image (story 007)
     CONFIRM_DISCARD_BEFORE_LOAD = "confirm_discard_before_load"
+    # Bootable-mode driver-path entry (story 012). AHDI only;
+    # PPDRIVER bootable is a single-key toggle.
+    ASK_AHDI_DRIVER_PATH = "ask_ahdi_driver_path"
 
 
 class EditField(Enum):
@@ -138,6 +141,14 @@ class State:
     # last successful write. Set by every mutating handler; cleared
     # on successful write and on image_path change (load / new).
     unsaved_changes: bool = False
+    # Story 012: bootable-mode toggle. Surfaces the same options as
+    # atari_hd.py's --ahdi-driver / --ppdriver-bootable CLI flags.
+    # Cleared on every format change. AHDI requires ahdi_driver_path
+    # to be set as well; PPDRIVER uses the bundled boot blob and
+    # ignores the path. HDDRIVER never sets bootable=True (manual
+    # install via HDDRUTIL.APP only -- see BOOTABLE.md).
+    bootable: bool = False
+    ahdi_driver_path: Optional[str] = None
     # Story 008: help overlay visibility. Toggled by `?` from any
     # screen; Esc / `?` while open closes it. Layers on top of every
     # other UI element (main / dialog / prompt) without disturbing

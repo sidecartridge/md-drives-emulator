@@ -371,8 +371,27 @@ def _render_format_hint(state: State, cols: int) -> str:
         tos = f"  TOS<1.04: {'on' if state.strict_tos else 'off'}"
     else:
         tos = ""
-    line = f"  Format: {fmt}{tos}"
+    boot = _bootable_indicator(state)
+    line = f"  Format: {fmt}{tos}{boot}"
     return _pad_to(line, cols)
+
+
+def _bootable_indicator(state) -> str:
+    """One-segment string ("  Bootable: …") describing the current
+    bootable-mode state per format. HDDRIVER prints a docs pointer
+    instead of yes/no since it's not self-bootable from this tool."""
+    if state.format_id == "HDDRIVER":
+        return "  Bootable: manual (HDDRUTIL.APP)"
+    if state.format_id == "AHDI":
+        if state.bootable and state.ahdi_driver_path:
+            import os as _os
+            base = _os.path.basename(state.ahdi_driver_path)
+            return f"  Bootable: yes ({base})"
+        return "  Bootable: no (B to enable)"
+    if state.format_id == "PPDRIVER":
+        return ("  Bootable: yes (bundled blob)" if state.bootable
+                else "  Bootable: no (B to enable)")
+    return ""
 
 
 def _has_real_partitions(state: State) -> bool:
@@ -413,11 +432,16 @@ def _render_status_keys(state: State, cols: int) -> str:
     items = ["N=New", "L=Load", "A=Add"]
     selected_real = _selected_is_real(state)
     has_real = _has_real_partitions(state)
+    # Story 012: B is enabled for AHDI and PPDRIVER (story 005/011's
+    # CLI flags); HDDRIVER dims B because the tool can't produce
+    # self-bootable HDDRIVER images (story 006 docs-only).
+    boot_enabled = state.format_id in ("AHDI", "PPDRIVER")
     cond = [
         ("D=Delete", selected_real),
         ("E=Edit",   selected_real),
         ("T=Type",   selected_real),
         ("W=Write",  has_real),
+        ("B=Boot",   boot_enabled),
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
@@ -446,6 +470,9 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         return f"New image filename: {state.prompt_buffer}_"
     if state.prompt_mode == PromptMode.ASK_LOAD_PATH:
         return f"Load image filename: {state.prompt_buffer}_"
+    if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
+        return (f"AHDI driver path (e.g. ICDBOOT.PRG): "
+                f"{state.prompt_buffer}_")
     if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE:
         path = state.pending_path or "(unknown)"
         return (f"{path} exists. Press O to overwrite, "
@@ -795,6 +822,7 @@ HELP_ENTRIES = [
     ("Partitions",   "T",                "Toggle GEM/BGM (AHDI)"),
     ("Partitions",   "F",                "Change format"),
     ("Partitions",   "W",                "Write image"),
+    ("Partitions",   "B",                "Toggle bootable mode (AHDI/PPDRIVER)"),
     ("Dialogs",      "Tab",              "Next field"),
     ("Dialogs",      "t / Left / Right", "Cycle Type"),
     ("Dialogs",      "Enter / S",        "Save"),
