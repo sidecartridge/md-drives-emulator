@@ -1,13 +1,262 @@
 # atari-hd
 
-`atari_hd.py` builds single-partition Atari ST hard disk images ready to
-mount on the SidecarTridge Multi-device drives emulator.
+Build Atari ST hard-disk images for the SidecarTridge Multi-device drives
+emulator (and any tool that can read raw `.img` files). Three on-disk
+formats are supported:
 
-It's a Python rewrite of Hatari's `tools/atari-hd-image.sh`, extended with
-the hybrid on-disk layouts used by the two most common Atari hard disk
-drivers (PPera's PPDRIVER and Uwe Seimet's HDDRIVER in TOS&DOS mode).
+| Format | Self-bootable from this tool? | How |
+|---|---|---|
+| **AHDI** (ICD driver) | ✅ yes | Embed a user-supplied `ICDBOOT.PRG`. Boot partition capped at 15 MB. |
+| **PPDRIVER** (Peter Putnik) | ✅ yes | Bundled boot blob from a known-good reference. No extra binary needed. |
+| **HDDRIVER** (Uwe Seimet) | ⚠️ experimental | Build the format here, install the driver via `HDDRUTIL.APP` on first boot. |
 
-## Supported layouts
+See [`BOOTABLE.md`](BOOTABLE.md) for the full per-format bootable-image
+guide; this README covers the everyday usage of the tool itself.
+
+**Requirements:** Python 3.10+ on the PATH. Stdlib only — no `pip
+install`, no external binaries. Runs on Windows, macOS, and Linux.
+
+---
+
+## Quick start (TUI)
+
+The TUI is the default when both stdin and stdout are a terminal. From
+the repository root:
+
+```
+python3 scripts/atari-hd/atari_hd.py
+```
+
+(Once the installer ships — see story 005-007 — this becomes a single
+`atari-hd` command anywhere on PATH.)
+
+### Landing screen
+
+```
+atari-hd image creator  (C) 2026 - GOODDATA LABS SL  v0.1.0           (no image)
+────────────────────────────────────────────────────────────────────────────────
+    No image selected. Press N to create one or L to load an existing image.
+────────────────────────────────────────────────────────────────────────────────
+N=New   L=Load   Q=Quit   ?=Help
+```
+
+Press `N` to start a new image or `L` to load an existing one and edit
+its plan. `?` opens the help overlay from any screen.
+
+### `N` — create a new image
+
+The New flow walks four prompts in order: filename → size → format →
+strict-TOS (AHDI only). Each shows up at the bottom of the screen.
+
+**1. Filename:** prompts for the output path. Existing files trigger an
+overwrite confirm.
+
+**2. Size picker:**
+
+```
+Image size:  1)16  2)64  3)128  4)256  5)512  6)1024  7)2048  8)4096   c)Custom
+```
+
+Press `1`–`8` for a preset; `c` opens a numeric prompt for any value in
+16–8192 MB.
+
+**3. Format chooser:**
+
+```
+Format: [A]HDI  [P]PDRIVER  [H]DDRIVER (experimental)  (Esc cancel)
+```
+
+**4. TOS strict prompt** (AHDI only): tighter caps for original 520ST /
+1040ST / Mega ST hardware (16 MB GEM, 256 MB BGM instead of the
+TOS 1.04+ defaults of 31 / 511 MB).
+
+After the wizard you land on the main screen with an empty partition
+list:
+
+```
+atari-hd image creator  (C) 2026 - GOODDATA LABS SL  v0.1.0  image: /...boot.img
+────────────────────────────────────────────────────────────────────────────────
+         No partitions defined -- press A to add or U to autopartition
+  Format: AHDI  TOS<1.04: off  Size: 256 MB  Bootable: no (B to enable)
+────────────────────────────────────────────────────────────────────────────────
+N=New  L=Load  A=Add  D=Delete  E=Edit  T=Type  W=Write  B=Boot  U=Autopart  F=Format  Q=Quit
+```
+
+### `A` — add partitions manually
+
+Opens a modal dialog:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Add Partition                                        │
+│                                                      │
+│   Size (2-31 MB):      15                            │
+│   Type:                GEM (locked)                  │
+│   Label:               BOOT                          │
+│                                                      │
+│ Status: OK                                           │
+│                                                      │
+│ [Tab] field  [t] cycle  [Enter] save  [Esc] cancel   │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+`Tab` moves between fields, `t` cycles the Type column, `Enter` saves.
+The size cap shown in the prompt label is always live: it adapts to
+the format, the slot index, the strict-TOS flag, and (for AHDI)
+whether bootable mode is on.
+
+### `U` — auto-partition
+
+A two-prompt wizard that fills the partition list with sensible
+defaults derived from the format and image size.
+
+```
+Auto-partition mode:  [D]efault (few large)   [M]ax (many equal)   (Esc cancel)
+```
+
+- **Default**: small boot at the format's minimum + as few data slots
+  as possible at the per-slot maximum. Good for "give me a usable
+  layout, fewest slots".
+- **Max**: same boot + remaining space split equally across the
+  format's max partition count. Good for "I want lots of small
+  partitions" (e.g. one drive letter per project).
+
+Then asks for the partition count, with the natural value as the
+default:
+
+```
+Number of partitions [default 3]: _  (Esc cancel)
+```
+
+After confirm, the populated list looks like:
+
+```
+atari-hd image creator  (C) 2026 - GOODDATA LABS SL  v0.1.0  image: /...boot.img
+────────────────────────────────────────────────────────────────────────────────
+  Slot  Type     Start (LBA)        Size  Label
+     0  GEM                2     15.0 MB  BOOT
+     1  BGM           30,722    241.0 MB  DATA1
+  Format: AHDI  TOS<1.04: off  Size: 256 MB  Bootable: yes (ICDBOOT.PRG)
+────────────────────────────────────────────────────────────────────────────────
+N=New  L=Load  A=Add  D=Delete  E=Edit  T=Type  W=Write  B=Boot  U=Autopart  F=Format  Q=Quit
+```
+
+### `B` — toggle bootable mode
+
+Per format:
+
+- **AHDI** — opens a path prompt for the user-supplied `ICDBOOT.PRG`.
+  The file's `.PRG` magic is validated inline. With bootable on, slot 0
+  is hard-capped at 15 MB.
+- **PPDRIVER** — single-key toggle (uses the bundled boot blob; no
+  path needed).
+- **HDDRIVER** — prints a docs pointer; this tool can't make HDDRIVER
+  images self-bootable, see [`BOOTABLE.md`](BOOTABLE.md).
+
+The format-hint row on the main screen surfaces the current state:
+`Bootable: yes (ICDBOOT.PRG)` / `Bootable: no (B to enable)` /
+`Bootable: manual (HDDRUTIL.APP)`.
+
+### `W` — write the image
+
+Validates the plan against the format's caps, allocates the file,
+formats each partition's FAT16, stamps the partition table (and IPL
+when bootable), and atomically `os.replace`s into the target path.
+Pre-existing files prompt for overwrite confirmation.
+
+### Other keys at a glance
+
+| Key | What it does |
+|---|---|
+| `D` | Delete the selected partition. |
+| `E` | Edit the selected partition (same dialog as `A`). |
+| `T` | Toggle GEM/BGM ident on the selected AHDI partition. |
+| `F` | Re-pick format (preserves partitions if compatible). |
+| `↑` / `↓` / `k` / `j` | Move selection. |
+| `?` | Open the help overlay (full key list). |
+| `Q` | Quit (warns on unsaved changes). |
+
+### Help overlay
+
+```
+┌──────────── atari-hd help (Esc / ? to close) ────────────┐
+│Files / Quit                                              │
+│  N                 New image                             │
+│  L                 Load image                            │
+│  Q                 Quit (warns if unsaved)               │
+│Partitions                                                │
+│  Up / Dn / k / j   Move selection                        │
+│  A                 Add partition                         │
+│  D                 Delete selected                       │
+│  E                 Edit selected                         │
+│  T                 Toggle GEM/BGM (AHDI)                 │
+│  F                 Change format                         │
+│  W                 Write image                           │
+│  B                 Toggle bootable mode (AHDI/PPDRIVER)  │
+│  U                 Auto-fill partitions (default / max)  │
+│Dialogs                                                   │
+│  Tab               Next field                            │
+│  t / Left / Right  Cycle Type                            │
+│  Enter / S         Save                                  │
+│  A / P / H         Pick format (in selector)             │
+│  y / N / O         Confirm prompts (O = overwrite)       │
+│  Esc               Cancel dialog / prompt                │
+│Anywhere                                                  │
+│  ?                 Toggle this help                      │
+│                                                          │
+│           (C) 2026 - GOODDATA LABS SL  v0.1.0            │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## CLI (prompt mode + scripted runs)
+
+When stdin / stdout aren't a TTY, or when you pass `--no-tui`, the tool
+falls into a linear prompt flow: filename → size picker → format →
+strict-TOS → auto-partition prompt → partition list → confirm →
+build. Every prompt has a sane default; pressing Enter accepts it.
+
+### Flags
+
+```
+--no-tui              Force the prompt-mode CLI even on a TTY.
+--tui                 Force the TUI even when stdin/stdout aren't a TTY.
+
+--ahdi-driver=PATH    Make a self-bootable AHDI image. PATH is your
+                      ICDBOOT.PRG (validate first with
+                      tools/check_icd_driver.py).
+--ppdriver-bootable   Make a self-bootable PPDRIVER image (uses the
+                      bundled boot blob; no path required).
+
+--size MB             Pre-fill the image-size prompt (16..8192 MB).
+--auto MODE           Auto-fill partitions: default | max | off.
+--auto-n N            N-limit for --auto (total partition count).
+
+--version             Print "atari-hd <version>" and exit.
+-h / --help           Show all flags.
+```
+
+### One-liner: scripted bootable AHDI
+
+```
+python3 scripts/atari-hd/atari_hd.py --no-tui \
+    --ahdi-driver path/to/ICDBOOT.PRG \
+    --size 256 --auto default --auto-n 2
+```
+
+The user only types the output filename and confirms at the final
+proceed prompt. Everything else is pre-filled.
+
+---
+
+## Internals
+
+The remainder of this document is reference material for contributors
+and the curious. Nothing below is required reading for everyday use.
+
+### Supported layouts
 
 | Menu | Label | Sector 0 | Per-partition boot area |
 |------|-------|----------|-------------------------|
@@ -21,15 +270,15 @@ hybrid BPBs, and the outer image bytes.
 
 ### Per-format partition layout
 
-All three formats cap at **14 partitions** total per image (the TOS drive
-letter ceiling: C: through P:). They differ in how many of those can be
-primaries vs. how many have to live in an extended chain:
+All three formats cap at **14 partitions** total per image (the TOS
+drive-letter ceiling: C: through P:). They differ in how many of those
+can be primaries vs. how many have to live in an extended chain:
 
 | Format | Max primary | Primary slots | Extended chain type | When extended kicks in |
 |--------|------------:|---------------|---------------------|------------------------|
 | AHDI | 4 | AHDI root slots 0..3 at 0x1C6 / 0x1D2 / 0x1DE / 0x1EA | XGM (AHDI-native) | N > 4: use slots 0..2 as primaries, slot 3 as the XGM chain head |
-| PPDRIVER | 1 | MBR P0 only at 0x1BE | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container (matches PPTOSDOS convention; multi-primary fails on real Atari hardware at >256 MB partition sizes) |
-| HDDRIVER | 1 | MBR P0 only (AHDI slot 2 at 0x1DE carries the TOS overlap marker and consumes the slot where MBR P2 would live) | MBR extended (type 0x0F) | N > 1: MBR P0 primary + MBR P1 extended container |
+| PPDRIVER | 4 | MBR slots 0..3 at 0x1BE | MBR extended (type 0x0F) | N > 4: 3 primaries + extended container |
+| HDDRIVER | 1 | MBR P0 only (slot 2 is consumed by the AHDI overlap marker at 0x1DE) | MBR extended (type 0x0F) | N > 1: P0 primary + extended container |
 
 For AHDI, each XGM sub-descriptor sector follows the Atari convention:
 AHDI slot 0 holds the logical partition (start **relative to the
@@ -41,226 +290,58 @@ For the hybrid formats, each EBR sector follows the Linux/Windows
 convention: MBR slot 0 is the logical partition (start-LBA relative to
 the EBR); MBR slot 1 is the next-EBR link (start-LBA relative to the
 extended container's base). The `0x55AA` signature sits at byte 510 of
-every EBR. This is what macOS / Linux / Windows all walk, and it matches
-what PPera ships.
-
-## Requirements
-
-- Python 3.10+ — that's it. Stdlib only, no `pip install`, no external
-  binaries. Runs on **Windows, macOS, and Linux**.
-
-The FAT16 formatter is implemented in pure Python (see "How the image is
-built" below). Earlier development used `mkfs.vfat` from `dosfstools`;
-that dependency is gone.
-
-## Usage
-
-```bash
-scripts/atari-hd/atari_hd.py
-```
-
-Everything is interactive. You'll be asked, in order:
-
-1. Output filename.
-2. Layout (AHDI / PPDRIVER / HDDRIVER).
-3. **AHDI only:** force compatibility with **TOS < 1.04** (default: no —
-   see below for what this toggles).
-4. Total image size in MB.
-5. Partition loop (repeated until the cap is reached, the space runs out,
-   or you answer **no** to "Add partition N?"):
-   - Partition size in MB (with remaining-space feedback).
-   - Partition / volume label (≤11 ASCII characters, auto-uppercased).
-
-A summary screen lists every partition and waits for your confirmation
-before writing anything. Pass `Ctrl-C` at any prompt to abort.
+every EBR.
 
 ### TOS compatibility (AHDI only)
 
-Early Atari machines shipped with TOS 1.00 / 1.02, which caps AHDI
-partitions more tightly than TOS 1.04+:
-
-| Mode | GEM cap (boot + small partitions) | BGM cap (big partitions) |
-|------|:--------------------------------:|:-----------------------:|
+| Mode | GEM cap | BGM cap |
+|---|:---:|:---:|
 | TOS 1.04+ (default) | 31 MB | 511 MB |
 | TOS < 1.04 (strict) | 16 MB | 256 MB |
 
 The "512 MB" figure quoted in much of the AHDI literature is rounded
-up: the real ceiling is `NSECTS = 65535` at `bps = 8192` =
+up; the real ceiling is `NSECTS = 65535` at `bps = 8192` =
 **511.99 MB**. A 512 MB BGM partition trips the Hatari sector-doubling
-rule into `bps = 16384`, which TOS 1.04 - 3.x doesn't support.
+rule into `bps = 16384`, which TOS 1.04 - 3.x doesn't support. The
+hybrid formats keep the same caps because they share the underlying
+TOS view.
 
-Say yes to the compat prompt if you're writing an image for a 520ST /
-1040ST / Mega ST still running the original TOS; otherwise leave it at
-the default. The choice:
+### Bootable images
 
-- **Forces partition 1 to be a GEM entry**, capped at the GEM size
-  (16 or 31 MB). This is a defensive compatibility default for the
-  legacy boot path — original AHDI and early SCSI Tools required GEM
-  on the boot slot. TOS itself only checks the boot flag, and modern
-  drivers (HDDRIVER, PPDRIVER, ICD Pro) accept BGM boot up to 511 MB,
-  but emitting GEM at slot 0 is what works everywhere. The cap just
-  changes with the strict-vs-permissive mode.
-- Caps subsequent partitions at the BGM size (256 or 511 MB). Slots
-  2..N can still be GEM (within the GEM cap) or BGM.
-- Is surfaced in the summary (`TOS compat : ...`) so you can verify
-  before confirming.
+AHDI bootable mode embeds two ICD assets (sector 0 IPL +
+BPB-with-continuation-IPL) as repo-shipped blobs and patches the
+geometry-dependent fields at build time. PPDRIVER bootable mode
+embeds the entire 15-sector boot blob from a known-good reference.
+Full chain diagrams + asset SHAs live in
+[`BOOTABLE.md`](BOOTABLE.md).
 
-The prompt is skipped for the hybrid formats (PPDRIVER / HDDRIVER); they
-go through the DOS-side BPB which isn't subject to the TOS BGM limit,
-and their boot partitions can be > 32 MB (both driver vendors advertise
-this).
-
-## Sector size rule
-
-The TOS-side logical sector size is chosen automatically using the same
-algorithm as Hatari's `atari-hd-image.sh` / `mkdosfs -A`: start at 512
-bytes per logical sector with 2 sectors per cluster, double the logical
-sector size until cluster count drops to ≤32765.
-
-| Partition size | TOS logical sector | DOS logical sector (hybrid) | Notes |
-|---------------:|-------------------:|----------------------------:|-------|
-| ≤ 16 MB       | 512 bytes  | 512 bytes (trivial ratio=1) | |
-| 32 MB         | 1024 bytes | 512 bytes                    | |
-| 64 MB         | 2048 bytes | 512 bytes                    | |
-| 128 MB        | 4096 bytes | 512 bytes                    | recommended ceiling for the emulator |
-| 256 MB        | 8192 bytes | 512 bytes                    | works on most TOS/BCB configurations |
-| 512 MB        | 16384 bytes| 512 bytes                    | **unsupported by the emulator today — see below** |
-
-For **AHDI** the "TOS logical sector" column is the only sector size (no DOS
-view exists). For **PPDRIVER / HDDRIVER** both columns apply: the DOS BPB
-always uses 512-byte sectors (so macOS mounts them), the TOS companion BPB
-uses the larger Hatari-picked sector size, and both BPBs project onto the
-same physical FAT/root/data regions.
-
-> ⚠️ **PPDRIVER / HDDRIVER primary-slot rule.** The single MBR primary
-> (slot 0) is capped at **255 MB** (TOS bps ≤ 4096). Real PPDRIVER and
-> real HDDRIVER on Atari hardware fail to read primary partitions whose
-> TOS BPB carries `bps>4096`; logicals in the extended chain are
-> unaffected and get the full 511 MB cap. To make a >255 MB hybrid
-> image, add a small primary (e.g. 32 MB BOOT) and put the bulk in the
-> extended chain — that's what real PPDRIVER's setup tool produces.
-> Verified empirically + against real reference images.
-
-### macOS compatibility
-
-**PPDRIVER and HDDRIVER images mount on macOS at any supported size.** The
-dual-BPB trick this tool implements (mirroring the layout of real PPDRIVER
-/ HDDRIVER disks) gives the DOS view a `bytesPerSec=512` BPB while keeping
-the Atari-side TOS view at the larger Hatari-convention sector size. Both
-BPBs project onto the same physical FAT/root/data regions, so macOS's
-`msdosfs` driver sees a plain 512-byte-sector FAT16 and mounts it. Apple
-macOS then behaves exactly like a Windows / Linux box would.
-
-**AHDI images cannot be mounted by macOS once the partition crosses
-~16 MB.** AHDI is a single-BPB layout with no "DOS view" of its own, so
-the Atari-facing logical sector size (Hatari's doubling rule, 1024 and
-up) is the only sector size in the BPB. Apple's `msdosfs` refuses FAT16
-with `bytesPerSec != 512`, so these partitions show up as "failed to
-mount" in Finder. This is an Apple-kext limitation; Linux, `mtools`, and
-the emulator itself all handle them fine.
-
-Workarounds for AHDI content editing on a Mac:
-
-- **Easiest:** let the emulator mount the image and copy via its USB
-  Mass Storage mode.
-- **Alternative:** `mtools` (`brew install mtools`) — `mcopy`, `mdir`,
-  `mdel`, etc. support arbitrary logical sector sizes:
-  ```bash
-  MTOOLS_SKIP_CHECK=1 mcopy -i image.img@@1024 local.txt ::
-  ```
-  (`@@1024` = the partition starts at byte 1024 = sector 2 = the AHDI
-  default.)
-- **Alternative:** Linux VM / WSL / container with `mount -t vfat`.
-
-If you want AHDI *and* native macOS mounting, keep each partition ≤16 MB.
-Otherwise pick PPDRIVER or HDDRIVER for multi-platform work.
-
-### 16384-byte sector warning
-
-The SidecarTridge emulator's BCB rebind pool is 34 KB. With
-16384-byte logical sectors the rebind can't place the enlarged BCB
-buffers, TOS falls back to its default 1024-byte buffers, and every
-sector read corrupts memory past the buffer → bus errors / 4-bomb.
-
-If you pick a partition size that forces 16384-byte sectors, the script
-prints a loud warning and requires you to type `YES` (in capitals) to
-proceed. Anything else aborts. You can always drop to 256 MB to land on
-8192-byte sectors, or 128 MB for the fully-safe 4096-byte sectors.
-
-## Examples
+### Tests
 
 ```
-$ scripts/atari-hd/atari_hd.py
-SidecarTridge Atari HD image builder
-Output image filename [atari_hd.img]: hatari_gemdos.img
-
-Select the on-disk layout:
-  1) AHDI     - native Atari (no MBR); AHDI partition table.
-  2) PPDRIVER - PPera TOS&DOS hybrid (MBR + dual BPB).
-  3) HDDRIVER - HDDRIVER TOS&DOS hybrid (MBR + AHDI overlap).
-Choice (1/2/3) [1]: 3
-Total image size (MB) [128]: 128
-Partition size (MB) [1..128] [128]: 128
-Partition / volume label (<=11 ASCII chars) [ATARI]: TESTDISK
-============================================================
-IMAGE PLAN
-============================================================
-  File           : hatari_gemdos.img
-  Layout         : MBR + HDDRIVER TOS&DOS dual BPB (AHDI overlap @ 0x1DE)
-  Image size     : 128 MB (262144 x 512-byte sectors)
-  Partition name : TESTDISK
-  Partition size : 128 MB (262144 x 512-byte sectors)
-  Partition start: LBA 1
-  Logical sector : 4096 bytes
-============================================================
-Proceed with image creation? [Y/n]: y
-
-Done. Wrote hatari_gemdos.img (128 MB).
+python3 -m unittest discover scripts/atari-hd/tests
 ```
 
-## How the image is built
+68+ unit tests cover the FAT16 writer, the partition-table writers /
+parsers, the auto-partition layout helper, round-trip parse-back, and
+caps. There's also a real-hardware byte-parity harness under
+`tests/realhw_parity.py` for manual regression-checking against
+user-supplied reference images.
 
-1. The output file is `truncate`d to the requested image size (sparse on
-   macOS APFS / Linux ext4 / Linux XFS).
-2. For each partition, a temporary file equal to the partition size is
-   formatted FAT16 by the in-tree `format_fat16()` writer (stdlib only,
-   no external binary). The parameters mirror what `mkfs.vfat -F 16`
-   would have produced:
-   - **AHDI:** `bps = <Hatari-picked>`, `spc = 2`, `res = 1` —
-     single-BPB layout with the Hatari-picked sector size.
-   - **PPDRIVER / HDDRIVER:** `bps = 512`, `spc = 2*ratio`,
-     `res = ratio + 1`, where `ratio = tos_bps / 512`. The reserved
-     count is honored literally (no cluster-alignment rounding) so the
-     TOS view's `res=1` puts both FATs at the same physical LBA. Byte
-     parity vs. `mkfs.vfat` is enforced by
-     `scripts/atari-hd/tests/parity.py` on hosts where dosfstools is
-     installed.
-3. The FAT filesystem bytes are streamed into the main image at the
-   partition's physical offset.
-4. For PPDRIVER and HDDRIVER layouts, the script reads the DOS BPB the
-   FAT16 writer placed at `firstLBA`, optionally rewrites its OEM field
-   (`PPGDODBC` for PPDRIVER), and synthesizes a matching TOS BPB:
-   - `bps = tos_bps` (≥1024, Hatari-picked)
-   - `spc = 2` (Hatari convention)
-   - `res = 1`
-   - `spfat = dos_spfat / ratio` (must divide cleanly; the DOS params are
-     chosen so it does)
-   - `tot16 = dos_total / ratio`
+### Project layout
 
-   The invariants `cluster_size_bytes` (DOS `spc * 512` == TOS `spc * bps`)
-   and `fat_size_bytes` (DOS `spfat * 512` == TOS `spfat * bps`) both hold,
-   so the DOS view and TOS view see exactly the same physical data.
-5. Sector 0 is overwritten with the partition table appropriate to the
-   layout.
+```
+scripts/atari-hd/
+├── atari_hd.py          Top-level entry point + writer / parser
+├── tui/                 Curses-free terminal UI (epic-003)
+├── assets/              ICD + PPDRIVER boot-asset blobs
+├── tools/               Stdlib validators for user-supplied drivers
+├── tests/               Unit tests + parity harness
+├── BOOTABLE.md          Per-format bootable-image guide
+├── README.md            (this file)
+└── version.txt          Single-line semver
+```
 
-## Limitations
-
-- All three formats cap at **14 partitions** total (the TOS C:..P: drive
-  letter range). Beyond that the drive letters are exhausted regardless
-  of what the driver technically supports.
-- No bootable boot-code injection; the boot flag on the first partition is
-  set but the partition contains only an empty FAT filesystem, so the
-  image won't auto-boot a TOS application without further work.
-- No initial content seeding. Use the emulator's USB-MSC mode or a
-  host-side FAT writer (Mtools / `mount -o loop`) to put files in.
-- No Atari boot-sector checksum (`sum-to-$1234`) computation.
+The `epics/` and `drivers/` directories are gitignored — `epics/`
+holds local design docs; `drivers/` is where users keep their copies
+of `ICDBOOT.PRG` and other third-party binaries the tool doesn't
+redistribute.
