@@ -96,6 +96,10 @@ When ACSI is **enabled** in the setup screen, the emulator also reserves a small
 
 The ACSI ID and the starting drive letter are **independent**. You can, for example, declare ACSI ID `0` but map partitions starting at `K:` so they don't clash with a real ACSI driver that already owns `C:`/`D:`/... The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
 
+#### Building disk images for ACSI
+
+The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible with this emulator lives in its own repo: **[sidecartridge/atari-hd](https://github.com/sidecartridge/atari-hd)**. It's a stdlib-only Python image builder with both a TUI and a scriptable CLI; the output is a raw `.img` you drop on the Multi-device's microSD card. See that repo's README for the one-line installer and usage.
+
 #### ACSI Related Setup Screen Commands
 
 | Command | Description |

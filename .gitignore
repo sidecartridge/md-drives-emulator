@@ -45,9 +45,6 @@
 # Kernel Module Compile Results
 *.mod*
 *.cmd
-# Exception: the atari-hd Windows launcher shim is tracked source
-# (epic-005 / story 007 installer).
-!scripts/atari-hd/atari-hd.cmd
 .tmp_versions/
 modules.order
 Module.symvers
@@ -63,5 +60,3 @@ dist/
 settings.local.json
 *.pyc
 __pycache__/
-epics/
-drivers/
