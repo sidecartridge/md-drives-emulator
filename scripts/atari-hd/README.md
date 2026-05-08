@@ -676,4 +676,4 @@ This project is licensed under the **GNU General Public License v3.0**.
 See the [LICENSE](https://github.com/sidecartridge/md-drives-emulator/blob/main/LICENSE) file for full terms.
 
 ## 🤝 Contributing
-Made with ❤️ by [SidecarTridge](https://sidecartridge.com)
+Made with ❤️ by [SidecarTridge](https://sidecartridge.com) with the help of OpenAI Codex and Claude Code. Contributions welcome! Fork, fix, and open a pull request. For major changes, please open an issue first to discuss what you'd like to change.
