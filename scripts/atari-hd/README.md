@@ -107,9 +107,11 @@ ref the tarball endpoint understands: a branch name, a tag, or a
 commit SHA.
 
 ```
-# macOS / Linux -- env vars in front of the pipe
-ATARI_HD_REF=v0.1.0 ATARI_HD_PREFIX=/opt \
-    curl -fsSL https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh | sh
+# macOS / Linux -- env vars on the sh side of the pipe (the var
+# assignment must precede the command that reads it; on the curl
+# side it would only set vars for curl, not for sh)
+curl -fsSL https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh \
+    | ATARI_HD_REF=v0.1.0 ATARI_HD_PREFIX=/opt sh
 
 # ...or download install.sh first and pass flags
 curl -fsSLo install.sh https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh
@@ -490,6 +492,10 @@ scripts/atari-hd/
 ├── assets/              ICD + PPDRIVER boot-asset blobs
 ├── tools/               Stdlib validators for user-supplied drivers
 ├── tests/               Unit tests + parity harness
+├── atari-hd             POSIX launcher shim (exec'd by ~/.local/bin/atari-hd)
+├── atari-hd.cmd         Windows launcher shim (exec'd by the WindowsApps shim)
+├── install.sh           macOS / Linux one-line installer
+├── install.ps1          Windows one-line installer
 ├── BOOTABLE.md          Per-format bootable-image guide
 ├── README.md            (this file)
 └── version.txt          Single-line semver
