@@ -151,6 +151,17 @@ ICD_BOOT_SECTOR_ASSET = "assets/icd_boot_sector.bin"
 ICD_BOOT_DRIVER_FILENAME = b"ICDBOOT "    # 8-byte FAT16 short-name
 ICD_BOOT_DRIVER_EXT = b"SYS"               # 3-byte extension
 
+# ICD's BPB-with-continuation-IPL template: extracted verbatim from
+# the boot partition's first sector of TEST16MB_1PART_ORIGINAL.img
+# (a real Atari-formatted bootable disk). The cold-boot flow is:
+#   sector 0 IPL  ->  loads sector at slot-0 firstLBA  ->
+#   continuation IPL inside the BPB walks the FAT16 root for the
+#   8.3 name "ICDBOOT SYS" and loads its cluster chain.
+# Without this asset, the boot partition's BPB is a vanilla
+# MSWIN4.1 sector and the sector-0 IPL jumps into garbage --
+# image looks correct on disk but never registers a HD driver.
+ICD_BPB_TEMPLATE_ASSET = "assets/icd_bpb.bin"
+
 # PPDRIVER boot-blob asset: 15 sectors (LBA 0..14) extracted from a
 # real PPDRIVER 1GB reference image. Holds:
 #   LBA 0       — MBR + IPL (sums to $1234, MBR sig 0x55AA preserved)
@@ -604,7 +615,12 @@ def install_icdboot_sys(plan: "ImagePlan", driver_bytes: bytes,
     entry = bytearray(32)
     entry[0:8]   = ICD_BOOT_DRIVER_FILENAME       # b"ICDBOOT "
     entry[8:11]  = ICD_BOOT_DRIVER_EXT             # b"SYS"
-    entry[11]    = 0x00                             # attr=0 (cleared archive bit)
+    # attr=0x20 (archive bit set) matches what real Atari ICDFMT
+    # writes (TEST16MB_1PART_ORIGINAL.img reference). Earlier
+    # revisions of this writer used 0x00 to match sd_card_icdpro.img,
+    # but that image likely never cold-booted on its own (we
+    # never confirmed it independently of an AUTO-loaded driver).
+    entry[11]    = 0x20
     # offsets 12..25: NTRes, time/date fields. All zero matches the
     # reference image (ICD's ICDFMT writes them zero too).
     entry[26:28] = (2).to_bytes(2, "little")       # start cluster low
@@ -613,6 +629,63 @@ def install_icdboot_sys(plan: "ImagePlan", driver_bytes: bytes,
     with open(plan.image_path, "r+b") as f:
         f.seek(root_lba * SECTOR_SIZE)
         f.write(entry)
+
+
+def stamp_icd_bpb_continuation(plan: "ImagePlan") -> None:
+    """For AHDI bootable mode: replace the boot partition's first
+    sector with ICD's BPB-plus-continuation-IPL template
+    (assets/icd_bpb.bin). Without this, the sector-0 IPL jumps into
+    a vanilla MSWIN4.1 BPB and lands in 68000-illegal bytes; the
+    image looks structurally correct but never registers a HD
+    driver on cold boot.
+
+    Splice rules:
+      - Bytes 0..0x0A (BRA + OEM)               -> from asset
+        (the `60 2c` BRA.S is what makes the rest of the sector
+        bootable code rather than a passive BPB header).
+      - Bytes 0x0B..0x17 (standard FAT16 BPB header: bps, spc,
+        resv, nfats, nroot, tot16, media, spfat) -> kept from
+        whatever format_fat16 just wrote (so the IPL reads OUR
+        partition's actual geometry at runtime).
+      - Bytes 0x18..0x1FF (extended BPB fields hijacked into IPL
+        code + filename literal "ICDBOOT SYS") -> from asset.
+
+    Must run AFTER format_fat16 + install_icdboot_sys (which both
+    read the standard BPB header to compute LBAs). The order
+    install_icdboot_sys -> stamp_icd_bpb_continuation also
+    matters for write safety: the install step computes data_lba
+    from BPB fields, so the BPB must still have our format_fat16
+    output when it runs.
+    """
+    asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              ICD_BPB_TEMPLATE_ASSET)
+    with open(asset_path, "rb") as f:
+        asset = f.read()
+    if len(asset) != SECTOR_SIZE:
+        raise RuntimeError(
+            f"ICD BPB asset is {len(asset)} bytes, expected "
+            f"{SECTOR_SIZE} (path: {asset_path})")
+
+    if not plan.partitions:
+        raise RuntimeError("stamp_icd_bpb_continuation: no partitions")
+    part = plan.partitions[0]
+    current = read_sector(plan.image_path, part.start_lba)
+
+    new_bpb = bytearray(asset)
+    # Preserve our partition's BPB header geometry (bps, spc, resv,
+    # nfats, tot16, media, spfat) -- bytes 0x0B..0x17 -- but keep
+    # the asset's nroot=256 at 0x11..0x12. Real ICDFMT-formatted
+    # disks always emit nroot=256 for the boot partition (verified
+    # against TEST16MB_1PART_ORIGINAL.img + sd_card_icdpro.img); if
+    # ICD's continuation IPL has any hardcoded geometry, nroot is
+    # the most likely candidate. The change shifts root_lba +
+    # data_lba by 16 sectors but install_icdboot_sys reads the
+    # patched BPB to compute cluster-2 LBA, so the FAT writer
+    # places ICDBOOT.SYS at the correct (smaller) data_lba.
+    new_bpb[0x0B:0x11] = current[0x0B:0x11]   # bps, spc, resv, nfats
+    new_bpb[0x13:0x18] = current[0x13:0x18]   # tot16, media, spfat
+
+    write_sector(plan.image_path, part.start_lba, bytes(new_bpb))
 
 
 def build_xgm_descriptor_sector(logical_abs_start: int, logical_size: int,
@@ -2665,11 +2738,20 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                 dos_bpb, tos_bps=part.tos_bps, oem=oem)
             write_sector(plan.image_path, part.start_lba + 1, tos_bpb)
 
-    # Step 3.5 (AHDI bootable only): inject the ICD driver at cluster 2
-    # of the boot partition. Must happen AFTER the partition's FAT16 has
-    # been written (Step 2) and BEFORE we patch sector 0 (Step 4), so
-    # the boot partition's BPB is readable for geometry computation and
-    # the driver bytes don't get clobbered by anything later.
+    # Step 3.5 (AHDI bootable only): overlay ICD's BPB-with-
+    # continuation-IPL on the boot partition's first sector, then
+    # write the user's ICDBOOT.PRG bytes at FAT cluster 2.
+    # Order matters:
+    #   (a) stamp_icd_bpb_continuation runs FIRST so the BPB ends
+    #       up with ICD's nroot=256 (and the rest of the IPL code).
+    #   (b) install_icdboot_sys reads that BPB to compute cluster-2
+    #       LBA; with nroot=256 root_secs=16 and data_lba shifts
+    #       16 sectors closer to the BPB. Driver bytes land at the
+    #       correct LBA the IPL will read from.
+    # Without (a), the sector-0 IPL jumps into a vanilla MSWIN4.1
+    # BPB, lands in illegal 68000 bytes, and the driver never
+    # registers -- symptom: image looks correct but Atari won't
+    # recognize the disk on cold boot.
     if plan.format_id == FORMAT_AHDI and plan.ahdi_driver_path:
         with open(plan.ahdi_driver_path, "rb") as f:
             driver_bytes = f.read()
@@ -2678,6 +2760,8 @@ def build_image(plan: ImagePlan, progress=None) -> None:
                 f"AHDI driver {plan.ahdi_driver_path!r} doesn't look "
                 f"like an Atari .PRG (expected magic 0x601A at offset 0; "
                 f"run tools/check_icd_driver.py to validate).")
+        _emit("Stamping ICD BPB continuation IPL on boot partition...")
+        stamp_icd_bpb_continuation(plan)
         install_icdboot_sys(plan, driver_bytes, progress=progress)
 
     # Step 4: write the root sector (sector 0) describing all partitions.
