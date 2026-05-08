@@ -47,6 +47,16 @@ class PromptMode(Enum):
     # Bootable-mode driver-path entry (story 012). AHDI only;
     # PPDRIVER bootable is a single-key toggle.
     ASK_AHDI_DRIVER_PATH = "ask_ahdi_driver_path"
+    # New-image flow size picker (epic-005 / story 002). Chains
+    # ASK_NEW_PATH -> ASK_IMAGE_SIZE -> [ASK_IMAGE_SIZE_CUSTOM ->]
+    # ASK_FORMAT -> [ASK_STRICT_TOS ->] OFF.
+    ASK_IMAGE_SIZE = "ask_image_size"
+    ASK_IMAGE_SIZE_CUSTOM = "ask_image_size_custom"
+    # Auto-partition flow (epic-005 / story 002). Chains
+    # [CONFIRM_AUTO_DISCARD ->] ASK_AUTO_MODE -> ASK_AUTO_N -> OFF.
+    CONFIRM_AUTO_DISCARD = "confirm_auto_discard"
+    ASK_AUTO_MODE = "ask_auto_mode"
+    ASK_AUTO_N = "ask_auto_n"
 
 
 class EditField(Enum):
@@ -149,6 +159,15 @@ class State:
     # install via HDDRUTIL.APP only -- see BOOTABLE.md).
     bootable: bool = False
     ahdi_driver_path: Optional[str] = None
+    # Epic-005 / story 002: image size picked at New-flow time
+    # instead of derived from partition sums at write time. None
+    # means "still using the legacy derive-from-partitions path"
+    # (load_image and pre-005 saved plans take that branch).
+    image_mb: Optional[int] = None
+    # Epic-005 / story 002: transient state carrying the chosen
+    # auto-partition mode between ASK_AUTO_MODE and ASK_AUTO_N.
+    # Cleared on commit / cancel.
+    pending_auto_mode: Optional[str] = None
     # Story 008: help overlay visibility. Toggled by `?` from any
     # screen; Esc / `?` while open closes it. Layers on top of every
     # other UI element (main / dialog / prompt) without disturbing

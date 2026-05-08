@@ -103,6 +103,16 @@ def handle_key(state: State, key) -> State:
         return _handle_discard_before_load_confirm(state, key)
     if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
         return _handle_ask_ahdi_driver_path(state, key)
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE:
+        return _handle_ask_image_size(state, key)
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE_CUSTOM:
+        return _handle_ask_image_size_custom(state, key)
+    if state.prompt_mode == PromptMode.CONFIRM_AUTO_DISCARD:
+        return _handle_confirm_auto_discard(state, key)
+    if state.prompt_mode == PromptMode.ASK_AUTO_MODE:
+        return _handle_ask_auto_mode(state, key)
+    if state.prompt_mode == PromptMode.ASK_AUTO_N:
+        return _handle_ask_auto_n(state, key)
     return state
 
 
@@ -240,6 +250,8 @@ def _handle_partition_action(state: State, k: str) -> State:
         return _start_write(state)
     if k == "b":
         return _handle_bootable_toggle(state)
+    if k == "u":
+        return _handle_auto_open(state)
     return state
 
 
@@ -617,6 +629,219 @@ def _effective_ident(state: State, slot: int, part, format_id: str) -> str:
 
 
 # -------------------------------------------------------------------
+# Epic-005 / story 002: New-flow size picker + auto-partition
+# -------------------------------------------------------------------
+
+# Preset disk sizes (MB) for the size picker. Indexed 1..8.
+IMAGE_SIZE_PRESETS = (16, 64, 128, 256, 512, 1024, 2048, 4096)
+IMAGE_SIZE_MIN = 16
+IMAGE_SIZE_MAX = 8192
+
+
+def _handle_ask_image_size(state: State, key) -> State:
+    """8 preset choices + 9/c for custom. Esc cancels (but keeps
+    state.image_path set; user can re-press N to retry)."""
+    if key == Key.ESC:
+        state.prompt_mode = PromptMode.OFF
+        state.status_message = "size pick cancelled (image has no size yet)"
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if not isinstance(key, str):
+        return state
+    k = key.lower()
+    if k in ("c", "9"):
+        state.prompt_mode = PromptMode.ASK_IMAGE_SIZE_CUSTOM
+        state.prompt_buffer = ""
+        state.dirty = True
+        return state
+    # Digit 1..8 picks a preset.
+    if k.isdigit() and 1 <= int(k) <= len(IMAGE_SIZE_PRESETS):
+        state.image_mb = IMAGE_SIZE_PRESETS[int(k) - 1]
+        state.unsaved_changes = True
+        return _open_format_chooser(state)
+    return state
+
+
+def _handle_ask_image_size_custom(state: State, key) -> State:
+    """Numeric text-input prompt for [16, 8192]."""
+    if key == Key.ESC:
+        # Back up to the preset picker rather than abandon the wizard.
+        state.prompt_mode = PromptMode.ASK_IMAGE_SIZE
+        state.prompt_buffer = ""
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if key == Key.ENTER:
+        raw = state.prompt_buffer.strip()
+        state.prompt_buffer = ""
+        try:
+            mb = int(raw)
+        except ValueError:
+            state.status_message = (f"size must be a number in "
+                                     f"{IMAGE_SIZE_MIN}..{IMAGE_SIZE_MAX} "
+                                     f"MB (got {raw!r})")
+            state.prompt_mode = PromptMode.ASK_IMAGE_SIZE
+            state.dirty = True
+            return state
+        if not (IMAGE_SIZE_MIN <= mb <= IMAGE_SIZE_MAX):
+            state.status_message = (f"size {mb} MB outside range "
+                                     f"{IMAGE_SIZE_MIN}..{IMAGE_SIZE_MAX}")
+            state.prompt_mode = PromptMode.ASK_IMAGE_SIZE
+            state.dirty = True
+            return state
+        state.image_mb = mb
+        state.unsaved_changes = True
+        return _open_format_chooser(state)
+    if key == Key.BACKSPACE:
+        if state.prompt_buffer:
+            state.prompt_buffer = state.prompt_buffer[:-1]
+            state.dirty = True
+        return state
+    if isinstance(key, str) and len(key) == 1 and key.isdigit():
+        state.prompt_buffer += key
+        state.dirty = True
+    return state
+
+
+def _handle_auto_open(state: State) -> State:
+    """U key entry point. Gate: image_mb must be set (size picker run);
+    if partitions already exist, divert to the discard-confirm prompt
+    so the user doesn't lose them silently."""
+    if state.image_path is None:
+        state.status_message = "press N to start a new image first"
+        state.dirty = True
+        return state
+    if state.image_mb is None:
+        state.status_message = ("set an image size first (press N to "
+                                 "redo the new-image flow)")
+        state.dirty = True
+        return state
+    if any(p is not None for p in state.partitions):
+        state.prompt_mode = PromptMode.CONFIRM_AUTO_DISCARD
+        state.dirty = True
+        return state
+    state.prompt_mode = PromptMode.ASK_AUTO_MODE
+    state.dirty = True
+    return state
+
+
+def _handle_confirm_auto_discard(state: State, key) -> State:
+    if isinstance(key, str) and key.lower() == "y":
+        state.partitions = []
+        state.unsaved_changes = True
+        state.prompt_mode = PromptMode.ASK_AUTO_MODE
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    state.prompt_mode = PromptMode.OFF
+    state.status_message = "auto-fill cancelled"
+    state.dirty = True
+    return state
+
+
+def _handle_ask_auto_mode(state: State, key) -> State:
+    if key == Key.ESC:
+        state.prompt_mode = PromptMode.OFF
+        state.pending_auto_mode = None
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if not isinstance(key, str):
+        return state
+    k = key.lower()
+    if k == "d":
+        state.pending_auto_mode = atari_hd.AUTO_MODE_DEFAULT
+    elif k == "m":
+        state.pending_auto_mode = atari_hd.AUTO_MODE_MAX
+    else:
+        return state
+    state.prompt_mode = PromptMode.ASK_AUTO_N
+    state.prompt_buffer = ""
+    state.dirty = True
+    return state
+
+
+def _auto_natural_n(state: State) -> int:
+    """Default N for the ASK_AUTO_N prompt. Thin wrapper over the
+    canonical helper in atari_hd; lives here so render.py can call it
+    via the existing late-import dance."""
+    return atari_hd._auto_natural_n_prompt(
+        state.format_id, state.image_mb or 0,
+        state.pending_auto_mode or atari_hd.AUTO_MODE_DEFAULT,
+        state.strict_tos, state.bootable)
+
+
+def _handle_ask_auto_n(state: State, key) -> State:
+    if key == Key.ESC:
+        state.prompt_mode = PromptMode.OFF
+        state.pending_auto_mode = None
+        state.prompt_buffer = ""
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if key == Key.ENTER:
+        raw = state.prompt_buffer.strip()
+        state.prompt_buffer = ""
+        # Empty -> use the natural default.
+        if not raw:
+            n = _auto_natural_n(state)
+        else:
+            try:
+                n = int(raw)
+            except ValueError:
+                state.status_message = (f"N must be a positive integer "
+                                         f"(got {raw!r})")
+                state.dirty = True
+                return state
+            if n < 1:
+                state.status_message = "N must be >= 1"
+                state.dirty = True
+                return state
+        try:
+            parts = atari_hd.auto_partition_layout(
+                state.format_id, state.image_mb,
+                state.pending_auto_mode, n_limit=n,
+                strict_tos=state.strict_tos,
+                bootable=state.bootable)
+        except ValueError as e:
+            state.status_message = f"auto-fill failed: {e}"
+            state.prompt_mode = PromptMode.OFF
+            state.pending_auto_mode = None
+            state.dirty = True
+            return state
+        mode = state.pending_auto_mode
+        state.partitions = parts
+        state.selected_slot = 0
+        state.unsaved_changes = True
+        state.status_message = (f"Auto-filled {len(parts)} partition(s) "
+                                 f"(mode={mode}, format={state.format_id})")
+        state.prompt_mode = PromptMode.OFF
+        state.pending_auto_mode = None
+        state.dirty = True
+        return state
+    if key == Key.BACKSPACE:
+        if state.prompt_buffer:
+            state.prompt_buffer = state.prompt_buffer[:-1]
+            state.dirty = True
+        return state
+    if isinstance(key, str) and len(key) == 1 and key.isdigit():
+        state.prompt_buffer += key
+        state.dirty = True
+    return state
+
+
+# -------------------------------------------------------------------
 # Edit dialog key handler
 # -------------------------------------------------------------------
 
@@ -912,7 +1137,9 @@ def _commit_text_prompt(state: State) -> State:
             state.pending_path = path
         else:
             state.image_path = path
-            state.prompt_mode = PromptMode.OFF
+            # Epic-005 / story 002: chain into the size picker so
+            # the user sets image_mb before partitions get added.
+            state.prompt_mode = PromptMode.ASK_IMAGE_SIZE
             state.status_message = None
         state.dirty = True
         return state
@@ -982,7 +1209,9 @@ def _handle_overwrite_confirm(state: State, key) -> State:
     if isinstance(key, str) and key == "O":
         state.image_path = state.pending_path
         state.pending_path = None
-        state.prompt_mode = PromptMode.OFF
+        # Epic-005 / story 002: chain into the size picker, same as
+        # the no-overwrite branch in _commit_text_prompt.
+        state.prompt_mode = PromptMode.ASK_IMAGE_SIZE
         state.status_message = None
         state.dirty = True
         return state
@@ -1081,11 +1310,16 @@ def _do_write(state: State) -> State:
     target_dir = os.path.dirname(os.path.abspath(target)) or "."
     real_partitions = [p for p in state.partitions if p is not None]
 
-    # Compute a generous initial image size; plan_image will bump it
-    # if the partitions need more headroom (root sector + EBR / XGM
-    # chain overhead).
-    total_partition_mb = sum(p.size_mb for p in real_partitions)
-    image_mb = max(total_partition_mb + 1, 2)
+    # Epic-005 / story 002: when the user picked an explicit size via
+    # the New-flow size picker, honor it. Otherwise fall back to the
+    # legacy "sum of partition sizes + 1 MB" heuristic (covers
+    # load_image's loaded plans and any path that bypassed the
+    # picker).
+    if state.image_mb is not None:
+        image_mb = state.image_mb
+    else:
+        total_partition_mb = sum(p.size_mb for p in real_partitions)
+        image_mb = max(total_partition_mb + 1, 2)
 
     tmp_path = None
     try:

@@ -301,6 +301,21 @@ def mb_to_sectors_512(mb: int) -> int:
     return (mb * MIB) // SECTOR_SIZE
 
 
+def _read_version() -> str:
+    """Return atari-hd's version string from version.txt, located
+    next to this file. Returns 'unknown' when the file is absent or
+    unreadable so partial / unbundled checkouts don't crash on the
+    --version flag and the TUI header line."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "version.txt")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            v = f.read().strip()
+    except OSError:
+        return "unknown"
+    return v or "unknown"
+
+
 def choose_logical_sector_size(partition_sectors_512: int) -> int:
     """Mirror Hatari's atari-hd-image.sh doubling rule: start at 512 bytes
     per logical sector with 2 sectors per cluster, double the logical sector
@@ -2362,6 +2377,169 @@ def partition_layout(format_id: str, n: int) -> dict:
     raise ValueError(f"unknown format {format_id!r}")
 
 
+# --------------------------------------------------------------------------
+# Auto-partition layout (epic-005 / story 001)
+# --------------------------------------------------------------------------
+
+AUTO_MODE_DEFAULT = "default"
+AUTO_MODE_MAX = "max"
+
+
+def _auto_boot_size_mb(format_id: str, bootable: bool) -> int:
+    """Minimum boot-partition size for the chosen format + bootable mode.
+
+    Picked to be the smallest value the writer accepts:
+      - AHDI bootable -> 15 MB (the AHDI_BOOTABLE_BOOT_MAX_MB cap; ICD's
+        continuation IPL fails on larger boot partitions anyway).
+      - AHDI non-bootable -> MIN_PARTITION_MB (2 MB; format_fat16 may
+        reject below ~5 MB but the helper aims at a sensible minimum
+        rather than the absolute floor).
+      - Hybrid (PPDRIVER / HDDRIVER) -> HYBRID_MIN_PARTITION_MB (32 MB;
+        below that the dual-BPB ratio<2 rule fires)."""
+    if format_id == FORMAT_AHDI:
+        return AHDI_BOOTABLE_BOOT_MAX_MB if bootable else MIN_PARTITION_MB
+    return HYBRID_MIN_PARTITION_MB
+
+
+def _auto_data_cap_mb(format_id: str, strict_tos: bool) -> int:
+    """Per-slot data-partition cap. AHDI BGM cap (256 strict / 511);
+    hybrid extended cap (511). The auto helper places data slots as
+    extended on hybrid formats, so the higher cap applies."""
+    if format_id == FORMAT_AHDI:
+        return format_max_partition_mb(format_id, strict_tos)
+    return HYBRID_MAX_PARTITION_MB
+
+
+def auto_partition_layout(format_id: str,
+                           image_mb: int,
+                           mode: str,
+                           n_limit: Optional[int] = None,
+                           strict_tos: bool = False,
+                           bootable: bool = False) -> List["Partition"]:
+    """Compute a sensible partition list for a fresh image.
+
+    Two modes (epic-005 / story 001):
+
+      mode="default"
+        Boot at the format's minimum, remaining slots at the per-slot
+        max (511 MB on AHDI / hybrid extended; 256 MB AHDI strict).
+        Slot count = ceil((image_mb - boot) / data_cap), capped at
+        n_limit if provided. Goal: as few partitions as possible.
+
+      mode="max"
+        Same boot; remaining space divided EQUALLY across (n_limit -
+        1) data slots (or MAX_PARTITIONS[format] - 1 if no limit).
+        Each slice rounded down to a whole MB. If a slice would fall
+        below the format's min-partition floor, drop the slot count
+        until each slice clears the floor (or slot count hits 0,
+        leaving a boot-only result).
+
+    n_limit (Option A from epic-005 spec): a single knob the user
+    can pass; default natural value differs per mode (default =
+    natural ceil count; max = MAX_PARTITIONS[format]). Caps the
+    TOTAL partition count (boot + data); n_limit=1 produces a
+    boot-only image.
+
+    Hybrid is_extended rules (slot 0 always primary; slot 1+ default
+    extended) are honored via the returned Partition.is_extended
+    flags. AHDI ignores is_extended (the writer derives
+    primary-vs-XGM from slot index).
+
+    Raises ValueError on unknown mode, unknown format, image too
+    small for the boot partition, or n_limit < 1.
+    """
+    if format_id not in (FORMAT_AHDI, FORMAT_PPDRIVER, FORMAT_HDDRIVER):
+        raise ValueError(f"unknown format {format_id!r}")
+    if mode not in (AUTO_MODE_DEFAULT, AUTO_MODE_MAX):
+        raise ValueError(
+            f"unknown auto mode {mode!r}; expected "
+            f"{AUTO_MODE_DEFAULT!r} or {AUTO_MODE_MAX!r}")
+    if n_limit is not None and n_limit < 1:
+        raise ValueError(f"n_limit must be >= 1 (got {n_limit})")
+
+    boot_mb = _auto_boot_size_mb(format_id, bootable)
+    if image_mb < boot_mb:
+        raise ValueError(
+            f"image_mb {image_mb} too small for {format_id} "
+            f"{'bootable ' if bootable else ''}layout "
+            f"(boot partition needs >= {boot_mb} MB)")
+
+    data_cap = _auto_data_cap_mb(format_id, strict_tos)
+    min_data = format_min_partition_mb(format_id)
+    max_slots = MAX_PARTITIONS[format_id]
+    is_hybrid = format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER)
+    remaining_mb = image_mb - boot_mb
+
+    if mode == AUTO_MODE_DEFAULT:
+        # Pack into as few slots as possible at data_cap each. If the
+        # last slot wouldn't reach the min-partition floor (hybrid 32
+        # MB), drop it -- better to leave the tail unallocated than
+        # fail the build.
+        if remaining_mb <= 0:
+            sizes = []
+        else:
+            n_data = (remaining_mb + data_cap - 1) // data_cap   # ceil
+            n_data = min(n_data, max_slots - 1)
+            if n_limit is not None:
+                n_data = min(n_data, max(0, n_limit - 1))
+            sizes = []
+            rem = remaining_mb
+            for _ in range(n_data):
+                sz = min(rem, data_cap)
+                if sz < min_data:
+                    break
+                sizes.append(sz)
+                rem -= sz
+    else:  # AUTO_MODE_MAX
+        if n_limit is not None:
+            n_data_target = max(0, n_limit - 1)
+        else:
+            n_data_target = max_slots - 1
+        n_data_target = min(n_data_target, max_slots - 1)
+        sizes = []
+        if remaining_mb > 0 and n_data_target > 0:
+            # Find the largest n that keeps each slice >= min_data
+            # (and <= data_cap; if image is huge, fall back to
+            # data_cap-sized slots leaving a tail unallocated).
+            n = n_data_target
+            while n > 0:
+                slice_mb = remaining_mb // n
+                if slice_mb > data_cap:
+                    slice_mb = data_cap
+                if slice_mb >= min_data:
+                    break
+                n -= 1
+            if n > 0:
+                slice_mb = min(remaining_mb // n, data_cap)
+                sizes = [slice_mb] * n
+
+    # Build the Partition list. Slot 0 is always primary; on hybrid
+    # formats data slots are extended by default (matches the
+    # existing TUI / prompt-mode default for hybrid slot >= 1).
+    result = [Partition(name="BOOT", size_mb=boot_mb, is_extended=False)]
+    for i, sz in enumerate(sizes, start=1):
+        result.append(Partition(name=f"DATA{i}", size_mb=sz,
+                                  is_extended=is_hybrid))
+    return result
+
+
+def _auto_natural_n_prompt(format_id: str, image_mb: int, mode: str,
+                            strict_tos: bool, bootable: bool) -> int:
+    """Default total-partition count for the auto prompts (TUI's
+    ASK_AUTO_N and CLI's ask_int prompt). For 'default' mode this is
+    the natural ceil count + 1 boot; for 'max' it's the format's
+    MAX_PARTITIONS."""
+    boot_mb = _auto_boot_size_mb(format_id, bootable)
+    rem = max(0, image_mb - boot_mb)
+    if mode == AUTO_MODE_DEFAULT:
+        cap = _auto_data_cap_mb(format_id, strict_tos)
+        if rem == 0:
+            return 1
+        return min(MAX_PARTITIONS[format_id],
+                   1 + (rem + cap - 1) // cap)
+    return MAX_PARTITIONS[format_id]
+
+
 def predict_mkfs_spfat(partition_sectors_512: int, ratio: int) -> Optional[int]:
     """Predict the `spfat` value mkfs.vfat will pick for a FAT16 partition
     created with our fixed parameters (-F 16 -S 512 -s 2*ratio -R ratio+1).
@@ -2966,6 +3144,63 @@ def ask_format() -> str:
         print("  enter 1, 2, or 3.")
 
 
+PROMPT_IMAGE_SIZE_PRESETS = (16, 64, 128, 256, 512, 1024, 2048, 4096)
+PROMPT_IMAGE_SIZE_MIN = 16
+PROMPT_IMAGE_SIZE_MAX = 8192
+
+
+def ask_image_size(default_mb: int = 256) -> int:
+    """Prompt-mode size picker (epic-005 / story 003). 8 preset options
+    + Custom (16-8192). Default highlighted in [...] is the closest
+    preset to `default_mb` (or 4 = 256 MB if no match)."""
+    print()
+    print("Total image size:")
+    half = (len(PROMPT_IMAGE_SIZE_PRESETS) + 1) // 2
+    for i in range(half):
+        left = f"  {i + 1}) {PROMPT_IMAGE_SIZE_PRESETS[i]:>4} MB"
+        rj = i + half
+        if rj < len(PROMPT_IMAGE_SIZE_PRESETS):
+            right = f"    {rj + 1}) {PROMPT_IMAGE_SIZE_PRESETS[rj]:>4} MB"
+        else:
+            right = ""
+        print(left + right)
+    print(f"  9) Custom ({PROMPT_IMAGE_SIZE_MIN}-{PROMPT_IMAGE_SIZE_MAX})")
+    # Pick a default index closest to the requested default_mb.
+    if default_mb in PROMPT_IMAGE_SIZE_PRESETS:
+        default_idx = PROMPT_IMAGE_SIZE_PRESETS.index(default_mb) + 1
+    else:
+        default_idx = 4   # 256 MB
+    while True:
+        raw = ask("Choice (1-9)", default=str(default_idx))
+        if raw.isdigit() and 1 <= int(raw) <= len(PROMPT_IMAGE_SIZE_PRESETS):
+            return PROMPT_IMAGE_SIZE_PRESETS[int(raw) - 1]
+        if raw == "9":
+            return ask_int(
+                f"Custom size (MB) [{PROMPT_IMAGE_SIZE_MIN}-"
+                f"{PROMPT_IMAGE_SIZE_MAX}]",
+                default=default_mb,
+                minimum=PROMPT_IMAGE_SIZE_MIN,
+                maximum=PROMPT_IMAGE_SIZE_MAX)
+        print("  enter 1-9.")
+
+
+def ask_auto_mode() -> Optional[str]:
+    """Prompt for auto-partition mode. Returns AUTO_MODE_DEFAULT,
+    AUTO_MODE_MAX, or None to skip (= manual partitioning)."""
+    print()
+    while True:
+        raw = ask("Auto-fill partitions? "
+                  "[N=skip / D=default / M=max]", default="N")
+        k = raw.strip().lower()[:1]
+        if k == "n":
+            return None
+        if k == "d":
+            return AUTO_MODE_DEFAULT
+        if k == "m":
+            return AUTO_MODE_MAX
+        print("  enter N, D, or M.")
+
+
 def ask_filename() -> str:
     while True:
         path = ask("Output image filename",
@@ -3148,7 +3383,10 @@ def _validate_ahdi_driver(path: str) -> Optional[str]:
 
 
 def main(ahdi_driver_path: Optional[str] = None,
-         ppdriver_bootable: bool = False) -> int:
+         ppdriver_bootable: bool = False,
+         size_mb: Optional[int] = None,
+         auto_mode: Optional[str] = None,
+         auto_n: Optional[int] = None) -> int:
     print("SidecarTridge Atari HD image builder")
 
     if ahdi_driver_path and ppdriver_bootable:
@@ -3169,6 +3407,28 @@ def main(ahdi_driver_path: Optional[str] = None,
 
     image_path = ask_filename()
 
+    # Epic-005 / story 003: size picker after the filename prompt.
+    # --size flag pre-fills; otherwise show the 8-preset + custom menu.
+    if size_mb is not None:
+        if not (PROMPT_IMAGE_SIZE_MIN <= size_mb <= PROMPT_IMAGE_SIZE_MAX):
+            sys.stderr.write(
+                f"ERROR: --size {size_mb} outside range "
+                f"{PROMPT_IMAGE_SIZE_MIN}..{PROMPT_IMAGE_SIZE_MAX}.\n")
+            return 1
+        image_mb = size_mb
+        print(f"Image size : {image_mb} MB (from --size)")
+    else:
+        # Use the format's existing default-MB hint where it lands in
+        # the preset list.
+        if not ahdi_driver_path and not ppdriver_bootable:
+            # Format not yet picked; guess at AHDI default for the
+            # picker's preselection. The actual format prompt comes
+            # right after.
+            default_for_picker = DEFAULT_IMAGE_MB[FORMAT_AHDI]
+        else:
+            default_for_picker = DEFAULT_IMAGE_MB[format_id]
+        image_mb = ask_image_size(default_mb=default_for_picker)
+
     if not ahdi_driver_path and not ppdriver_bootable:
         format_id = ask_format()
 
@@ -3176,13 +3436,47 @@ def main(ahdi_driver_path: Optional[str] = None,
     # through the DOS view which doesn't care about TOS BGM limits).
     strict_tos = ask_tos_compat() if format_id == FORMAT_AHDI else False
 
-    image_mb_cap = format_max_partition_mb(format_id, strict_tos) * \
-        MAX_PARTITIONS[format_id]
-    image_mb = ask_int(
-        "Total image size (MB)", default=DEFAULT_IMAGE_MB[format_id],
-        minimum=MIN_IMAGE_MB, maximum=image_mb_cap)
+    # Epic-005 / story 003: auto-partition prompt after format +
+    # strict-TOS. --auto skips the prompt; auto=off forces manual.
+    if auto_mode is not None:
+        if auto_mode == "off":
+            chosen_auto = None
+        elif auto_mode in (AUTO_MODE_DEFAULT, AUTO_MODE_MAX):
+            chosen_auto = auto_mode
+        else:
+            sys.stderr.write(
+                f"ERROR: --auto value {auto_mode!r} must be one of "
+                f"'default', 'max', 'off'.\n")
+            return 1
+    else:
+        chosen_auto = ask_auto_mode()
 
-    partitions = prompt_partitions(format_id, image_mb, strict_tos)
+    if chosen_auto is not None:
+        bootable = (ahdi_driver_path is not None
+                    and format_id == FORMAT_AHDI) or (
+            ppdriver_bootable and format_id == FORMAT_PPDRIVER)
+        if auto_n is not None:
+            n_val = auto_n
+        else:
+            # Compute the natural default and prompt for an override.
+            natural = _auto_natural_n_prompt(
+                format_id, image_mb, chosen_auto, strict_tos, bootable)
+            n_val = ask_int(
+                f"Number of partitions (default {natural}, 1-"
+                f"{MAX_PARTITIONS[format_id]})",
+                default=natural, minimum=1,
+                maximum=MAX_PARTITIONS[format_id])
+        try:
+            partitions = auto_partition_layout(
+                format_id, image_mb, chosen_auto, n_limit=n_val,
+                strict_tos=strict_tos, bootable=bootable)
+        except ValueError as e:
+            sys.stderr.write(f"ERROR: auto-fill failed: {e}\n")
+            return 1
+        print(f"Auto-filled {len(partitions)} partition(s) "
+              f"(mode={chosen_auto}).")
+    else:
+        partitions = prompt_partitions(format_id, image_mb, strict_tos)
 
     plan = plan_image(format_id, image_path, image_mb, partitions,
                       strict_tos=strict_tos,
@@ -3239,6 +3533,9 @@ def _parse_args(argv=None):
                      "(AHDI / PPDRIVER / HDDRIVER)."),
         epilog=("Default: TUI when both stdin and stdout are a "
                 "terminal; otherwise the linear prompt flow."))
+    p.add_argument(
+        "--version", action="version",
+        version=f"atari-hd {_read_version()}")
     g = p.add_mutually_exclusive_group()
     g.add_argument(
         "--tui", action="store_true",
@@ -3266,6 +3563,25 @@ def _parse_args(argv=None):
               "boot data lives entirely in the pre-partition gap, not "
               "as a file inside the FAT. Implies PPDRIVER format. "
               "Honored in both prompt mode and TUI."))
+    p.add_argument(
+        "--size", metavar="MB", type=int, default=None,
+        help=("Pre-fill the image-size prompt. Must be in "
+              f"{PROMPT_IMAGE_SIZE_MIN}..{PROMPT_IMAGE_SIZE_MAX} MB. "
+              "Skips the size-picker step in prompt mode."))
+    p.add_argument(
+        "--auto", metavar="MODE", choices=["default", "max", "off"],
+        default=None,
+        help=("Auto-fill partitions. 'default' = small boot + as few "
+              "max-sized data slots as possible; 'max' = boot + "
+              "remaining space split equally across MAX_PARTITIONS "
+              "slots; 'off' = manual partition-by-partition prompt. "
+              "When provided, skips the auto-fill prompt."))
+    p.add_argument(
+        "--auto-n", metavar="N", type=int, default=None,
+        help=("N-limit for --auto: total partition count (boot "
+              "included). 'default' mode caps the natural slot count "
+              "at N; 'max' mode divides remaining space across N-1 "
+              "data slots. Ignored when --auto=off."))
     return p.parse_args(argv)
 
 
@@ -3318,4 +3634,7 @@ if __name__ == "__main__":
         sys.exit(_run_tui(ahdi_driver_path=args.ahdi_driver,
                            ppdriver_bootable=args.ppdriver_bootable))
     sys.exit(main(ahdi_driver_path=args.ahdi_driver,
-                  ppdriver_bootable=args.ppdriver_bootable))
+                  ppdriver_bootable=args.ppdriver_bootable,
+                  size_mb=args.size,
+                  auto_mode=args.auto,
+                  auto_n=args.auto_n))

@@ -102,7 +102,11 @@ def _hline(cols: int) -> str:
 
 
 def _render_header(state: State, cols: int) -> str:
-    left = "atari-hd image creator"
+    # Epic-005 / story 004: copyright + version live next to the
+    # program name on the left. The right-side image-path label
+    # gets the _truncate_middle treatment first when the terminal
+    # is narrow, keeping authorship readable on every screen.
+    left = f"atari-hd image creator  {_attribution_line()}"
     if state.image_path is None:
         right = "(no image)"
     else:
@@ -139,7 +143,13 @@ def _render_body_no_image(cols: int, height: int) -> str:
 def _render_body_empty_partitions(state: State, cols: int, height: int) -> str:
     """Image set but partition list empty: centered hint, format row at
     the bottom."""
-    msg = "No partitions defined -- press A to add"
+    # Mention U=Autopart only when the auto path is actually enabled
+    # (state.image_mb is set; otherwise pressing U just prints a
+    # "set an image size first" status message).
+    if state.image_mb is not None:
+        msg = "No partitions defined -- press A to add or U to autopartition"
+    else:
+        msg = "No partitions defined -- press A to add"
     msg = _truncate_middle(msg, cols - 2)
     blank = " " * cols
     fmt_line = _render_format_hint(state, cols)
@@ -382,7 +392,11 @@ def _render_format_hint(state: State, cols: int) -> str:
     else:
         tos = ""
     boot = _bootable_indicator(state)
-    line = f"  Format: {fmt}{tos}{boot}"
+    if state.image_mb is not None:
+        size = f"  Size: {state.image_mb} MB"
+    else:
+        size = ""
+    line = f"  Format: {fmt}{tos}{size}{boot}"
     return _pad_to(line, cols)
 
 
@@ -446,12 +460,17 @@ def _render_status_keys(state: State, cols: int) -> str:
     # CLI flags); HDDRIVER dims B because the tool can't produce
     # self-bootable HDDRIVER images (story 006 docs-only).
     boot_enabled = state.format_id in ("AHDI", "PPDRIVER")
+    # Epic-005 story 002: U=Auto enabled once the New-flow set an
+    # image size (state.image_mb). Always-dim before then so the
+    # user can't trigger auto-fill on a half-baked plan.
+    auto_enabled = state.image_mb is not None
     cond = [
         ("D=Delete", selected_real),
         ("E=Edit",   selected_real),
         ("T=Type",   selected_real),
         ("W=Write",  has_real),
         ("B=Boot",   boot_enabled),
+        ("U=Autopart", auto_enabled),
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
@@ -483,6 +502,29 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
     if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
         return (f"AHDI driver path (e.g. ICDBOOT.PRG): "
                 f"{state.prompt_buffer}_")
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE:
+        return ("Image size:  1)16  2)64  3)128  4)256  5)512  "
+                "6)1024  7)2048  8)4096   c)Custom   (Esc cancel)")
+    if state.prompt_mode == PromptMode.ASK_IMAGE_SIZE_CUSTOM:
+        return (f"Custom size (16-8192 MB): "
+                f"{state.prompt_buffer}_  (Esc back to presets)")
+    if state.prompt_mode == PromptMode.CONFIRM_AUTO_DISCARD:
+        n = sum(1 for p in state.partitions if p is not None)
+        return f"Discard {n} existing partition(s) and auto-fill? (y/N)"
+    if state.prompt_mode == PromptMode.ASK_AUTO_MODE:
+        return ("Auto-partition mode:  [D]efault (few large)   "
+                "[M]ax (many equal)   (Esc cancel)")
+    if state.prompt_mode == PromptMode.ASK_AUTO_N:
+        # Compute the natural default and show it as the [hint].
+        # Avoid importing app.py from render.py; reproduce the small
+        # natural-N math inline.
+        try:
+            from . import app as _app  # late import to dodge cycles
+            natural = _app._auto_natural_n(state)
+        except Exception:
+            natural = 1
+        return (f"Number of partitions [default {natural}]: "
+                f"{state.prompt_buffer}_  (Esc cancel)")
     if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE:
         path = state.pending_path or "(unknown)"
         return (f"{path} exists. Press O to overwrite, "
@@ -830,6 +872,20 @@ def validate_edit_dialog(state: State):
 #
 # Sized to fit 80x24: 17 entries + 4 group headers + 2 borders = 23
 # rows, leaving 1 row of breathing space.
+# Authorship line shown in the header row beside the program name and
+# at the bottom of the help overlay (epic-005 / story 004). Single
+# source of truth so future updates are one edit.
+COPYRIGHT_LINE = "(C) 2026 - GOODDATA LABS SL"
+
+
+def _attribution_line() -> str:
+    """Copyright + version, e.g. '(C) 2026 - GOODDATA LABS SL  v0.1.0'.
+    Reads the version at call time (not import time) so a developer
+    running from a fresh clone with an updated version.txt gets the
+    new value without re-importing the module. Story 005-005."""
+    return f"{COPYRIGHT_LINE}  v{atari_hd._read_version()}"
+
+
 HELP_ENTRIES = [
     ("Files / Quit", "N",                "New image"),
     ("Files / Quit", "L",                "Load image"),
@@ -842,6 +898,7 @@ HELP_ENTRIES = [
     ("Partitions",   "F",                "Change format"),
     ("Partitions",   "W",                "Write image"),
     ("Partitions",   "B",                "Toggle bootable mode (AHDI/PPDRIVER)"),
+    ("Partitions",   "U",                "Auto-fill partitions (default / max)"),
     ("Dialogs",      "Tab",              "Next field"),
     ("Dialogs",      "t / Left / Right", "Cycle Type"),
     ("Dialogs",      "Enter / S",        "Save"),
@@ -872,6 +929,11 @@ def _render_help_overlay(state: State, cols: int, rows: int) -> str:
         body_lines.append(row)
 
     inner = HELP_BOX_WIDTH - 2  # subtract the side borders
+    # Epic-005 / story 004 + 005: copyright + version at the bottom
+    # of the overlay, separated from the entries by a blank row,
+    # centered within the inner box width.
+    body_lines.append("")
+    body_lines.append(_attribution_line().center(inner))
     height = len(body_lines) + 2  # +2 for top/bottom borders
     box_top = max(1, (rows - height) // 2 + 1)
     box_left = max(1, (cols - HELP_BOX_WIDTH) // 2 + 1)

@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# atari-hd launcher shim (POSIX).
+#
+# Lives in $prefix/share/atari-hd/atari-hd; the installer also drops a
+# symlink at ~/.local/bin/atari-hd -> this file (or a hard copy when
+# the install destination is on a filesystem that doesn't support
+# symlinks). Resolves the package directory from $0 and exec's
+# atari_hd.py with the user's args.
+#
+# stdlib-Python is the only runtime dependency; no virtualenv, no
+# pip install. python3 must be on PATH.
+set -eu
+
+# Resolve the directory containing this script, following one level
+# of symlink (the bin/ shim points back to share/atari-hd/atari-hd).
+target=$0
+case "$target" in
+    /*) ;;
+    *) target=$(pwd)/$target ;;
+esac
+# Follow a single symlink so the bin/ shim resolves to the package.
+if [ -L "$target" ]; then
+    link=$(readlink "$target")
+    case "$link" in
+        /*) target=$link ;;
+        *) target=$(dirname "$target")/$link ;;
+    esac
+fi
+pkg_dir=$(cd "$(dirname "$target")" && pwd)
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "atari-hd: python3 not found on PATH." >&2
+    echo "  Install Python 3.10+ from https://www.python.org/downloads/" >&2
+    exit 127
+fi
+
+exec python3 "$pkg_dir/atari_hd.py" "$@"

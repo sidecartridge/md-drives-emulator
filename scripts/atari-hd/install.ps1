@@ -1,0 +1,197 @@
+# atari-hd one-line installer (Windows).
+#
+# Pulls the current `main` snapshot of scripts/atari-hd/ straight
+# from this repository -- no GitHub releases, no signed tarballs.
+# The trust boundary is HTTPS to github.com.
+#
+# Usage:
+#     irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex
+#
+# Optional environment / parameters:
+#     $env:ATARI_HD_REF        = 'main' | 'v0.1.0' | branch / tag
+#     $env:ATARI_HD_PREFIX     = 'C:\Tools\atari-hd' (default: %LOCALAPPDATA%\atari-hd)
+#     $env:ATARI_HD_UNINSTALL  = '1'  (or pass -Uninstall)
+#         Run uninstall mode: remove $prefix and the WindowsApps
+#         shim. Leaves user data and the drivers/ tree alone.
+#     $env:ATARI_HD_YES        = '1'  (or pass -Yes)
+#         Skip the uninstall confirmation prompt. Required when
+#         running uninstall mode through `irm ... | iex` (no
+#         interactive host to prompt on).
+#
+# No admin / sudo required for the default prefix.
+
+[CmdletBinding()]
+param(
+    [string]$Ref = $env:ATARI_HD_REF,
+    [string]$Prefix = $env:ATARI_HD_PREFIX,
+    [switch]$Uninstall,
+    [switch]$Yes
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not $Ref)    { $Ref    = 'main' }
+if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'atari-hd' }
+# Switch parameters default to $false; let env vars flip them on.
+if (-not $Uninstall -and $env:ATARI_HD_UNINSTALL) { $Uninstall = $true }
+if (-not $Yes       -and $env:ATARI_HD_YES)       { $Yes       = $true }
+
+$Repo       = 'sidecartridge/md-drives-emulator'
+$InstallDir = $Prefix
+$ShimDir    = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+$ShimPath   = Join-Path $ShimDir 'atari-hd.cmd'
+# Codeload's bare-ref endpoint auto-resolves $Ref as branch / tag /
+# commit SHA. Don't prefix refs/heads/ -- that would 404 on tags.
+$TarballUrl = "https://codeload.github.com/$Repo/tar.gz/$Ref"
+
+# -----------------------------------------------------------------
+# Uninstall path. Runs early so we skip the download / extract
+# machinery when we're just removing files.
+# -----------------------------------------------------------------
+if ($Uninstall) {
+    Write-Host "atari-hd uninstaller"
+    Write-Host "  prefix  : $Prefix"
+    Write-Host "  package : $InstallDir"
+    Write-Host "  shim    : $ShimPath"
+    Write-Host ""
+
+    $hasPackage = Test-Path (Join-Path $InstallDir 'version.txt')
+    $hasShim    = Test-Path $ShimPath
+
+    if (-not $hasPackage -and -not $hasShim) {
+        Write-Host "atari-hd doesn't appear to be installed at $Prefix."
+        Write-Host "  Nothing to remove. (If you used -Prefix at install"
+        Write-Host "  time, pass the same value here.)"
+        return
+    }
+
+    if ($hasPackage) {
+        $installedVersion = (Get-Content (Join-Path $InstallDir 'version.txt') -Raw).Trim()
+        Write-Host "Found atari-hd v$installedVersion at $InstallDir."
+    }
+
+    # Confirm. Prompt when stdin is a real terminal; require -Yes /
+    # $env:ATARI_HD_YES when stdin is redirected (irm | iex).
+    if (-not $Yes) {
+        if (-not [Console]::IsInputRedirected) {
+            $answer = Read-Host "Remove? [y/N]"
+            if ($answer -notmatch '^[yY]') {
+                Write-Host "Cancelled. Nothing was removed."
+                return
+            }
+        } else {
+            throw ("atari-hd uninstaller: refusing to remove without " +
+                   "confirmation. Pipe mode can't prompt; pass -Yes " +
+                   "or set `$env:ATARI_HD_YES = '1'.")
+        }
+    }
+
+    # Remove only what we installed.
+    if (Test-Path $InstallDir) {
+        Remove-Item -Recurse -Force $InstallDir
+        Write-Host "  removed $InstallDir"
+    }
+    if (Test-Path $ShimPath) {
+        Remove-Item -Force $ShimPath
+        Write-Host "  removed $ShimPath"
+    }
+
+    Write-Host ""
+    Write-Host "atari-hd uninstalled."
+    return
+}
+
+Write-Host "atari-hd installer"
+Write-Host "  source : github.com/$Repo @ $Ref"
+Write-Host "  prefix : $Prefix"
+
+# Workspace.
+$Tmp = Join-Path $env:TEMP ("atari-hd-install-" + [System.Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
+try {
+    $TbPath = Join-Path $Tmp 'repo.tar.gz'
+
+    Write-Host "Downloading $Ref tarball ..."
+    Invoke-WebRequest -Uri $TarballUrl -OutFile $TbPath -UseBasicParsing
+
+    Write-Host "Extracting scripts/atari-hd/ ..."
+    # Windows 10+ ships tar.exe.
+    & tar.exe -xzf $TbPath -C $Tmp
+    if ($LASTEXITCODE -ne 0) { throw "tar -xzf failed (exit $LASTEXITCODE)." }
+
+    $SrcRoot = Get-ChildItem -Path $Tmp -Directory |
+        Where-Object { $_.Name -ne 'atari-hd-install' } |
+        Select-Object -First 1
+    $Src = Join-Path $SrcRoot.FullName 'scripts\atari-hd'
+    if (-not (Test-Path (Join-Path $Src 'atari_hd.py')) -or
+        -not (Test-Path (Join-Path $Src 'version.txt'))) {
+        throw "tarball doesn't contain scripts/atari-hd/. REF=$Ref may be wrong; try -Ref main."
+    }
+
+    $NewVersion = (Get-Content (Join-Path $Src 'version.txt') -Raw).Trim()
+    $ExistingVerFile = Join-Path $InstallDir 'version.txt'
+    if (Test-Path $ExistingVerFile) {
+        $OldVersion = (Get-Content $ExistingVerFile -Raw).Trim()
+        if ($OldVersion -eq $NewVersion) {
+            Write-Host "  installed v$OldVersion; refreshing files."
+        } else {
+            Write-Host "  installed v$OldVersion -> v$NewVersion"
+        }
+    } else {
+        Write-Host "  fresh install: v$NewVersion"
+    }
+
+    # Wipe + repopulate the install dir from the staged tree, copying
+    # only the runtime files (skip drivers/ epics/ tests/ __pycache__/).
+    if (Test-Path $InstallDir) {
+        Remove-Item -Recurse -Force $InstallDir
+    }
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    foreach ($item in @('atari_hd.py', 'tui', 'assets', 'tools',
+                          'atari-hd', 'atari-hd.cmd', 'version.txt',
+                          'README.md', 'BOOTABLE.md')) {
+        $srcItem = Join-Path $Src $item
+        if (Test-Path $srcItem) {
+            Copy-Item -Recurse -Force $srcItem -Destination $InstallDir
+        }
+    }
+    Get-ChildItem -Path $InstallDir -Recurse -Force `
+                   -Directory -Filter '__pycache__' |
+        Remove-Item -Recurse -Force
+
+    # Shim into WindowsApps.
+    New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
+    $ShimContents = @"
+@echo off
+rem atari-hd shim (auto-generated by install.ps1).
+"$InstallDir\atari-hd.cmd" %*
+"@
+    Set-Content -Path $ShimPath -Value $ShimContents -Encoding ASCII
+
+    Write-Host ""
+    Write-Host "Installed atari-hd v$NewVersion"
+    Write-Host "  package : $InstallDir"
+    Write-Host "  shim    : $ShimPath"
+
+    $pathDirs = $env:Path.Split(';') | ForEach-Object { $_.TrimEnd('\') }
+    if ($pathDirs -contains $ShimDir.TrimEnd('\')) {
+        Write-Host "  $ShimDir is already on your PATH; run 'atari-hd' from a new shell."
+    } else {
+        Write-Host ""
+        Write-Host "$ShimDir doesn't appear on your PATH. Windows 10+ adds"
+        Write-Host "  it for new sessions automatically; open a fresh"
+        Write-Host "  PowerShell / cmd window and try 'atari-hd' again."
+    }
+
+    if (-not (Get-Command python -ErrorAction SilentlyContinue) -and
+        -not (Get-Command python3 -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Warning "python isn't on your PATH. Install Python 3.10+ before running atari-hd."
+        Write-Warning "  https://www.python.org/downloads/"
+    }
+}
+finally {
+    if (Test-Path $Tmp) {
+        Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    }
+}
