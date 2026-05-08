@@ -2362,6 +2362,152 @@ def partition_layout(format_id: str, n: int) -> dict:
     raise ValueError(f"unknown format {format_id!r}")
 
 
+# --------------------------------------------------------------------------
+# Auto-partition layout (epic-005 / story 001)
+# --------------------------------------------------------------------------
+
+AUTO_MODE_DEFAULT = "default"
+AUTO_MODE_MAX = "max"
+
+
+def _auto_boot_size_mb(format_id: str, bootable: bool) -> int:
+    """Minimum boot-partition size for the chosen format + bootable mode.
+
+    Picked to be the smallest value the writer accepts:
+      - AHDI bootable -> 15 MB (the AHDI_BOOTABLE_BOOT_MAX_MB cap; ICD's
+        continuation IPL fails on larger boot partitions anyway).
+      - AHDI non-bootable -> MIN_PARTITION_MB (2 MB; format_fat16 may
+        reject below ~5 MB but the helper aims at a sensible minimum
+        rather than the absolute floor).
+      - Hybrid (PPDRIVER / HDDRIVER) -> HYBRID_MIN_PARTITION_MB (32 MB;
+        below that the dual-BPB ratio<2 rule fires)."""
+    if format_id == FORMAT_AHDI:
+        return AHDI_BOOTABLE_BOOT_MAX_MB if bootable else MIN_PARTITION_MB
+    return HYBRID_MIN_PARTITION_MB
+
+
+def _auto_data_cap_mb(format_id: str, strict_tos: bool) -> int:
+    """Per-slot data-partition cap. AHDI BGM cap (256 strict / 511);
+    hybrid extended cap (511). The auto helper places data slots as
+    extended on hybrid formats, so the higher cap applies."""
+    if format_id == FORMAT_AHDI:
+        return format_max_partition_mb(format_id, strict_tos)
+    return HYBRID_MAX_PARTITION_MB
+
+
+def auto_partition_layout(format_id: str,
+                           image_mb: int,
+                           mode: str,
+                           n_limit: Optional[int] = None,
+                           strict_tos: bool = False,
+                           bootable: bool = False) -> List["Partition"]:
+    """Compute a sensible partition list for a fresh image.
+
+    Two modes (epic-005 / story 001):
+
+      mode="default"
+        Boot at the format's minimum, remaining slots at the per-slot
+        max (511 MB on AHDI / hybrid extended; 256 MB AHDI strict).
+        Slot count = ceil((image_mb - boot) / data_cap), capped at
+        n_limit if provided. Goal: as few partitions as possible.
+
+      mode="max"
+        Same boot; remaining space divided EQUALLY across (n_limit -
+        1) data slots (or MAX_PARTITIONS[format] - 1 if no limit).
+        Each slice rounded down to a whole MB. If a slice would fall
+        below the format's min-partition floor, drop the slot count
+        until each slice clears the floor (or slot count hits 0,
+        leaving a boot-only result).
+
+    n_limit (Option A from epic-005 spec): a single knob the user
+    can pass; default natural value differs per mode (default =
+    natural ceil count; max = MAX_PARTITIONS[format]). Caps the
+    TOTAL partition count (boot + data); n_limit=1 produces a
+    boot-only image.
+
+    Hybrid is_extended rules (slot 0 always primary; slot 1+ default
+    extended) are honored via the returned Partition.is_extended
+    flags. AHDI ignores is_extended (the writer derives
+    primary-vs-XGM from slot index).
+
+    Raises ValueError on unknown mode, unknown format, image too
+    small for the boot partition, or n_limit < 1.
+    """
+    if format_id not in (FORMAT_AHDI, FORMAT_PPDRIVER, FORMAT_HDDRIVER):
+        raise ValueError(f"unknown format {format_id!r}")
+    if mode not in (AUTO_MODE_DEFAULT, AUTO_MODE_MAX):
+        raise ValueError(
+            f"unknown auto mode {mode!r}; expected "
+            f"{AUTO_MODE_DEFAULT!r} or {AUTO_MODE_MAX!r}")
+    if n_limit is not None and n_limit < 1:
+        raise ValueError(f"n_limit must be >= 1 (got {n_limit})")
+
+    boot_mb = _auto_boot_size_mb(format_id, bootable)
+    if image_mb < boot_mb:
+        raise ValueError(
+            f"image_mb {image_mb} too small for {format_id} "
+            f"{'bootable ' if bootable else ''}layout "
+            f"(boot partition needs >= {boot_mb} MB)")
+
+    data_cap = _auto_data_cap_mb(format_id, strict_tos)
+    min_data = format_min_partition_mb(format_id)
+    max_slots = MAX_PARTITIONS[format_id]
+    is_hybrid = format_id in (FORMAT_PPDRIVER, FORMAT_HDDRIVER)
+    remaining_mb = image_mb - boot_mb
+
+    if mode == AUTO_MODE_DEFAULT:
+        # Pack into as few slots as possible at data_cap each. If the
+        # last slot wouldn't reach the min-partition floor (hybrid 32
+        # MB), drop it -- better to leave the tail unallocated than
+        # fail the build.
+        if remaining_mb <= 0:
+            sizes = []
+        else:
+            n_data = (remaining_mb + data_cap - 1) // data_cap   # ceil
+            n_data = min(n_data, max_slots - 1)
+            if n_limit is not None:
+                n_data = min(n_data, max(0, n_limit - 1))
+            sizes = []
+            rem = remaining_mb
+            for _ in range(n_data):
+                sz = min(rem, data_cap)
+                if sz < min_data:
+                    break
+                sizes.append(sz)
+                rem -= sz
+    else:  # AUTO_MODE_MAX
+        if n_limit is not None:
+            n_data_target = max(0, n_limit - 1)
+        else:
+            n_data_target = max_slots - 1
+        n_data_target = min(n_data_target, max_slots - 1)
+        sizes = []
+        if remaining_mb > 0 and n_data_target > 0:
+            # Find the largest n that keeps each slice >= min_data
+            # (and <= data_cap; if image is huge, fall back to
+            # data_cap-sized slots leaving a tail unallocated).
+            n = n_data_target
+            while n > 0:
+                slice_mb = remaining_mb // n
+                if slice_mb > data_cap:
+                    slice_mb = data_cap
+                if slice_mb >= min_data:
+                    break
+                n -= 1
+            if n > 0:
+                slice_mb = min(remaining_mb // n, data_cap)
+                sizes = [slice_mb] * n
+
+    # Build the Partition list. Slot 0 is always primary; on hybrid
+    # formats data slots are extended by default (matches the
+    # existing TUI / prompt-mode default for hybrid slot >= 1).
+    result = [Partition(name="BOOT", size_mb=boot_mb, is_extended=False)]
+    for i, sz in enumerate(sizes, start=1):
+        result.append(Partition(name=f"DATA{i}", size_mb=sz,
+                                  is_extended=is_hybrid))
+    return result
+
+
 def predict_mkfs_spfat(partition_sectors_512: int, ratio: int) -> Optional[int]:
     """Predict the `spfat` value mkfs.vfat will pick for a FAT16 partition
     created with our fixed parameters (-F 16 -S 512 -s 2*ratio -R ratio+1).
