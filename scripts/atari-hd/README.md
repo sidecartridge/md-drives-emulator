@@ -539,6 +539,14 @@ holds local design docs; `drivers/` is where users keep their copies
 of `ICDBOOT.PRG` and other third-party binaries the tool doesn't
 redistribute.
 
+> **Looking for `ICDBOOT.PRG` / `ICDBOOT.SYS`?** ICD Pro 6.55a is
+> still available as a free download:
+> <http://joo.kie.sk/wp-content/uploads/2013/05/icdp655a.zip>.
+> The boot driver inside the archive is `ICDBOOT.PRG`; once it
+> lands on a bootable AHDI partition the loader picks it up as
+> `ICDBOOT.SYS`. Drop your copy under `drivers/` and point the
+> tool at it when prompted.
+
 ---
 
 ## Writing the image to a physical device
