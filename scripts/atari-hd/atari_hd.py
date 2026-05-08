@@ -81,6 +81,19 @@ AHDI_MAX_PARTITION_MB = 511          # TOS 1.04+ BGM cap (was 512; off by one)
 AHDI_GEM_MAX_MB_STRICT = 16          # TOS < 1.04 GEM cap
 AHDI_GEM_MAX_MB = 31                 # TOS 1.04+ GEM cap (was 32; off by one)
 
+# Tighter cap on the AHDI BOOT (slot 0) partition when bootable mode
+# is enabled: ICD's continuation IPL fails to recognize disks whose
+# boot partition exceeds ~16 MB (validated empirically -- see
+# diagnostic images diag_A_31mb_single.img + diag_D_512mb_match.img,
+# both of which have a 31 MB GEM boot and refuse to boot, while
+# diag_B_15mb_multi.img with a 15 MB GEM boot works fine). All real
+# ICDFMT-formatted reference disks we've inspected use 14-15 MB
+# boot partitions; ICD's own tooling avoids the boundary too. We
+# don't know exactly which IPL field overflows, but 15 MB is safe
+# and matches every working reference. Only enforced when
+# ahdi_driver_path is set on the plan.
+AHDI_BOOTABLE_BOOT_MAX_MB = 15
+
 # Caps for the PPDRIVER / HDDRIVER dual-BPB hybrid layout. Both ends
 # come from the TOS-side BPB, NOT the DOS view:
 #   - MAX: TOS reads the partition's total-sectors-16 field (NSECTS) as
@@ -2498,6 +2511,17 @@ def plan_image(format_id: str, image_path: str, image_mb: int,
                     f"partition {part.name!r} is {part.size_mb} MB but "
                     f"the {mode_label} {kind} cap at slot {i + 1} is "
                     f"{cap_mb} MB; lower the size or disable strict mode")
+        # Tighter cap when AHDI bootable mode is on -- ICD's IPL
+        # fails to recognize disks with boot partitions > ~16 MB
+        # (verified empirically; see AHDI_BOOTABLE_BOOT_MAX_MB).
+        if ahdi_driver_path and partitions[0].size_mb > AHDI_BOOTABLE_BOOT_MAX_MB:
+            raise ValueError(
+                f"AHDI bootable boot partition (slot 0, "
+                f"{partitions[0].name!r}) is {partitions[0].size_mb} MB; "
+                f"ICD's IPL only recognizes disks with boot partition "
+                f"<= {AHDI_BOOTABLE_BOOT_MAX_MB} MB. Lower slot 0's size "
+                f"or disable bootable mode (drop --ahdi-driver / clear "
+                f"the TUI's B toggle).")
     else:
         # Hybrid formats (PPDRIVER / HDDRIVER) follow per-partition
         # rules driven by Partition.is_extended (set by the user via
