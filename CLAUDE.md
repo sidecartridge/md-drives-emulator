@@ -118,11 +118,13 @@ Keep `AGENTS.md` updated when new workflow rules or hardware gotchas are discove
 
 When working on Atari ST hard-disk on-disk formats — partition tables (AHDI / MBR / XGM / EBR), partition idents (GEM / BGM / XGM), the FAT16 BPB used by TOS, the dual-BPB hybrid layout used by PPDRIVER / HDDRIVER, partition-size caps and TOS-version rules, or any related low-level detail — use the `/notebooklm` skill against the **Atari ST/STE/TT/Falcon — Technical Reference** notebook as the source of truth before making non-trivial claims in code or docs. The notebook indexes the Atari Compendium and related references; the skill opens a fresh browser session per question.
 
-Applies anywhere these surfaces are touched: `scripts/atari-hd/atari_hd.py`, `scripts/atari-hd/tui/`, `rp/src/acsi.c`, `target/atarist/src/acsi.s`, the test suite under `scripts/atari-hd/tests/`, and any docstring or `CLAUDE.md` / `README.md` that describes the on-disk format.
+Applies anywhere these surfaces are touched: `rp/src/acsi.c`, `target/atarist/src/acsi.s`, and any docstring or `CLAUDE.md` / `README.md` that describes the on-disk format.
+
+The Python image-builder tool that consumes the same on-disk-format knowledge has moved to its own repo: <https://github.com/sidecartridge/atari-hd>. If the work touches both the firmware ACSI path here and the image-builder there, validate against the same NotebookLM source so the two stay in sync.
 
 Workflow: ask focused questions, follow up on gaps (each NotebookLM answer ends with "Is that ALL you need to know?" — read it and decide), then record the non-obvious conclusions in a docstring or comment so the next reader doesn't have to re-validate.
 
-Drift example we already caught with this skill: the "first AHDI partition must be GEM" rule was framed as a TOS boot rule across `atari_hd.py`, the TUI, the test suite and the README. The Compendium clarifies that TOS itself only checks the boot flag (bit 7 of the AHDI flag byte); the GEM-on-slot-0 clamp is a *legacy-driver* compatibility default (original AHDI / SCSI Tools required it; modern drivers — HDDRIVER, PPDRIVER, ICD Pro — accept BGM boot up to 512 MB). The clamp stayed in the code but the framing was corrected. That's the kind of mistake this validation step exists to catch.
+Drift example we already caught with this skill: the "first AHDI partition must be GEM" rule was framed as a TOS boot rule across the image-builder code and docs. The Compendium clarifies that TOS itself only checks the boot flag (bit 7 of the AHDI flag byte); the GEM-on-slot-0 clamp is a *legacy-driver* compatibility default (original AHDI / SCSI Tools required it; modern drivers — HDDRIVER, PPDRIVER, ICD Pro — accept BGM boot up to 512 MB). The clamp stayed in the code but the framing was corrected. That's the kind of mistake this validation step exists to catch.
 
 ## Editing guardrails
 
