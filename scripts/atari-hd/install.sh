@@ -15,6 +15,14 @@
 #     ATARI_HD_PREFIX=/opt          (or --prefix=/opt)
 #         Install root. Defaults to ~/.local. Tarball lands under
 #         $prefix/share/atari-hd/, shim at $prefix/bin/atari-hd.
+#     ATARI_HD_UNINSTALL=1          (or --uninstall)
+#         Run uninstall mode: remove $prefix/share/atari-hd/ and
+#         $prefix/bin/atari-hd (only). Leaves user data and the
+#         drivers/ tree alone.
+#     ATARI_HD_YES=1                (or --yes / -y)
+#         Skip the uninstall confirmation prompt. Required when
+#         running uninstall mode through `curl ... | sh` (no TTY
+#         on stdin to read a y/N from).
 #
 # The script:
 #   1. Downloads the repo's tarball at the chosen ref.
@@ -32,6 +40,8 @@ DEFAULT_PREFIX="${HOME}/.local"
 
 REF="${ATARI_HD_REF:-main}"
 PREFIX="${ATARI_HD_PREFIX:-$DEFAULT_PREFIX}"
+UNINSTALL="${ATARI_HD_UNINSTALL:-}"
+ASSUME_YES="${ATARI_HD_YES:-}"
 
 # Parse argv flags (overrides env).
 while [ $# -gt 0 ]; do
@@ -40,6 +50,8 @@ while [ $# -gt 0 ]; do
         --ref)      REF="${2:?}"; shift ;;
         --prefix=*) PREFIX="${1#*=}" ;;
         --prefix)   PREFIX="${2:?}"; shift ;;
+        --uninstall) UNINSTALL=1 ;;
+        --yes|-y)   ASSUME_YES=1 ;;
         -h|--help)
             sed -n '2,/^set -eu/p' "$0" | sed 's/^# \{0,1\}//; /^set -eu/d'
             exit 0
@@ -63,6 +75,72 @@ TARBALL_URL="https://codeload.github.com/$REPO/tar.gz/$REF"
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
+
+
+# -----------------------------------------------------------------
+# Uninstall path. Runs early so we don't need any of the install-
+# side machinery (downloader, tar, etc.) when we're just removing
+# files.
+# -----------------------------------------------------------------
+if [ -n "$UNINSTALL" ]; then
+    say "atari-hd uninstaller"
+    say "  prefix : $PREFIX"
+    say "  package: $INSTALL_DIR"
+    say "  shim   : $SHIM_PATH"
+    say ""
+
+    if [ ! -f "$INSTALL_DIR/version.txt" ] && \
+       [ ! -e "$SHIM_PATH" ]; then
+        say "atari-hd doesn't appear to be installed at $PREFIX."
+        say "  Nothing to remove. (If you used --prefix at install"
+        say "  time, pass the same value here.)"
+        exit 0
+    fi
+
+    if [ -f "$INSTALL_DIR/version.txt" ]; then
+        installed_version=$(cat "$INSTALL_DIR/version.txt")
+        say "Found atari-hd v$installed_version at $INSTALL_DIR."
+    fi
+
+    # Confirm. In TTY mode, prompt unless --yes. In pipe mode, the
+    # user must pass --yes / ATARI_HD_YES=1 explicitly so a typo
+    # in a one-liner can't silently delete the install.
+    if [ -z "$ASSUME_YES" ]; then
+        if [ -t 0 ]; then
+            printf "Remove? [y/N]: "
+            read -r answer
+            case "$answer" in
+                [Yy]*) ;;
+                *)
+                    say "Cancelled. Nothing was removed."
+                    exit 0
+                    ;;
+            esac
+        else
+            warn "atari-hd uninstaller: refusing to remove without"
+            warn "  confirmation. Pipe mode can't read a TTY prompt;"
+            warn "  pass --yes (or ATARI_HD_YES=1) to acknowledge."
+            warn ""
+            warn "  curl -fsSL <install.sh> | ATARI_HD_UNINSTALL=1 ATARI_HD_YES=1 sh"
+            exit 1
+        fi
+    fi
+
+    # Remove only what we installed. Never touch $PREFIX, $BIN_DIR,
+    # or any other parent -- those may belong to the user / OS.
+    if [ -d "$INSTALL_DIR" ]; then
+        rm -rf "$INSTALL_DIR"
+        say "  removed $INSTALL_DIR"
+    fi
+    if [ -e "$SHIM_PATH" ] || [ -L "$SHIM_PATH" ]; then
+        rm -f "$SHIM_PATH"
+        say "  removed $SHIM_PATH"
+    fi
+
+    say ""
+    say "atari-hd uninstalled."
+    exit 0
+fi
 
 require() {
     if ! command -v "$1" >/dev/null 2>&1; then

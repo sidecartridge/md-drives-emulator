@@ -139,6 +139,45 @@ python3 scripts/atari-hd/atari_hd.py
 
 ### Uninstall
 
+The same installer scripts handle uninstall via `--uninstall`
+(POSIX) / `-Uninstall` (Windows). They remove only the package
+dir and the launcher shim — your generated `.img` files, the
+`drivers/` tree, and anything else under your prefix stay
+exactly where they are.
+
+**macOS / Linux:**
+
+```
+# Pipe mode -- ATARI_HD_YES=1 acknowledges the removal because
+# pipe mode can't show a y/N prompt
+curl -fsSL https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.sh \
+    | ATARI_HD_UNINSTALL=1 ATARI_HD_YES=1 sh
+
+# ...or run the local copy in your install (interactive y/N prompt)
+sh ~/.local/share/atari-hd/install.sh --uninstall
+```
+
+If you installed with a custom prefix, pass it through:
+
+```
+curl -fsSL https://...install.sh \
+    | ATARI_HD_UNINSTALL=1 ATARI_HD_YES=1 ATARI_HD_PREFIX=/opt sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Pipe mode (irm | iex) -- env vars set BEFORE the pipe
+$env:ATARI_HD_UNINSTALL = '1'
+$env:ATARI_HD_YES       = '1'
+irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex
+
+# ...or run the local copy with -Uninstall (interactive prompt)
+& "$env:LOCALAPPDATA\atari-hd\install.ps1" -Uninstall
+```
+
+**Manual fallback** if you just want to delete the files yourself:
+
 ```
 # macOS / Linux
 rm -rf ~/.local/share/atari-hd ~/.local/bin/atari-hd
@@ -148,15 +187,9 @@ Remove-Item -Recurse $env:LOCALAPPDATA\atari-hd
 Remove-Item $env:LOCALAPPDATA\Microsoft\WindowsApps\atari-hd.cmd
 ```
 
-If you installed with a custom prefix, swap the paths above for
-the values you used:
-
-- POSIX: replace `~/.local` with whatever you passed to
-  `--prefix` / `$ATARI_HD_PREFIX`. Files live under
-  `<prefix>/share/atari-hd/` and `<prefix>/bin/atari-hd`.
-- Windows: replace `$env:LOCALAPPDATA\atari-hd` with whatever
-  you set `$env:ATARI_HD_PREFIX` to. The shim at
-  `WindowsApps\atari-hd.cmd` is the same regardless of prefix.
+The manual paths above assume the default prefix. If you
+installed elsewhere, replace `~/.local` (POSIX) or
+`$env:LOCALAPPDATA\atari-hd` (Windows) with the value you used.
 
 ---
 

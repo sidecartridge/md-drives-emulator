@@ -8,21 +8,33 @@
 #     irm https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/scripts/atari-hd/install.ps1 | iex
 #
 # Optional environment / parameters:
-#     $env:ATARI_HD_REF    = 'main' | 'v0.1.0' | branch / tag
-#     $env:ATARI_HD_PREFIX = 'C:\Tools\atari-hd' (default: %LOCALAPPDATA%\atari-hd)
+#     $env:ATARI_HD_REF        = 'main' | 'v0.1.0' | branch / tag
+#     $env:ATARI_HD_PREFIX     = 'C:\Tools\atari-hd' (default: %LOCALAPPDATA%\atari-hd)
+#     $env:ATARI_HD_UNINSTALL  = '1'  (or pass -Uninstall)
+#         Run uninstall mode: remove $prefix and the WindowsApps
+#         shim. Leaves user data and the drivers/ tree alone.
+#     $env:ATARI_HD_YES        = '1'  (or pass -Yes)
+#         Skip the uninstall confirmation prompt. Required when
+#         running uninstall mode through `irm ... | iex` (no
+#         interactive host to prompt on).
 #
 # No admin / sudo required for the default prefix.
 
 [CmdletBinding()]
 param(
     [string]$Ref = $env:ATARI_HD_REF,
-    [string]$Prefix = $env:ATARI_HD_PREFIX
+    [string]$Prefix = $env:ATARI_HD_PREFIX,
+    [switch]$Uninstall,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
 
 if (-not $Ref)    { $Ref    = 'main' }
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'atari-hd' }
+# Switch parameters default to $false; let env vars flip them on.
+if (-not $Uninstall -and $env:ATARI_HD_UNINSTALL) { $Uninstall = $true }
+if (-not $Yes       -and $env:ATARI_HD_YES)       { $Yes       = $true }
 
 $Repo       = 'sidecartridge/md-drives-emulator'
 $InstallDir = $Prefix
@@ -31,6 +43,63 @@ $ShimPath   = Join-Path $ShimDir 'atari-hd.cmd'
 # Codeload's bare-ref endpoint auto-resolves $Ref as branch / tag /
 # commit SHA. Don't prefix refs/heads/ -- that would 404 on tags.
 $TarballUrl = "https://codeload.github.com/$Repo/tar.gz/$Ref"
+
+# -----------------------------------------------------------------
+# Uninstall path. Runs early so we skip the download / extract
+# machinery when we're just removing files.
+# -----------------------------------------------------------------
+if ($Uninstall) {
+    Write-Host "atari-hd uninstaller"
+    Write-Host "  prefix  : $Prefix"
+    Write-Host "  package : $InstallDir"
+    Write-Host "  shim    : $ShimPath"
+    Write-Host ""
+
+    $hasPackage = Test-Path (Join-Path $InstallDir 'version.txt')
+    $hasShim    = Test-Path $ShimPath
+
+    if (-not $hasPackage -and -not $hasShim) {
+        Write-Host "atari-hd doesn't appear to be installed at $Prefix."
+        Write-Host "  Nothing to remove. (If you used -Prefix at install"
+        Write-Host "  time, pass the same value here.)"
+        return
+    }
+
+    if ($hasPackage) {
+        $installedVersion = (Get-Content (Join-Path $InstallDir 'version.txt') -Raw).Trim()
+        Write-Host "Found atari-hd v$installedVersion at $InstallDir."
+    }
+
+    # Confirm. Prompt when stdin is a real terminal; require -Yes /
+    # $env:ATARI_HD_YES when stdin is redirected (irm | iex).
+    if (-not $Yes) {
+        if (-not [Console]::IsInputRedirected) {
+            $answer = Read-Host "Remove? [y/N]"
+            if ($answer -notmatch '^[yY]') {
+                Write-Host "Cancelled. Nothing was removed."
+                return
+            }
+        } else {
+            throw ("atari-hd uninstaller: refusing to remove without " +
+                   "confirmation. Pipe mode can't prompt; pass -Yes " +
+                   "or set `$env:ATARI_HD_YES = '1'.")
+        }
+    }
+
+    # Remove only what we installed.
+    if (Test-Path $InstallDir) {
+        Remove-Item -Recurse -Force $InstallDir
+        Write-Host "  removed $InstallDir"
+    }
+    if (Test-Path $ShimPath) {
+        Remove-Item -Force $ShimPath
+        Write-Host "  removed $ShimPath"
+    }
+
+    Write-Host ""
+    Write-Host "atari-hd uninstalled."
+    return
+}
 
 Write-Host "atari-hd installer"
 Write-Host "  source : github.com/$Repo @ $Ref"
