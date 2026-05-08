@@ -264,5 +264,39 @@ story 006   ────────►    HDDRIVER manual-install docs  (this s
 ```
 
 Effectively-done by-side-effect of 005/011: stories 001 (AHDI
-checksum), 002 (PPDRIVER 0x1BC adjust). Real remaining work in
-the epic: story 012 (TUI surface) and 007 (parity harness).
+checksum), 002 (PPDRIVER 0x1BC adjust). All epic-004 stories
+delivered.
+
+---
+
+## Real-hardware parity harness (developer aid)
+
+`scripts/atari-hd/tests/realhw_parity.py` byte-diffs our writer's
+output against user-supplied reference images, applying per-format
+masks for known per-image variations (random disk signatures,
+auto-aligned partition geometries, FAT[0/1] media bytes, dir-entry
+timestamps, unallocated data area). Stdlib only. Skips cleanly when
+no references are supplied.
+
+```
+python scripts/atari-hd/tests/realhw_parity.py \
+    [--ahdi-reference PATH      [--ahdi-driver PATH]] \
+    [--ppdriver-reference PATH] \
+    [--hddriver-reference PATH] \
+    [--out-dir DIR]
+```
+
+What's actually byte-checked per format:
+
+- **AHDI**: sector 0 IPL (450 bytes minus the per-image 0x1C1
+  byte), AHDI partition table, BPB-with-continuation-IPL,
+  ICDBOOT.SYS contents in cluster 2, FAT chain entries.
+- **PPDRIVER**: sector 0 IPL (450 bytes); LBA 1..14 driver blob
+  (story 005 byte-fidelity claim). Everything past LBA 14 is
+  masked because our writer's spfat / cluster auto-alignment
+  produces different partition geometry than ICDFMT.
+- **HDDRIVER** (non-bootable): partition layout + dual-BPB byte
+  parity (story 003 claim).
+
+Exit 0 iff zero unexpected diffs across all supplied references.
+Use as a regression gate when changing the byte-level writers.
