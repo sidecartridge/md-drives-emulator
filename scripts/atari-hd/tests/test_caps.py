@@ -261,6 +261,100 @@ class TestPartitionLayout(unittest.TestCase):
                     f"{layout['primary_count']} for N={n}")
 
 
+class TestCylinderAlignment(unittest.TestCase):
+    """epic-004 / story 003: real-hardware-fidelity cylinder alignment.
+
+    PPDRIVER places the DOS BPB at LBA 63 (cyl 0 / head 1 / sec 1 in
+    the 255 x 63 PC standard); HDDRIVER puts it at LBA 64. Real
+    PPDRIVER setup tools also pad each EBR by 62 sectors before the
+    logical, so the partition data lands 63 sectors after the EBR.
+    AHDI keeps LBA 2 (BSL skip) and the tight 1-sector XGM gap.
+
+    These tests pin the helpers and the resulting layout so any
+    future regression in the cylinder-alignment math fails fast."""
+
+    def test_first_partition_start_lba(self):
+        self.assertEqual(
+            atari_hd.first_partition_start_lba(atari_hd.FORMAT_AHDI), 2,
+            "AHDI keeps LBA 2 -- LBA 1 is reserved for the AHDI BSL")
+        self.assertEqual(
+            atari_hd.first_partition_start_lba(atari_hd.FORMAT_PPDRIVER), 63,
+            "PPDRIVER cylinder-aligns at LBA 63 (255 x 63 geometry)")
+        self.assertEqual(
+            atari_hd.first_partition_start_lba(atari_hd.FORMAT_HDDRIVER), 64,
+            "HDDRIVER puts the DOS BPB at LBA 64; LBA 63 reserved "
+            "for the HDDRIVER PBL chain head")
+
+    def test_hybrid_logical_pad_sectors(self):
+        self.assertEqual(
+            atari_hd.hybrid_logical_pad_sectors(atari_hd.FORMAT_AHDI), 1,
+            "AHDI XGM: descriptor sector + immediate logical (no pad)")
+        self.assertEqual(
+            atari_hd.hybrid_logical_pad_sectors(atari_hd.FORMAT_PPDRIVER), 63,
+            "PPDRIVER: 1 EBR + 62 zero pad sectors -> logical 63 "
+            "sectors after the EBR")
+        self.assertEqual(
+            atari_hd.hybrid_logical_pad_sectors(atari_hd.FORMAT_HDDRIVER), 63,
+            "HDDRIVER: same 63-sector EBR-to-data pad as PPDRIVER")
+
+    def test_chs_constants_match_pc_standard(self):
+        # MBR CHS fields must use the 255 x 63 PC standard so byte-output
+        # matches real PPDRIVER reference images. AHDI doesn't use these
+        # values at all (no MBR entries on AHDI).
+        self.assertEqual(atari_hd.CHS_HEADS, 255)
+        self.assertEqual(atari_hd.CHS_SECTORS_PER_TRACK, 63)
+
+    def test_lba_to_chs_lba63_is_cylinder_aligned(self):
+        # LBA 63 = (cyl=0, head=1, sec=1) in the 255 x 63 standard.
+        # Any change here breaks byte-fidelity with real PPDRIVER's
+        # MBR CHS encoding.
+        self.assertEqual(atari_hd.lba_to_chs(63), (0, 1, 1))
+
+    def test_ppdriver_first_partition_at_lba_63(self):
+        # End-to-end via plan_image: a single-partition PPDRIVER plan
+        # places the partition at LBA 63 (matches real PPDRIVER tools
+        # and avoids the cylinder-arithmetic-drift hardware bug seen
+        # at LBA 1).
+        plan = atari_hd.plan_image(
+            atari_hd.FORMAT_PPDRIVER, "<test>", image_mb=128,
+            partitions=[atari_hd.Partition(name="P1", size_mb=64)],
+            strict_tos=False)
+        self.assertEqual(plan.partitions[0].start_lba, 63)
+
+    def test_hddriver_first_partition_at_lba_64(self):
+        plan = atari_hd.plan_image(
+            atari_hd.FORMAT_HDDRIVER, "<test>", image_mb=128,
+            partitions=[atari_hd.Partition(name="P1", size_mb=64)],
+            strict_tos=False)
+        self.assertEqual(plan.partitions[0].start_lba, 64)
+
+    def test_ahdi_first_partition_at_lba_2_unchanged(self):
+        plan = atari_hd.plan_image(
+            atari_hd.FORMAT_AHDI, "<test>", image_mb=64,
+            partitions=[atari_hd.Partition(name="BOOT", size_mb=16)],
+            strict_tos=False)
+        self.assertEqual(plan.partitions[0].start_lba, 2)
+
+    def test_ppdriver_logical_lands_63_sectors_after_ebr(self):
+        # Mirrors the real-PPDRIVER reference's pattern (1GB-RAWDUMP.img
+        # had P2 at LBA 475325 = its EBR at 475262 + 63).
+        parts = [
+            atari_hd.Partition(name="BOOT", size_mb=32),
+            atari_hd.Partition(name="DATA", size_mb=64,
+                                is_extended=True),
+        ]
+        plan = atari_hd.plan_image(
+            atari_hd.FORMAT_PPDRIVER, "<test>", image_mb=128,
+            partitions=parts, strict_tos=False)
+        ebr = plan.partitions[1].ebr_lba
+        data = plan.partitions[1].start_lba
+        self.assertGreater(ebr, 0,
+                           "extended logical must have ebr_lba > 0")
+        self.assertEqual(data - ebr, 63,
+                         "PPDRIVER logical data must start exactly 63 "
+                         "sectors after its EBR (1 EBR + 62 pad)")
+
+
 class TestRejectionPaths(unittest.TestCase):
     """Out-of-range inputs and cap-violating plans must raise with a
     message that names the rule, so the failure points the user at the

@@ -228,7 +228,13 @@ class TestPpdriverRoot(unittest.TestCase):
         mbr = parse_mbr_root(sec)
 
         raw0 = sec[MBR_SLOT_OFFSETS[0]:MBR_SLOT_OFFSETS[0] + 16]
-        self.assertEqual(mbr["slots"][0]["boot"], 0x80,
+        # PPDRIVER convention: MBR boot flag stays at 0x00 on the
+        # primary slot. Real PPDRIVER images use the AHDI-style IPL
+        # for boot, not the DOS boot bit (verified against the
+        # 1GB-RAWDUMP reference). Earlier this test pinned 0x80
+        # mirroring HDDRIVER / DOS convention; that diverged from
+        # real PPDRIVER and was changed in epic-004 / story 003.
+        self.assertEqual(mbr["slots"][0]["boot"], 0x00,
                          f"P0 boot{_slot_msg('MBR', 0, raw0)}")
         self.assertEqual(mbr["slots"][0]["part_type"], MBR_TYPE_FAT16,
                          f"P0 type{_slot_msg('MBR', 0, raw0)}")
@@ -260,8 +266,10 @@ class TestPpdriverRoot(unittest.TestCase):
         for i, part in enumerate(partitions):
             raw = sec[MBR_SLOT_OFFSETS[i]:MBR_SLOT_OFFSETS[i] + 16]
             with self.subTest(slot=i, partition=part.name):
-                expected_boot = 0x80 if i == 0 else 0x00
-                self.assertEqual(mbr["slots"][i]["boot"], expected_boot,
+                # PPDRIVER leaves boot=0x00 on every primary slot --
+                # see epic-004 / story 003 + the test_one_primary
+                # docstring above for rationale.
+                self.assertEqual(mbr["slots"][i]["boot"], 0x00,
                                  f"boot{_slot_msg('MBR', i, raw)}")
                 self.assertEqual(mbr["slots"][i]["part_type"],
                                  MBR_TYPE_FAT16,

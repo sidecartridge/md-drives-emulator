@@ -175,16 +175,26 @@ def _kind_cap_mb(state: State, d, primary_count: int) -> int:
     """Cap (MB) for the partition the dialog is composing, derived from
     the effective kind (primary -> HYBRID_PRIMARY_MAX_MB; extended ->
     HYBRID_MAX_PARTITION_MB) on hybrid formats. AHDI defers to
-    cap_mb_for_type's ident-based logic."""
+    cap_mb_for_type's ident-based logic, with one extra rule: when
+    AHDI bootable mode is on, slot 0 is capped at
+    AHDI_BOOTABLE_BOOT_MAX_MB (15 MB) -- ICD's continuation IPL
+    fails to recognize disks with a larger boot partition. That
+    cap mirrors the validation in plan_image; surfacing it in the
+    dialog lets the user see the constraint upfront instead of at
+    write-time as a status-bar error."""
     is_hybrid = state.format_id in ("PPDRIVER", "HDDRIVER")
     if is_hybrid:
         kind = _effective_kind(state, d)
         if kind == "primary":
             return atari_hd.HYBRID_PRIMARY_MAX_MB
         return atari_hd.HYBRID_MAX_PARTITION_MB
-    return atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
+    base = atari_hd.cap_mb_for_type(state.format_id, state.strict_tos,
                                      d.type_choice, slot_index=d.slot,
                                      primary_count=primary_count)
+    if (state.format_id == "AHDI" and state.bootable
+            and d.slot == 0):
+        return min(base, atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB)
+    return base
 
 
 def _dialog_primary_count(state: State, d) -> int:
@@ -371,8 +381,27 @@ def _render_format_hint(state: State, cols: int) -> str:
         tos = f"  TOS<1.04: {'on' if state.strict_tos else 'off'}"
     else:
         tos = ""
-    line = f"  Format: {fmt}{tos}"
+    boot = _bootable_indicator(state)
+    line = f"  Format: {fmt}{tos}{boot}"
     return _pad_to(line, cols)
+
+
+def _bootable_indicator(state) -> str:
+    """One-segment string ("  Bootable: …") describing the current
+    bootable-mode state per format. HDDRIVER prints a docs pointer
+    instead of yes/no since it's not self-bootable from this tool."""
+    if state.format_id == "HDDRIVER":
+        return "  Bootable: manual (HDDRUTIL.APP)"
+    if state.format_id == "AHDI":
+        if state.bootable and state.ahdi_driver_path:
+            import os as _os
+            base = _os.path.basename(state.ahdi_driver_path)
+            return f"  Bootable: yes ({base})"
+        return "  Bootable: no (B to enable)"
+    if state.format_id == "PPDRIVER":
+        return ("  Bootable: yes (bundled blob)" if state.bootable
+                else "  Bootable: no (B to enable)")
+    return ""
 
 
 def _has_real_partitions(state: State) -> bool:
@@ -413,11 +442,16 @@ def _render_status_keys(state: State, cols: int) -> str:
     items = ["N=New", "L=Load", "A=Add"]
     selected_real = _selected_is_real(state)
     has_real = _has_real_partitions(state)
+    # Story 012: B is enabled for AHDI and PPDRIVER (story 005/011's
+    # CLI flags); HDDRIVER dims B because the tool can't produce
+    # self-bootable HDDRIVER images (story 006 docs-only).
+    boot_enabled = state.format_id in ("AHDI", "PPDRIVER")
     cond = [
         ("D=Delete", selected_real),
         ("E=Edit",   selected_real),
         ("T=Type",   selected_real),
         ("W=Write",  has_real),
+        ("B=Boot",   boot_enabled),
     ]
     for label, enabled in cond:
         items.append(label if enabled else f"{DIM_ON}{label}{DIM_OFF}")
@@ -446,6 +480,9 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         return f"New image filename: {state.prompt_buffer}_"
     if state.prompt_mode == PromptMode.ASK_LOAD_PATH:
         return f"Load image filename: {state.prompt_buffer}_"
+    if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
+        return (f"AHDI driver path (e.g. ICDBOOT.PRG): "
+                f"{state.prompt_buffer}_")
     if state.prompt_mode == PromptMode.CONFIRM_OVERWRITE:
         path = state.pending_path or "(unknown)"
         return (f"{path} exists. Press O to overwrite, "
@@ -454,7 +491,7 @@ def _format_prompt_or_message(state: State, cols: int) -> str:
         slot = state.pending_delete_slot
         return f"Delete partition #{slot}? (y/N)"
     if state.prompt_mode == PromptMode.ASK_FORMAT:
-        return ("Format: [A]HDI  [P]PDRIVER  [H]DDRIVER  "
+        return ("Format: [A]HDI  [P]PDRIVER  [H]DDRIVER (experimental)  "
                 "(Esc cancel)")
     if state.prompt_mode == PromptMode.ASK_STRICT_TOS:
         return "Compatibility with TOS < 1.04? (y/N)"
@@ -712,6 +749,15 @@ def validate_edit_dialog(state: State):
         return (f"BGM requires size > {atari_hd.AHDI_GEM_MAX_MB} MB "
                 "(smaller partitions are GEM); pick GEM or grow the size")
     if size_mb > cap:
+        # AHDI bootable mode pins slot 0 to a tighter cap (15 MB)
+        # because ICD's continuation IPL can't recognize larger boot
+        # partitions. Surface the constraint explicitly so the user
+        # knows it's the bootable toggle (B), not the format cap.
+        if (state.format_id == "AHDI" and state.bootable
+                and d.slot == 0):
+            return (f"AHDI bootable boot partition cap is "
+                    f"{atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} MB "
+                    f"(ICD IPL constraint; press B to disable bootable mode)")
         if state.format_id == "AHDI" and d.type_choice == "GEM":
             kind = f"GEM under {'TOS<1.04' if state.strict_tos else 'TOS 1.04+'}"
         elif state.format_id == "AHDI":
@@ -795,6 +841,7 @@ HELP_ENTRIES = [
     ("Partitions",   "T",                "Toggle GEM/BGM (AHDI)"),
     ("Partitions",   "F",                "Change format"),
     ("Partitions",   "W",                "Write image"),
+    ("Partitions",   "B",                "Toggle bootable mode (AHDI/PPDRIVER)"),
     ("Dialogs",      "Tab",              "Next field"),
     ("Dialogs",      "t / Left / Right", "Cycle Type"),
     ("Dialogs",      "Enter / S",        "Save"),

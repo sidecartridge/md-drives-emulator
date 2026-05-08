@@ -101,6 +101,8 @@ def handle_key(state: State, key) -> State:
         return _handle_discard_unsaved_confirm(state, key)
     if state.prompt_mode == PromptMode.CONFIRM_DISCARD_BEFORE_LOAD:
         return _handle_discard_before_load_confirm(state, key)
+    if state.prompt_mode == PromptMode.ASK_AHDI_DRIVER_PATH:
+        return _handle_ask_ahdi_driver_path(state, key)
     return state
 
 
@@ -236,6 +238,63 @@ def _handle_partition_action(state: State, k: str) -> State:
         return _open_format_chooser(state)
     if k == "w":
         return _start_write(state)
+    if k == "b":
+        return _handle_bootable_toggle(state)
+    return state
+
+
+def _handle_bootable_toggle(state: State) -> State:
+    """B-key handler. Behavior is per-format:
+      - AHDI: opens the ASK_AHDI_DRIVER_PATH prompt when bootable is
+        off (we need the user-supplied ICDBOOT.PRG); when on,
+        clears bootable + path.
+      - PPDRIVER: single-key toggle (uses the bundled boot blob;
+        no path needed).
+      - HDDRIVER: surfaces the manual-install pointer; never
+        flips bootable on (story 006 -- not self-bootable).
+    """
+    if state.format_id == "AHDI":
+        if state.bootable:
+            state.bootable = False
+            state.ahdi_driver_path = None
+            state.status_message = "AHDI bootable mode disabled"
+            state.unsaved_changes = True
+            state.dirty = True
+            return state
+        # Pre-check: ICD's continuation IPL fails on disks with boot
+        # partition > AHDI_BOOTABLE_BOOT_MAX_MB. Surface that BEFORE
+        # we prompt for a driver path so the user can shrink slot 0
+        # first instead of typing a path and then hitting the cap.
+        slot0 = state.partitions[0] if state.partitions else None
+        if (slot0 is not None
+                and slot0.size_mb > atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB):
+            state.status_message = (
+                f"slot 0 is {slot0.size_mb} MB; AHDI bootable mode "
+                f"requires it <= {atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} "
+                f"MB (ICD IPL constraint). Edit slot 0 to shrink it, "
+                f"then press B again.")
+            state.dirty = True
+            return state
+        state.prompt_mode = PromptMode.ASK_AHDI_DRIVER_PATH
+        state.prompt_buffer = ""
+        state.status_message = None
+        state.dirty = True
+        return state
+    if state.format_id == "PPDRIVER":
+        state.bootable = not state.bootable
+        state.ahdi_driver_path = None
+        state.status_message = (
+            "PPDRIVER bootable mode enabled (bundled blob)"
+            if state.bootable
+            else "PPDRIVER bootable mode disabled")
+        state.unsaved_changes = True
+        state.dirty = True
+        return state
+    # HDDRIVER -- not self-bootable; point at the docs.
+    state.status_message = (
+        "HDDRIVER images aren't self-bootable from this tool. "
+        "Run HDDRUTIL.APP after building -- see BOOTABLE.md.")
+    state.dirty = True
     return state
 
 
@@ -488,6 +547,12 @@ def _apply_pending_format(state: State, drop_slots) -> State:
     for slot in drop_slots:
         if 0 <= slot < len(state.partitions):
             state.partitions[slot] = None
+    if new_format != state.format_id:
+        # Bootable-mode state is per-format; clear it so the next
+        # write doesn't try to apply (e.g.) an AHDI driver path on
+        # a now-PPDRIVER plan. The user re-enables via B if wanted.
+        state.bootable = False
+        state.ahdi_driver_path = None
     state.format_id = new_format
     state.strict_tos = new_strict
     if actually_changed:
@@ -784,6 +849,53 @@ def _handle_text_prompt(state: State, key) -> State:
     return state
 
 
+def _handle_ask_ahdi_driver_path(state: State, key) -> State:
+    """Text prompt that takes a path to an AHDI driver (ICDBOOT.PRG
+    or equivalent). On Enter, validates the .PRG magic via the
+    helper from atari_hd.py; on success enables bootable mode."""
+    if key == Key.ESC:
+        state.prompt_mode = PromptMode.OFF
+        state.prompt_buffer = ""
+        state.dirty = True
+        return state
+    if key == Key.CTRL_C:
+        state.exit_requested = True
+        return state
+    if key == Key.ENTER:
+        path = state.prompt_buffer.strip()
+        state.prompt_buffer = ""
+        if not path:
+            state.prompt_mode = PromptMode.OFF
+            state.status_message = "no driver path entered; bootable mode unchanged"
+            state.dirty = True
+            return state
+        # Reuse the same validator the CLI flag uses.
+        err = atari_hd._validate_ahdi_driver(path)
+        if err:
+            state.prompt_mode = PromptMode.OFF
+            state.status_message = err
+            state.dirty = True
+            return state
+        state.bootable = True
+        state.ahdi_driver_path = path
+        state.prompt_mode = PromptMode.OFF
+        state.unsaved_changes = True
+        state.status_message = (
+            f"AHDI bootable: {os.path.basename(path)} validated "
+            f"(.PRG magic OK)")
+        state.dirty = True
+        return state
+    if key == Key.BACKSPACE:
+        if state.prompt_buffer:
+            state.prompt_buffer = state.prompt_buffer[:-1]
+            state.dirty = True
+        return state
+    if isinstance(key, str) and len(key) == 1 and key.isprintable():
+        state.prompt_buffer += key
+        state.dirty = True
+    return state
+
+
 def _commit_text_prompt(state: State) -> State:
     import os
     path = state.prompt_buffer.strip()
@@ -935,6 +1047,16 @@ def _preflight_check(state: State):
         if part.size_mb > cap:
             return (f"partition {part.name!r} ({part.size_mb} MB) "
                     f"exceeds {cap} MB cap")
+    # AHDI bootable mode pins slot 0 to a tighter cap (15 MB) -- ICD's
+    # continuation IPL fails on disks with a larger boot partition.
+    # Mirror plan_image's validation here so W shows the error inline
+    # instead of making the user wait for the build-time abort.
+    if (state.format_id == "AHDI" and state.bootable
+            and real and real[0].size_mb > atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB):
+        return (f"AHDI bootable boot partition (slot 0, "
+                f"{real[0].name!r}) is {real[0].size_mb} MB; cap is "
+                f"{atari_hd.AHDI_BOOTABLE_BOOT_MAX_MB} MB. Shrink it "
+                f"or press B to disable bootable mode.")
     return None
 
 
@@ -997,9 +1119,21 @@ def _do_write(state: State) -> State:
                 new.ahdi_ident = ident
             plan_partitions.append(new)
 
+        # Wire through the bootable-mode toggles. plan_image's own
+        # validators reject these on the wrong format; we mirror the
+        # cleanup in _apply_pending_format so a stale bootable flag
+        # never reaches here.
+        ahdi_driver = (state.ahdi_driver_path
+                       if (state.bootable
+                           and state.format_id == "AHDI")
+                       else None)
+        ppdriver_bootable = (state.bootable
+                              and state.format_id == "PPDRIVER")
         plan = atari_hd.plan_image(
             state.format_id, image_path=tmp_path, image_mb=image_mb,
-            partitions=plan_partitions, strict_tos=state.strict_tos)
+            partitions=plan_partitions, strict_tos=state.strict_tos,
+            ahdi_driver_path=ahdi_driver,
+            ppdriver_bootable=ppdriver_bootable)
 
         atari_hd.build_image(plan, progress=_make_progress_callback())
 
@@ -1073,8 +1207,23 @@ def _handle_discard_unsaved_confirm(state: State, key) -> State:
 # Main entry point
 # -------------------------------------------------------------------
 
-def main() -> int:
+def main(ahdi_driver_path=None, ppdriver_bootable: bool = False) -> int:
     state = State()
+    # Story 012: pre-fill bootable-mode from CLI flags (the wrapper
+    # in atari_hd.py parses --ahdi-driver / --ppdriver-bootable and
+    # forwards them here when --tui is also requested).
+    if ahdi_driver_path is not None:
+        state.format_id = "AHDI"
+        state.bootable = True
+        state.ahdi_driver_path = ahdi_driver_path
+        state.status_message = (
+            f"AHDI bootable pre-filled from CLI: "
+            f"{os.path.basename(ahdi_driver_path)}")
+    elif ppdriver_bootable:
+        state.format_id = "PPDRIVER"
+        state.bootable = True
+        state.status_message = (
+            "PPDRIVER bootable pre-filled from CLI (bundled blob)")
     with terminal_session():
         while not state.exit_requested:
             if state.dirty:
