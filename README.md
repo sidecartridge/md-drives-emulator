@@ -2,6 +2,8 @@
 
 This is a microfirmware application for the **SidecarTridge Multi-device**, designed to emulate hard disks and floppy drives for Atari computers, including the **Atari ST, STe, Mega ST, and Mega STe**.
 
+> 🛒 **Get the hardware:** [SidecarTridge Multi-device](https://sidecartridge.com/products/sidecartridge-multidevice-atari-st/)
+
 ## 🚀 Installation
 
 To install the Drives Emulator app on your SidecarTridge Multi-device:
@@ -297,7 +299,6 @@ The program prints:
 - `All tests completed.` when it reaches the end
 
 The main program currently calls all suites with `FALSE`, so the test run is automatic and does not pause between cases.
-
 
 
 ## 📄 License
