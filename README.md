@@ -1,22 +1,37 @@
-# SidecarTridge Multi-device Drives Emulator
+<div align="center">
 
-This is a microfirmware application for the **SidecarTridge Multi-device**, designed to emulate hard disks and floppy drives for Atari computers, including the **Atari ST, STe, Mega ST, and Mega STe**.
+<img src="icon.png" alt="SidecarTridge Multi-device Drives Emulator" width="180" />
+
+# Drives Emulator
+
+[![Build](https://github.com/sidecartridge/md-drives-emulator/actions/workflows/build.yml/badge.svg)](https://github.com/sidecartridge/md-drives-emulator/actions/workflows/build.yml)
+[![Release](https://github.com/sidecartridge/md-drives-emulator/actions/workflows/release.yml/badge.svg)](https://github.com/sidecartridge/md-drives-emulator/actions/workflows/release.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+
+</div>
+
+A [SidecarTridge Multi-device](https://sidecartridge.com) microfirmware that
+emulates **hard disks** (GEMDrive and ACSI), **floppy drives**, and a
+**real-time clock** on the Atari ST, STe, Mega ST, and Mega STe.
+
+> Learn how to install and use it:
+> <https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/drives_emulator/>
 
 > 🛒 **Get the hardware:** [SidecarTridge Multi-device](https://sidecartridge.com/products/sidecartridge-multidevice-atari-st/)
 
-## 🚀 Installation
+## Installation
 
 To install the Drives Emulator app on your SidecarTridge Multi-device:
 
-1. Launch the **Booster App** on your SidecarTridge  Multi-device..
+1. Launch the **Booster App** on your SidecarTridge Multi-device.
 2. Open the Booster web interface.
 3. In the **Apps** tab, select **"Drives Emulator"** from the list of available apps.
-4. Click **"Download"** to install the app to your SidecarTridge’s microSD card.
+4. Click **"Download"** to install the app to your SidecarTridge's microSD card.
 5. Once installed, select the app and click **"Launch"** to activate it.
 
 After launching, the app will automatically run every time your Atari computer is powered on.
 
-## 🕹️ Usage
+## Usage
 
 When you boot your Atari ST/STE/Mega ST/Mega STe, the app displays a **setup screen** for 5 seconds.  
 If no key is pressed, the emulator will start emulating the floppy and hard disk drives configured in the setup screen.
@@ -32,15 +47,15 @@ On first use, the microfirmware automatically creates the default folders it nee
 
 You can change both folders later from the setup screen.
 
-## ⚙️ Setup Screen
+## Setup screen
 
-### Information on the Setup Screen
+### Information on the setup screen
 
 The setup screen displays the following information:
 - **Emulator Version**: The version of the Drives Emulator app.
 - **Boot information line**: The bottom line shows the setup countdown, `Countdown stopped. Press [E] or [X] to continue.`, or `USB Mass Storage Connected` when the device is mounted over USB.
 
-### GEMDrive Hard Disk Emulation
+### GEMDrive hard disk emulation
 
 #### What is GEMDrive?
 
@@ -63,7 +78,7 @@ Despite these challenges, the benefits of Hard Disk Emulation often surpass the 
 
 The concept for the GEMdrive hard disk emulation originated with the GEMDOS component of the Hatari emulator, though it's worth noting that there exists a GemDrive for the ACSI2STM project, which serves a different purpose. Initially, the plan was to borrow the GEMDOS implementation from Hatari and adapt it for use with the Multi-device. However, this strategy proved unfeasible due to the Hatari emulator's capability for extensive interaction with both the Atari ST's internals and the host computer—capabilities that the Multi-device, as a peripheral, cannot match due to its need to adhere to the Atari ST's hardware constraints. The GEMDOS code from Hatari was ultimately deemed too intricate and too intertwined with the emulator itself for direct application in the Multi-device environment. Nevertheless, the exploration of Hatari's GEMDOS code was highly informative, leading to the development of a bespoke GEMdrive code specifically tailored for the Multi-device.
 
-#### GEMDrive Related Setup Screen Commands
+#### GEMDrive related setup screen commands
 
 | Command | Description |
 |---------|-------------|
@@ -71,9 +86,9 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
-### ACSI Hard Disk Emulation (Experimental)
+### ACSI hard disk emulation (experimental)
 
-#### What is ACSI Emulation?
+#### What is ACSI emulation?
 
 In addition to GEMDrive, the Multi-device can emulate **ACSI** hard disks at the block-device level, driven by a raw disk image file on the microSD card. Unlike GEMDrive — which intercepts GEMDOS calls and presents a folder as a drive — the ACSI path emulates the disk at the BIOS level (`hdv_init` / `hdv_bpb` / `hdv_rw` / `hdv_boot` / `hdv_mediach`) and hands TOS a real partition table plus BPBs. Disk images are standard hard disk images compatible with Peter Putnik's **PPDRIVER** (TOS&DOS dual-BPB) and **HDDRIVER** layouts.
 
@@ -102,7 +117,7 @@ The ACSI ID and the starting drive letter are **independent**. You can, for exam
 
 The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible with this emulator lives in its own repo: **[sidecartridge/atari-hd](https://github.com/sidecartridge/atari-hd)**. It's a stdlib-only Python image builder with both a TUI and a scriptable CLI; the output is a raw `.img` you drop on the Multi-device's microSD card. See that repo's README for the one-line installer and usage.
 
-#### ACSI Related Setup Screen Commands
+#### ACSI related setup screen commands
 
 | Command | Description |
 |---------|-------------|
@@ -111,23 +126,23 @@ The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible wit
 | **U[n]it (ACSI ID)** | Choose the ACSI bus ID reported to TOS (`0` to `7`). Default is `7`. This is only the physical unit tag stored in `pun_info`; it does not affect which drive letters the partitions land on. |
 | **Dri[v]e** | Choose the starting drive letter for the first announced partition (`C:` to `P:`). Subsequent partitions take consecutive letters. Must not overlap with the GEMDrive drive letter when both are enabled. |
 
-### Floppy Drive Emulation
+### Floppy drive emulation
 
 The Floppies Emulation represents a significant enhancement to the Multi-device. With this, the Atari ST can interface with floppy images on a microSD card as though they were actual floppy disks. Here's how to get started with Floppies Emulation.
 
-#### Floppy Drive Related Setup Screen Commands
+#### Floppy drive related setup screen commands
 
 | Command | Description |
 |---------|-------------|
 | **[F]loppy** | Enable or disable Floppy emulation. |
-| **Fo[l]der** | Select the base folder for the Floppy images. By default, the emulator uses `/floppies` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
-| **[A] Drive** | Select the .ST (Read only) or .ST.RW  (Read/Write) image file to use as the floppy disk. It  allows to navigate through the microSD card's directory structure. |
+| **Fo[l]der** | Select the base folder for the Floppy images. By default, the emulator uses `/floppies` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
+| **[A] Drive** | Select the .ST (Read only) or .ST.RW (Read/Write) image file to use as the floppy disk. It allows to navigate through the microSD card's directory structure. |
 | **[CTRL+A] Configure multiple images** | Configure up to 10 persistent images for floppy drive A. Slot 1 is the main **[A] Drive** image; slots 2..10 are optional extra images. In this submenu, press `2..9` or `0` to assign a slot, and press `SHIFT + 2..9` or `0` to clear a slot. |
-| **[B] Drive** | Select the .ST (Read only) or .ST.RW  (Read/Write) image file to use as the second floppy disk. It allows to navigate through the microSD card's directory structure. |
-| **[SHIFT+A] Drive** | Unmount the floppy disk image from the A: drive. |
-| **[SHIFT+B] Drive** | Unmount the floppy disk image from the B: drive. |
+| **[B] Drive** | Select the .ST (Read only) or .ST.RW (Read/Write) image file to use as the second floppy disk. It allows to navigate through the microSD card's directory structure. |
+| **[SHIFT+A] Drive** | Unmount the floppy disk image from the A: drive. |
+| **[SHIFT+B] Drive** | Unmount the floppy disk image from the B: drive. |
 | **Boo[t] enabled** | Enable or disable the boot sector emulation. When enabled, the emulator will attempt to boot from the floppy disk image. |
-| **XBIO[S] trap** | Enable or disable the XBIOS trap for floppy disk operations. When enabled, the emulator will intercept XBIOS calls related to floppy disk operations. |
+| **XBIO[S] trap** | Enable or disable the XBIOS trap for floppy disk operations. When enabled, the emulator will intercept XBIOS calls related to floppy disk operations. |
 
 Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks.
 
@@ -148,7 +163,7 @@ When the emulator is already running:
 
 If only slot 1 is configured, a short **`SELECT`** press does nothing during runtime.
 
-### Real Time Clock Emulation
+### Real-time clock emulation
 
 The Real Time Clock (RTC) emulation allows the Multi-device to emulate RTC functionality for Atari ST computers, enabling accurate timekeeping and date management.
 
@@ -170,26 +185,29 @@ If the NTP sync fails or times out, the emulator still continues into normal emu
 
 Refer to the RTC Emulator documentation in the SidecarTridge docs for the complete setup and usage details.
 
-### Other Setup Screen Commands
+### Other setup screen commands
 
+| Command | Description |
+|---------|-------------|
 | **[E]xit to Desktop** | Exit to desktop and start the emulation |
 | **[X] Return to the Booster menu** | Exit setup and return to the Booster Loader main menu. |
 
-### ⬇️ Browsing the microSD Card
+### Browsing the microSD card
 
 The internal browser allows you to navigate through the microSD card's directory structure. You can select folders and files using the keyboard:
+
 | Key | Action |
 |-----|--------|
 | **`UP`** | Move up in the directory structure |
 | **`DOWN`** | Move down in the directory structure |
 | **`LEFT`** | Move to the previous page of the directory structure |
 | **`RIGHT`** | Move to the next page of the directory structure |
-| **`ENTER`** | Enter into a folder, or go to the partent folder if you are not in the root folder |
-| **`SPACE`** | Select a file or folder, and then exit with the newly selected item. |
+| **`ENTER`** | Enter into a folder, or go to the parent folder if you are not in the root folder |
+| **`SPACE`** | Select a file or folder, and then exit with the newly selected item. |
 
 As a rule of thumb, **`SPACE`** will select the current item. So, if you want to choose a new folder, navigate to it, press **`ENTER`** to enter it, and then press **`SPACE`** to select it. If you want to select a file, navigate to it, and then press **`SPACE`** to select it.
 
-### 💾 USB Mass Storage
+### USB mass storage
 
 USB mass storage is currently available only while you are in the **setup menu**.
 
@@ -201,24 +219,24 @@ When USB mass storage is mounted, the Pico W green LED stays on. During active U
 
 It is recommended to connect the Multi-device to your computer via USB before launching the emulator.
 
-### 🚀 Exiting to Desktop
+### Exiting to desktop
 
-Pressing **`E`** on the setup screen will exit the emulator and return to the Atari desktop enabling the hard or floppy drives emulation. 
+Pressing **`E`** on the setup screen will exit the emulator and return to the Atari desktop enabling the hard or floppy drives emulation.
 
 If RTC is enabled, the emulator may briefly initialize WiFi at this point to obtain the NTP time before continuing. The screen will show the connection progress and, when successful, the assigned IP address and time-sync result.
 
 To return to the setup screen, press **`SELECT`** on your Multi-device and reboot. Or simply power off your Atari and power it on again.  
 Note that during runtime, a short **`SELECT`** press is used for floppy A image cycling if multiple drive-A slots are configured.
 
-### 🔁 System Reset Behavior
+### System reset behavior
 
 The Drives Emulator app is **resistant to system resets**. Pressing the reset button on your Atari will continue emulating the hard disk and floppy drives, maintaining the current state of the emulator.
 
-### 🔌 Power Cycling
+### Power cycling
 
 The Drives Emulator app is designed to return to the setup screen after a power cycle. When you power off and on your Atari, the app will display the setup screen again, allowing you to configure the emulator or launch it with the last used settings.
 
-### ⚙️ Advanced Features
+### Advanced features
 
 #### Changing the speed of the microSD card
 
@@ -238,17 +256,27 @@ Values below `1000` are clamped to **1 MHz**, and values above `24000` are clamp
 
 `24 MHz` is usually safe, but if you see instability, try `12500` or `6000`.
 
+## Building
 
-## 🛠️ Setting Up the Development Environment
+Build with the repo-root `build.sh` (see `CLAUDE.md` for the full toolchain
+requirements):
+
+```bash
+# ./build.sh <board_type> <build_type> <app_uuid>
+./build.sh pico_w release <app-uuid>
+```
+
+The build produces `dist/<uuid>-<version>.uf2` (the firmware you flash) and
+`dist/<uuid>.json` (the app descriptor from `desc/app.json`).
 
 This project is based on an early version of the [SidecarTridge Multi-device Microfirmware App Template](https://github.com/sidecartridge/md-microfirmware-template).  
 To set up your development environment, please follow the instructions provided in the [official documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/).
 
-## 🧪 Atari GEMDRIVE Tests
+## Atari GEMDRIVE tests
 
 The GEMDRIVE Atari-side test program lives under `tests/atarist`.
 
-### Adding Tests
+### Adding tests
 
 For small additions, put the new `test_*()` function in the closest existing suite file under `tests/atarist/src`:
 
@@ -268,7 +296,7 @@ If you need a brand new suite:
 4. Call `run_<name>_tests(FALSE)` from `run()` in `tests/atarist/src/main.c`.
 5. Add the new object file to the compile/link lists in `tests/atarist/Makefile`.
 
-### Building
+### Building the tests
 
 The test build uses `stcmd` from the `atarist-docker-toolkit` wrapper in `tests/atarist/build.sh`.
 
@@ -288,7 +316,7 @@ If you want file logging enabled in the test binary, pass any non-empty third ar
 ./tests/atarist/build.sh "$PWD/tests/atarist" release 1
 ```
 
-### Running
+### Running the tests
 
 Launch `FSTESTS.TOS` from the Atari desktop while GEMDRIVE is active and pointing to a writable test folder.
 
@@ -300,11 +328,18 @@ The program prints:
 
 The main program currently calls all suites with `FALSE`, so the test run is automatic and does not pause between cases.
 
+## Project docs
 
+- `CLAUDE.md` / `AGENTS.md`: build, architecture, and contributor playbook.
+
+<<<<<<< HEAD
 ## 📄 License
+=======
+## License
 
-This project is licensed under the **GNU General Public License v3.0**.  
-See the [LICENSE](https://github.com/sidecartridge/md-drives-emulator/blob/main/LICENSE) file for full terms.
+Licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).
+>>>>>>> App icon + README restyle in the md-cubase-dongles look -- badges, centered header, plain sections
 
-## 🤝 Contributing
+## Contributing
+
 Made with ❤️ by [SidecarTridge](https://sidecartridge.com)

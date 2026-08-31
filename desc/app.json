@@ -2,7 +2,7 @@
   "uuid": "<APP_UUID>",
   "name": "Multidrive emulator",
   "description": "All in one Hard disk, Floppy disk and Real Time emulator for Atari ST/STE/MegaST/MegaSTE.  <a target='_blank' href='https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/drives_emulator/'>Learn more</a>",
-  "image": "https://placehold.co/256x256/png",
+  "image": "https://raw.githubusercontent.com/sidecartridge/md-drives-emulator/main/icon.png",
   "tags": [
     "HD",
     "GEMDRIVE",
