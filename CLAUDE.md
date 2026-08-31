@@ -35,6 +35,8 @@ Atari GEMDRIVE test binary (produces `tests/atarist/dist/FSTESTS.TOS`):
 ```
 Pass any non-empty third argument to enable file logging. Tests run from the Atari desktop while GEMDRIVE points at a writable folder.
 
+To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
+
 Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
 
 ## Architecture — the parts that span multiple files
@@ -43,7 +45,7 @@ Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-do
 
 The RP2040 emulates both the cartridge ROM and the Atari-side command channel simultaneously. Two PIO programs run together from startup in `rp/src/emul.c`:
 - `romemul` — the **ROM4** path ($FA0000–$FAFFFF), services cartridge ROM reads.
-- `commemul` — the **ROM3** path ($FB0000–$FBFFFF), sampled-command protocol; `term.c` and `chandler.c` ingest ROM3 samples via `commemul_poll()`.
+- `commemul` — the **ROM3** path ($FB0000–$FBFFFF), sampled-command protocol; `term.c` and `chandler.c` ingest ROM3 samples via `commemul_poll()`. Do not reintroduce the old ROM4 DMA IRQ command path.
 
 Both paths can touch shared bus control signals, so any PIO/DMA/linker change is timing-sensitive. A successful build does **not** prove cartridge bus behavior is correct — hardware validation is required for bus-facing changes.
 
@@ -69,7 +71,7 @@ The cart window is **read-only from the Atari CPU**. The RP populates it. Atari-
 
 ### ACSI hard disk emulation
 
-Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER.
+Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER. Tested on TOS 1.04–2.06; **not supported under EmuTOS** — its embedded hard disk driver conflicts with the ACSI hooks.
 
 Key design points:
 - **`bflags = 1`** in the BPB is critical — without it TOS interprets FAT as FAT12 instead of FAT16, truncating cluster numbers and corrupting the FAT walk. This was the root cause of the original "large files garble" bug.
@@ -98,9 +100,13 @@ Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` config
 
 `blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during transfer. `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.
 
+### USB mass storage
+
+MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption.
+
 ### RTC/NTP WiFi
 
-On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emul.c` owns the full transient cycle. The leading `network_deInit()` before `network_wifiInit()` is required because `blink.c` may have done a chip-only init.
+On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emul.c` owns the full transient cycle. The leading `network_deInit()` before `network_wifiInit()` is required because `blink.c` may have done a chip-only init. `lwipopts.h` is tuned for this RTC-only profile (DHCP + DNS + UDP for NTP; **TCP disabled**) — don't re-enable TCP/mDNS/HTTP lwIP features unless a runtime feature actually needs them.
 
 ## Critical implementation rules
 
