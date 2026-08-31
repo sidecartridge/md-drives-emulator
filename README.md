@@ -332,13 +332,9 @@ The main program currently calls all suites with `FALSE`, so the test run is aut
 
 - `CLAUDE.md` / `AGENTS.md`: build, architecture, and contributor playbook.
 
-<<<<<<< HEAD
-## 📄 License
-=======
 ## License
 
 Licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).
->>>>>>> App icon + README restyle in the md-cubase-dongles look -- badges, centered header, plain sections
 
 ## Contributing
 
