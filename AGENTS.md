@@ -12,7 +12,7 @@ Welcome to the `md-drives-emulator` workspace. This file captures the local rule
   - Raspberry Pi Pico SDK / Extras
   - ARM GCC toolchain for RP2040
   - `stcmd` for the Atari target build
-- **TTY note:** `stcmd` may require a PTY when run through an agent/tool wrapper. On macOS, `script -q /dev/null ./build.sh "$PWD" release` provides one.
+- **TTY note:** `stcmd` wants a terminal. Without one (an agent, a tool wrapper, CI) set `STCMD_NO_TTY=1`, as the `Build` workflow does: `STCMD_NO_TTY=1 ./build.sh "$PWD" release`.
 - **Hardware tools:** with a Raspberry Pi Debug Probe attached, `tools/dev/flash.sh <debug|release>` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP. See `tools/dev/README.md`.
 
 ## 2. Common Commands

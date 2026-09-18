@@ -37,7 +37,7 @@ Pass any non-empty third argument to enable file logging. Tests run from the Ata
 
 To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
 
-Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper (prefix with `script -q /dev/null`). Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` wants a terminal; when run through an agent wrapper set `STCMD_NO_TTY=1`, as CI does. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
 
 With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD.
 
