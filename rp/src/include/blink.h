@@ -27,6 +27,8 @@
 #define BLINK_SEQUENCE_ON_MS 200
 #define BLINK_SEQUENCE_OFF_MS 200
 #define BLINK_ACTIVITY_ON_US 25000
+// USB mass storage: the LED comes back on this long after the last transfer.
+#define BLINK_TRAFFIC_QUIET_US 100000
 
 typedef struct {
   char character;
@@ -92,6 +94,15 @@ void blink_toogle();
  * after `BLINK_ACTIVITY_ON_US` without blocking the caller.
  */
 void blink_activityPulse(void);
+
+/**
+ * @brief Report USB mass storage traffic.
+ *
+ * The LED goes off when a burst of transfers starts and back on
+ * `BLINK_TRAFFIC_QUIET_US` after the last one, from blink_poll(). Cheap to
+ * call once per transfer: the LED itself is written twice per burst.
+ */
+void blink_trafficDip(void);
 
 /**
  * @brief Starts a counted LED flash sequence.

@@ -15,17 +15,43 @@ static BYTE msc_sector_buf[FF_MAX_SS];
 static bool ejected = false;
 static bool mounted = false;
 
+// SCSI SYNCHRONIZE CACHE (10); TinyUSB has no name for it.
+#define USB_MASS_SCSI_SYNCHRONIZE_CACHE 0x35
+
+// One chunk buffer lets the SD card work while USB moves the previous or next
+// chunk: usb_mass_poll() runs from the main loop while the USB interrupt
+// streams packets. Reads fill it ahead with the next sequential chunk; writes
+// park a chunk in it and return at once, so the card write overlaps the
+// reception of the next one. Only one use at a time: a write discards any
+// read-ahead, and every callback finishes a parked write first so the host
+// always reads back what it wrote.
+typedef enum {
+  CHUNK_EMPTY,
+  CHUNK_READ_AHEAD,
+  CHUNK_WRITE_PENDING,
+} chunk_state_t;
+
+static uint8_t chunk_buf[CFG_TUD_MSC_EP_BUFSIZE] __attribute__((aligned(4)));
+static chunk_state_t chunk_state = CHUNK_EMPTY;
+static uint32_t chunk_lba;
+static uint32_t chunk_sectors;
+static bool read_ahead_wanted = false;
+static uint32_t read_ahead_lba;
+// A parked write that failed was already acknowledged to the host, so the
+// failure can only be reported later. From then on every write and cache sync
+// fails until the device is connected again, so the host cannot carry on as if
+// the data had been stored.
+static bool write_failed = false;
+
 static void usb_mass_activity_begin(void) {
 #ifdef BLINK_H
-  blink_off();
+  blink_trafficDip();
 #endif
 }
 
-static void usb_mass_activity_end(void) {
-#ifdef BLINK_H
-  blink_on();
-#endif
-}
+// The LED comes back on from blink_poll() once the traffic stops, instead of
+// being switched on and off around every transfer.
+static void usb_mass_activity_end(void) {}
 
 static bool usb_mass_range_valid(uint32_t lba, uint32_t offset,
                                  uint32_t bufsize) {
@@ -38,6 +64,41 @@ static bool usb_mass_range_valid(uint32_t lba, uint32_t offset,
   return sectors_touched == 0 || (start_lba + sectors_touched) <= sz_drv;
 }
 
+// Whole sectors of a chunk that fits the chunk buffer.
+static bool usb_mass_chunk_aligned(uint32_t offset, uint32_t bufsize) {
+  return (offset % sz_sect) == 0 && (bufsize % sz_sect) == 0 &&
+         bufsize <= sizeof(chunk_buf);
+}
+
+// Write the parked chunk, if any. Returns false once a parked write has failed.
+static bool usb_mass_flush(void) {
+  if (chunk_state == CHUNK_WRITE_PENDING) {
+    chunk_state = CHUNK_EMPTY;
+    if (disk_write(0, chunk_buf, chunk_lba, chunk_sectors) != RES_OK) {
+      DPRINTF("ERROR: deferred write of %lu sectors at %lu failed\n",
+              (unsigned long)chunk_sectors, (unsigned long)chunk_lba);
+      write_failed = true;
+    }
+  }
+  return !write_failed;
+}
+
+void usb_mass_poll(void) {
+  usb_mass_flush();
+  if (!read_ahead_wanted) return;
+  read_ahead_wanted = false;
+  if (read_ahead_lba >= sz_drv) return;
+
+  uint32_t sectors = sizeof(chunk_buf) / sz_sect;
+  if (sectors > sz_drv - read_ahead_lba) sectors = sz_drv - read_ahead_lba;
+  usb_mass_activity_begin();
+  if (disk_read(0, chunk_buf, read_ahead_lba, sectors) == RES_OK) {
+    chunk_state = CHUNK_READ_AHEAD;
+    chunk_lba = read_ahead_lba;
+    chunk_sectors = sectors;
+  }
+}
+
 static int32_t usb_mass_read_chunked(uint8_t lun, uint32_t lba, uint32_t offset,
                                      void *buffer, uint32_t bufsize) {
   if (bufsize == 0) return 0;
@@ -47,6 +108,21 @@ static int32_t usb_mass_read_chunked(uint8_t lun, uint32_t lba, uint32_t offset,
   }
 
   usb_mass_activity_begin();
+  usb_mass_flush();
+
+  if (usb_mass_chunk_aligned(offset, bufsize)) {
+    uint32_t first = lba + (offset / sz_sect);
+    uint32_t sectors = bufsize / sz_sect;
+    // Only a full chunk hints at a sequential stream worth reading ahead.
+    read_ahead_wanted = (bufsize == sizeof(chunk_buf));
+    read_ahead_lba = first + sectors;
+    if (chunk_state == CHUNK_READ_AHEAD && chunk_lba == first &&
+        sectors <= chunk_sectors) {
+      memcpy(buffer, chunk_buf, bufsize);
+      chunk_state = CHUNK_EMPTY;
+      return (int32_t)bufsize;
+    }
+  }
 
   uint32_t current_lba = lba + (offset / sz_sect);
   uint32_t sector_offset = offset % sz_sect;
@@ -110,6 +186,21 @@ static int32_t usb_mass_write_chunked(uint8_t lun, uint32_t lba,
   }
 
   usb_mass_activity_begin();
+  if (!usb_mass_flush()) {
+    tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+    return -1;
+  }
+  chunk_state = CHUNK_EMPTY;
+  read_ahead_wanted = false;
+
+  if (usb_mass_chunk_aligned(offset, bufsize)) {
+    // TinyUSB reuses its buffer for the next chunk as soon as this returns.
+    memcpy(chunk_buf, buffer, bufsize);
+    chunk_state = CHUNK_WRITE_PENDING;
+    chunk_lba = lba + (offset / sz_sect);
+    chunk_sectors = bufsize / sz_sect;
+    return (int32_t)bufsize;
+  }
 
   uint32_t current_lba = lba + (offset / sz_sect);
   uint32_t sector_offset = offset % sz_sect;
@@ -176,7 +267,7 @@ static int32_t usb_mass_write_chunked(uint8_t lun, uint32_t lba,
   return (int32_t)bufsize;
 }
 
-bool usb_mass_get_mounted(void) { return mounted; }
+bool usb_mass_get_mounted(void) { return mounted && !ejected; }
 
 bool usb_mass_init() {
   DPRINTF("CFG_TUD_MAX_SPEED: %d\n", CFG_TUD_MAX_SPEED);
@@ -188,6 +279,9 @@ bool usb_mass_start(void) {
   DPRINTF("Init USB\n");
   ejected = false;
   mounted = false;
+  chunk_state = CHUNK_EMPTY;
+  read_ahead_wanted = false;
+  write_failed = false;
   // init device stack on configured roothub port
   bool ok = tud_init(BOARD_TUD_RHPORT);
   if (!ok) {
@@ -211,6 +305,7 @@ bool usb_mass_start(void) {
 void tud_mount_cb(void) {
   DPRINTF("Device mounted\n");
   mounted = true;
+  write_failed = false;
 }
 
 // Invoked when device is unmounted
@@ -315,9 +410,14 @@ bool __not_in_flash_func(tud_msc_start_stop_cb)(uint8_t lun,
     if (start) {
       // load disk storage
       DPRINTF("LOAD DISK STORAGE\n");
+      ejected = false;
     } else {
       // unload disk storage
       DPRINTF("UNLOAD DISK STORAGE\n");
+      if (!usb_mass_flush()) {
+        tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+        return false;
+      }
       ejected = true;
     }
   }
@@ -361,6 +461,14 @@ int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer,
     case SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL:
       // Host is about to read/write etc ... better not to disconnect disk
       resplen = 0;
+      break;
+    case USB_MASS_SCSI_SYNCHRONIZE_CACHE:
+      if (usb_mass_flush()) {
+        resplen = 0;
+      } else {
+        tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
+        resplen = -1;
+      }
       break;
     default:
       // Set Sense = Invalid Command Operation

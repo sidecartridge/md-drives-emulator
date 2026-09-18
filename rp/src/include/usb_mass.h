@@ -32,6 +32,11 @@
 // Init USB Mass storage device
 bool usb_mass_init(void);
 bool usb_mass_start(void);
+// True while a host has the card mounted; false again once the host ejects it,
+// even if the cable stays connected.
 bool usb_mass_get_mounted(void);
+// Call right after every tud_task(): writes the chunk the host just sent and
+// reads ahead the next one, while USB transfers in the background.
+void usb_mass_poll(void);
 
 #endif  // USB_MASS_H
