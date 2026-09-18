@@ -130,7 +130,11 @@ extern unsigned int _booster_app_flash_start;
 extern unsigned int _config_flash_start;
 extern unsigned int _global_lookup_flash_start;
 extern unsigned int _global_config_flash_start;
-extern unsigned int __rom_in_ram_start__;
+// The 64 KB cartridge window, placed by the linker script. Declared as an
+// array of unknown size, not as a single unsigned int: to the compiler a plain
+// int is a 4-byte object, so every access past its first 4 bytes would be
+// undefined behaviour that -O3 is free to optimise on.
+extern unsigned int __rom_in_ram_start__[];
 // NOLINTEND(readability-identifier-naming)
 
 #endif  // CONSTANTS_H
