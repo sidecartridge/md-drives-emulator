@@ -55,6 +55,10 @@ enum {
 // Makes the next N GEMDRIVE write chunks fail as an SD error, through the
 // real error path. Payload word 0 = how many chunks (default 1).
 #define DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE 3
+// Holds the given number of KB of heap (payload word 0), on top of what is
+// already held, to test what the firmware does when memory runs out; 0 KB
+// releases everything held. Result 0 when the allocation is refused.
+#define DEVHOOKS_APP_HEAP_HOLD 4
 
 #define MAX_DOMAIN_LENGTH 255
 #define MAX_LABEL_LENGTH 63

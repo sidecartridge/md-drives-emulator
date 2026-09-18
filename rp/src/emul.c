@@ -113,6 +113,12 @@ static bool usbMassStorageReady = false;
 static volatile bool pendingDriveACycle = false;
 
 #if defined(_DEBUG) && (_DEBUG != 0)
+// Heap held on purpose by DEVHOOKS_APP_HEAP_HOLD, as a list of blocks.
+typedef struct DevhooksHeldBlock {
+  struct DevhooksHeldBlock *next;
+} DevhooksHeldBlock;
+static DevhooksHeldBlock *devhooksHeldHeap = NULL;
+
 // Debug-only app commands for tools/dev/swd.py (`swd.py app NAME`); the
 // DEVHOOKS_APP_* ids are defined in emul.h.
 static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
@@ -128,6 +134,27 @@ static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
       DPRINTF("devhooks: stalling the next %u write chunk(s)\n",
               (unsigned int)chunks);
       return 1;
+    }
+    case DEVHOOKS_APP_HEAP_HOLD: {
+      uint32_t kb = (payloadSize >= 2u) ? payload[0] : 0u;
+      if (kb == 0u) {
+        while (devhooksHeldHeap != NULL) {
+          DevhooksHeldBlock *next = devhooksHeldHeap->next;
+          free(devhooksHeldHeap);
+          devhooksHeldHeap = next;
+        }
+        DPRINTF("devhooks: heap hold released\n");
+        return 1;
+      }
+      DevhooksHeldBlock *block =
+          malloc(sizeof(DevhooksHeldBlock) + kb * 1024u);
+      if (block != NULL) {
+        block->next = devhooksHeldHeap;
+        devhooksHeldHeap = block;
+      }
+      DPRINTF("devhooks: holding %lu KB more heap: %s\n", (unsigned long)kb,
+              (block != NULL) ? "ok" : "refused");
+      return (block != NULL) ? 1u : 0u;
     }
     case DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE: {
       uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
