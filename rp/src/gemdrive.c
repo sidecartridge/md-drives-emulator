@@ -1392,6 +1392,9 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         int16_t errorCode = GEMDOS_EFILNF;
         if (fr == FR_NO_PATH) {
           errorCode = GEMDOS_EPTHNF;
+        } else if (fr == FR_TOO_MANY_OPEN_FILES) {
+          // A full FatFs lock table is out of handles, not a missing file
+          errorCode = GEMDOS_ENHNDL;
         }
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
         if (currentDTANode) {
@@ -1535,8 +1538,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         FRESULT fr = f_open(&fobj, tmpFilepath, FatFSOpenMode);
         if (fr != FR_OK) {
           DPRINTF("ERROR: Could not open file (%d)\r\n", fr);
+          // A full FatFs lock table is out of handles, not a missing file
           WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
-                                  GEMDOS_EFILNF);
+                                  (fr == FR_TOO_MANY_OPEN_FILES)
+                                      ? GEMDOS_ENHNDL
+                                      : GEMDOS_EFILNF);
         } else {
           // Add the file to the list of open files
           int fdCount = getFirstAvailableFD(fdescriptors);
@@ -1615,7 +1621,9 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       uint16_t errorCode = GEMDOS_EOK;
       if (ferr != FR_OK) {
         DPRINTF("ERROR: Could not create file (%d)\r\n", ferr);
-        errorCode = GEMDOS_EPTHNF;
+        // A full FatFs lock table is out of handles, not a missing path
+        errorCode = (ferr == FR_TOO_MANY_OPEN_FILES) ? GEMDOS_ENHNDL
+                                                     : GEMDOS_EPTHNF;
       } else {
         // Add the file to the list of open files
         int fdCounter = getFirstAvailableFD(fdescriptors);
