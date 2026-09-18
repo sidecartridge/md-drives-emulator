@@ -129,6 +129,13 @@ static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
               (unsigned int)chunks);
       return 1;
     }
+    case DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE: {
+      uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
+      gemdrive_setWriteFail(chunks);
+      DPRINTF("devhooks: failing the next %u write chunk(s)\n",
+              (unsigned int)chunks);
+      return 1;
+    }
     default:
       return 0;
   }

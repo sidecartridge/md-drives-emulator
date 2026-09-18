@@ -147,6 +147,18 @@
  * (`swd.py app gemdrive_stall`).
  */
 void gemdrive_setWriteStall(uint16_t chunks, uint16_t deciseconds);
+
+/**
+ * @brief Debug-only: make the next `chunks` write chunks fail as an SD error.
+ *
+ * The chunk takes the real error path and the ST receives GEMDOS_EINTRN, so
+ * the ST's handling of a failed write can be tested on demand
+ * (`swd.py app gemdrive_fail_write`).
+ */
+void gemdrive_setWriteFail(uint16_t chunks);
+
+// Debug builds report SD writes slower than this, in microseconds.
+#define GEMDRIVE_SLOW_WRITE_US 20000
 #endif
 
 #define GEMDRIVE_FCLOSE_STATUS \
