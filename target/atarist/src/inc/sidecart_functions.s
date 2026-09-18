@@ -82,8 +82,12 @@ get_tos_version:
     move.l #SHARED_VARIABLE_SVERSION, d3    ; Variable index
     move.l d0, d4                           ; Variable value
     send_sync CMD_SET_SHARED_VAR, 8
+    ; No retry here: send_sync already retries CMD_RETRIES_COUNT times, each with
+    ; the full timeout, and looping on top of that hard-locked the boot for ever
+    ; when the RP did not answer. On failure the shared variable stays 0, which
+    ; GEMDRIVE's Pexec reads as an old GEMDOS and handles with PE_GO + Mfree,
+    ; calls that exist on every TOS version. d0 carries the error code.
     tst.w d0
-    bne.s get_tos_version       ; Test if the command was successful. If not, retry
     rts
 
 ; Set the 8Mhz-no cache mode if Mega STE found
@@ -257,7 +261,16 @@ _start_sync_code_in_stack:
     moveq #0, d0                             ; No Timeout
 _start_sync_code_in_stack_loop:
     cmp.l (a1), d2                           ; Compare the random number with the token
-    beq.s _sync_token_found                  ; Token found, we can finish succesfully
+    bne.s _sync_token_not_ready
+    ; A token match alone is not an answer. The RP writes the token and then the
+    ; new seed as two separate stores, and the token we sent IS the seed we read:
+    ; accepted between the two stores, the next command would read the old seed,
+    ; reuse it as its token and match this same answer at once. Requiring the
+    ; seed to have advanced makes the pair a two-phase commit, and also covers a
+    ; freshly zeroed area where token and seed are both 0.
+    cmp.l RANDOM_TOKEN_SEED_ADDR, d2         ; Seed must advance to prove a real response
+    bne.s _sync_token_found                  ; Token found, we can finish succesfully
+_sync_token_not_ready:
     subq.l #1, d7                            ; Decrement the inner loop
     bne.s _start_sync_code_in_stack_loop     ; If the inner loop is not finished, continue
 
@@ -269,6 +282,9 @@ _sync_token_found:
 ;_postwait_me:
 ;    dbf d7, _postwait_me
 ;_no_wait_me:
+    ; Callers may branch on the flags instead of testing d0 (acsi.s does), so
+    ; return with Z set exactly when d0 is 0, whatever compare ran last.
+    tst.w d0
     rts                                 ; Return to the code
 _end_sync_code_in_stack:
 
@@ -465,7 +481,10 @@ _start_sync_write_code_in_stack:
     moveq #0, d0                                   ; Timeout
 _start_sync_write_code_in_stack_loop:
     cmp.l (a1), d2                                 ; Compare the random number with the token
-    beq.s _sync_write_token_found                  ; Token found, we can finish succesfully
+    bne.s _sync_write_token_not_ready
+    cmp.l RANDOM_TOKEN_SEED_ADDR, d2               ; Seed must advance to prove a real response (see the read loop)
+    bne.s _sync_write_token_found                  ; Token found, we can finish succesfully
+_sync_write_token_not_ready:
     subq.l #1, d6                                  ; Decrement the inner loop
     bne.s _start_sync_write_code_in_stack_loop     ; If the inner loop is not finished, continue
 
@@ -477,6 +496,7 @@ _sync_write_token_found:
 ;_postwait_write_me:
 ;    dbf d6, _postwait_write_me
 ;_no_wait_write_me:
+    tst.w d0                            ; Z set exactly when d0 is 0 (see the read variant)
     rts                                 ; Return to the code
 
 _end_sync_write_code_in_stack:

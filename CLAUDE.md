@@ -37,7 +37,7 @@ Pass any non-empty third argument to enable file logging. Tests run from the Ata
 
 To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
 
-Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper (prefix with `script -q /dev/null`). Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` wants a terminal; when run through an agent wrapper set `STCMD_NO_TTY=1`, as CI does. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
 
 With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD.
 
@@ -116,6 +116,7 @@ On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emu
 
 - **`__not_in_flash_func`** on all RP functions in the ACSI/GEMDRIVE/floppy read/write hot path. XIP flash contention with PIO causes silent protocol failures.
 - **No `PRIu32` / `PRIx32` / other `PRI*` macros.** Cast explicitly: `(unsigned long)x` with `%lu`.
+- **`send_sync_command_to_sidecart` / `send_sync_write_command_to_sidecart` return with Z set exactly when d0 is 0.** `acsi.s` branches on the flags straight after the call instead of testing d0; any change to the wait loops must keep the closing `tst.w d0`.
 - **`COMMAND_TIMEOUT` is per-file** — each `.s` file includes its own `sidecart_functions.s`. Changing acsi.s's timeout does not affect gemdrive.s.
 - **Cart window ($FA0000+) is read-only from the Atari CPU.** Writes are silently ignored by the bus. Use `CMD_SET_SHARED_VAR` commands to update SVARs.
 - **Every `.s` module must close with `even / nop × ≥8 / <module>_end:` AFTER `include "inc/sidecart_functions.s"`.** `target/atarist/firmware.py` strips trailing zeros from `BOOT.BIN` before generating `target_firmware.h`, and `COMMAND_SYNC_WRITE_CODE_SIZE` reads 4 bytes past `_end_sync_write_code_in_stack`. Without the NOP tail, the polling code becomes the last non-zero bytes of the firmware, the RP's `ROM_IN_RAM` region past `target_firmware_length` is uninitialized, and the over-read copies garbage into `_dskbufp` (or the 68000 prefetches garbage in modes 0/2). The symptom is 4-bomb bus errors only on write paths, intermittently — acsi.s hit this and it cost a full day to diagnose. Floppy/gemdrive/rtc already follow this convention; keep it.

@@ -752,8 +752,43 @@ def chip_reset() -> None:
         pass  # the debug port can blink while the chip restarts
 
 
+DMA_BASE = 0x50000000
+DMA_CHANNELS = 12
+DMA_AL1_CTRL = 0x10      # CTRL alias that does not trigger the channel
+DMA_CHAN_ABORT = 0x50000444
+PIO_CTRL = (0x50200000, 0x50300000)
+
+
+def quiesce_commands() -> list[str]:
+    """Halt both cores, then stop every PIO state machine and DMA channel.
+
+    Halting the cores does not stop the RP2040's DMA: the ROM3 capture ring
+    keeps writing bus samples into RAM for as long as the ST touches the
+    cartridge. A flash write that stages its data in that RAM then programs
+    bus samples instead of code (it happened: 20 bytes of an image arrived as
+    0x80xx words while the ST was reset-looping). PIO first, so no new
+    DREQ arrives; then clear each channel's enable without triggering it, then
+    abort whatever is in flight."""
+    cmds = []
+    for core in CORES:
+        cmds += [f"targets {core}", "halt"]
+    cmds += [f"mww 0x{ctrl:08x} 0" for ctrl in PIO_CTRL]
+    cmds += [f"mww 0x{DMA_BASE + 0x40 * n + DMA_AL1_CTRL:08x} 0"
+             for n in range(DMA_CHANNELS)]
+    cmds += [f"mww 0x{DMA_CHAN_ABORT:08x} 0x{(1 << DMA_CHANNELS) - 1:x}",
+             f"targets {CORES[0]}"]
+    return cmds
+
+
 def cmd_program(args: argparse.Namespace) -> int:
-    openocd(f"program {args.elf} verify")
+    # Not OpenOCD's `program`: it resets with OpenOCD's own sequence first,
+    # which leaves DMA running (see quiesce_commands) and touches core 1.
+    out = openocd(*quiesce_commands(), f"flash write_image erase {args.elf}",
+                  f"verify_image {args.elf}", check=False)
+    if not re.search(r"verified \d+ bytes", out):
+        chip_reset()
+        raise SwdError("flash write did not verify: " + " / ".join(
+            l.strip() for l in out.splitlines() if l.startswith("Error"))[-300:])
     chip_reset()
     print(f"flashed {args.elf}")
     return 0

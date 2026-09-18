@@ -12,7 +12,7 @@ Welcome to the `md-drives-emulator` workspace. This file captures the local rule
   - Raspberry Pi Pico SDK / Extras
   - ARM GCC toolchain for RP2040
   - `stcmd` for the Atari target build
-- **TTY note:** `stcmd` may require a PTY when run through an agent/tool wrapper. On macOS, `script -q /dev/null ./build.sh "$PWD" release` provides one.
+- **TTY note:** `stcmd` wants a terminal. Without one (an agent, a tool wrapper, CI) set `STCMD_NO_TTY=1`, as the `Build` workflow does: `STCMD_NO_TTY=1 ./build.sh "$PWD" release`.
 - **Hardware tools:** with a Raspberry Pi Debug Probe attached, `tools/dev/flash.sh <debug|release>` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP. See `tools/dev/README.md`.
 
 ## 2. Common Commands
@@ -87,6 +87,7 @@ cd target/atarist
 - GEMDRIVE `Dfree` reports clamped cluster counts so that `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a card over 4 GB wrap around (a 32 GB card showed ~720 MB). Do not "fix" the clamp by reporting the real counts.
 - Release workflow: a new version starts with `release/vX.Y.Z` branched from `main` (the name is what `version.txt` will contain). Each epic gets its own branch cut from the release branch, `epic/NN-<slug>`, and its pull request targets the release branch, never `main`; it is merged after Diego verifies it on hardware. `main` receives the release branch once, when the version is done. Commit, push and open PRs only when asked.
 - Planning notes (epics, stories, iterations) live in `docs/`, which is gitignored and machine-local. Never name an epic, story, iteration or task in anything committed or pushed — comments, docs, changelog, commit messages, PR descriptions (epic branch names, `epic/NN-<slug>`, are the one exception). Write the information itself, not a pointer to a document the reader cannot open.
+- The ST-side send routines in `inc/sidecart_functions.s` return with Z set exactly when d0 is 0, and `acsi.s` relies on the flags rather than testing d0. Any change to the wait loops must keep the closing `tst.w d0`.
 - GEMDRIVE `Fwrite` chunks are deduplicated: the RP serves a sequence number at `GEMDRIVE_WRITE_CHK`, `gemdrive.s` echoes it in d4 of `CMD_WRITE_BUFF_CALL`, and the RP answers a repeated sequence with the stored byte count instead of writing again. The per-fd memo and the served-sequence bump must stay before the `WRITE_BYTES` answer, and the ST-side read of `GEMDRVEMUL_WRITE_CHK` must stay outside the retry loop.
 - The RTC/NTP WiFi flow is now on-demand. Boot no longer performs an unconditional STA init/connect path. Setup exit chooses `APP_MODE_NTP_INIT` only when `RTC_ENABLED` is true; otherwise it goes straight to `APP_EMULATION_INIT`.
 - `APP_MODE_NTP_INIT` now owns the full temporary RTC/NTP network transaction in [emul.c]($HOME/mister_wkspc/md-drives-emulator/rp/src/emul.c): clean `network_deInit()`, `network_wifiInit(WIFI_MODE_STA)`, STA connect retries, `rtc_queryNTPTime()`, then `network_deInit()` again.
