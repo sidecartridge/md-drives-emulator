@@ -717,6 +717,54 @@ void test_fdatime_invalid_handle() {
   Fdelete("FDTBAD.TXT");
 }
 
+// Fdatime must be routed by its handle, not by the current drive.
+void test_fdatime_other_current_drive() {
+  int gem_drive = Dgetdrv();
+  DosDateTime set_value = {dos_make_time(8, 15, 20), dos_make_date(2023, 3, 3)};
+  DosDateTime query = {0};
+
+  int handle = Fcreate("FDTOTHER.TXT", 0);
+  assert_result("Create FDTOTHER.TXT", handle >= 16384, TRUE);
+  if (handle >= 0) {
+    Fwrite(handle, 4, "TIME");
+    Fclose(handle);
+  }
+
+  handle = Fopen("FDTOTHER.TXT", 2);
+  assert_result("Open FDTOTHER.TXT read/write", handle >= 16384, TRUE);
+  if (handle >= 0) {
+    Dsetdrv(0);
+    int set_result = Fdatime(&set_value, handle, 1);
+    int query_result = Fdatime(&query, handle, 0);
+    Dsetdrv(gem_drive);
+    assert_result("Fdatime set on GEMDRIVE handle with A: current",
+                  set_result, 0);
+    assert_result("Fdatime inquire on GEMDRIVE handle with A: current",
+                  query_result, 0);
+    assert_result("FDTOTHER.TXT time matches with A: current", query.time,
+                  set_value.time);
+    assert_result("FDTOTHER.TXT date matches with A: current", query.date,
+                  set_value.date);
+    Fclose(handle);
+  }
+  Fdelete("FDTOTHER.TXT");
+
+  // A TOS handle while the GEMDRIVE drive is current. Needs a writable disk
+  // in A:, so it is skipped without one.
+  handle = Fcreate("A:\\FDTTOS.TXT", 0);
+  if (handle < 0) {
+    print("[SKIP] No writable disk in A:, TOS-handle Fdatime case not run\r\n");
+    return;
+  }
+  DosDateTime tos_query = {0};
+  assert_result("TOS handle is below the GEMDRIVE range", handle < 16384,
+                TRUE);
+  assert_result("Fdatime inquire on TOS handle with GEMDRIVE current",
+                Fdatime(&tos_query, handle, 0), 0);
+  Fclose(handle);
+  Fdelete("A:\\FDTTOS.TXT");
+}
+
 void test_eof_and_closed_handle_behavior() {
   int handle = Fcreate("EOFCLOSE.TXT", 0);
   Fwrite(handle, 5, "ABCDE");
@@ -791,6 +839,8 @@ int run_files_tests(int presskey) {
   test_fdatime_roundtrip();
   if (presskey) press_key("");
   test_fdatime_invalid_handle();
+  if (presskey) press_key("");
+  test_fdatime_other_current_drive();
   if (presskey) press_key("");
   test_eof_and_closed_handle_behavior();
   if (presskey) press_key("");
