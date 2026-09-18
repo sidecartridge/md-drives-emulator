@@ -170,6 +170,7 @@ DSKBUFP_SWAP_ADDR       equ $200                            ; Address of the tem
 USE_DSKBUF              equ 0                               ; Use the DSKBUF pointer to store the address of the buffer to read the data from the Sidecart. 0 = Stack, 1 = disk buffer
 
 GEMDOS_EINTRN           equ -65 ; GEMDOS Internal error
+GEMDOS_EPLFMT           equ -66 ; GEMDOS Invalid program load format
 GEMDOS_EIO              equ -90 ; GEMDOS I/O error
 GEMDOS_EIO_WRITE        equ -92 ; GEMDOS I/O write error
 GEMDOS_EIO_READ         equ -93 ; GEMDOS I/O read error
@@ -942,6 +943,13 @@ _notlong:
 
 .fwrite_command_ok:
     move.l GEMDRVEMUL_WRITE_BYTES, d2    ; The number of bytes to check the CHK
+    ; The RP answers with the bytes it wrote, fewer than asked (0 included)
+    ; when the card is full, or a negative GEMDOS code when the write failed.
+    ; Only a positive count is progress: subtracting a negative code would
+    ; grow the remaining count, and a zero would repeat the chunk, and both
+    ; kept the ST in this loop for ever.
+    tst.l d2
+    ble.s .fwrite_no_progress
     add.l d2, a4                         ; Add the number of bytes to write to the address of the buffer
     add.l d2, d6                         ; Add the number of bytes written to the counter
     sub.l d2, d4                         ; Subtract the number of bytes written from the total number of bytes to write
@@ -950,6 +958,15 @@ _notlong:
 
 .fwrite_exit_ok:
     move.l d6, d0                        ; Return the number of bytes written
+    rts
+
+.fwrite_no_progress:
+    ; As TOS does: once something was written, report the short count and
+    ; let the caller see that it is short; with nothing written, return the
+    ; RP's error code (or 0 for a full card).
+    tst.l d6
+    bne.s .fwrite_exit_ok
+    move.l d2, d0
     rts
 
 
@@ -1245,11 +1262,18 @@ _notlong:
 ;        add.l #PRG_STRUCT_SIZE,sp            ; restore the stack pointer
 ;    endif
 
+    ; The header could not be read (d0 negative: pass the error on) or is not
+    ; a program: short, empty, or without the $601A magic. Returning the
+    ; Fclose status here told the caller the program had run.
+    tst.l d0
+    bmi.s .pexec_hdr_error
+    moveq #GEMDOS_EPLFMT, d0
+.pexec_hdr_error:
+    move.l d0, -(sp)                     ; Keep the error across the close
     move.l GEMDRVEMUL_FOPEN_HANDLE, d3   ; Pass the file handle to close
     send_sync CMD_FCLOSE_CALL, 2         ; Send the command to the Sidecart.
-    move.w GEMDRVEMUL_FCLOSE_STATUS, d0  ; Error code obtained from the Sidecart
-    ext.l d0                             ; Extend the sign of the value
-    bra.s .pexec_exit                    ; If there is an error, exit
+    move.l (sp)+, d0
+    bra.s .pexec_exit
 
 ; Zero the memory given the address and the size
 ; Input registers:
