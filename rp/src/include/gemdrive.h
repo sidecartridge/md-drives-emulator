@@ -138,6 +138,17 @@
 #define GEMDRIVE_WRITE_CONFIRM_STATUS \
   (GEMDRIVE_WRITE_CHK + 4)  // write check + 4 bytes
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/**
+ * @brief Debug-only: stall the answer to the next `chunks` write chunks.
+ *
+ * The data is committed first, so this reproduces a lost answer rather than a
+ * lost write. Used to validate the Fwrite chunk dedup on hardware
+ * (`swd.py app gemdrive_stall`).
+ */
+void gemdrive_setWriteStall(uint16_t chunks, uint16_t deciseconds);
+#endif
+
 #define GEMDRIVE_FCLOSE_STATUS \
   (GEMDRIVE_WRITE_CONFIRM_STATUS + 4)  // read buff + 4 bytes
 #define GEMDRIVE_DCREATE_STATUS \
@@ -410,6 +421,12 @@ typedef struct __attribute__((aligned(4))) FileDescriptors {
   int fd;
   uint32_t offset;
   bool seek_dirty;
+  // Last write chunk accepted on this descriptor. The ST re-sends the same
+  // chunk with the same sequence when the answer is lost, so a repeat means
+  // "you did not hear my answer", not "here is more data". Writing it again
+  // is what duplicated a chunk and lost the tail of the file.
+  uint32_t last_write_seq;
+  uint32_t last_write_bytes;
   FIL fobject;
   struct FileDescriptors *next;
 } FileDescriptors;

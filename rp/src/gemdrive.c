@@ -453,6 +453,8 @@ static void __not_in_flash_func(addFile)(FileDescriptors **head,
   newFDescriptor->fd = new_fd;
   newFDescriptor->offset = 0;
   newFDescriptor->seek_dirty = false;
+  newFDescriptor->last_write_seq = 0;
+  newFDescriptor->last_write_bytes = 0;
   newFDescriptor->next = *head;
   *head = newFDescriptor;
   DPRINTF("File %s added with fd %i\n", fpath, new_fd);
@@ -710,6 +712,41 @@ static uint32_t memoryRandomTokenAddress = 0;
 static uint32_t memoryRandomTokenSeedAddress = 0;
 static uint32_t memoryFirmwareCode = 0;
 
+// Write-chunk sequence served to the ST at GEMDRIVE_WRITE_CHK. The ST reads
+// it once per Fwrite chunk and echoes it in d4 of the write command, so every
+// retry of a chunk carries the number of its first attempt and no two
+// distinct chunks ever share one. Bumped only when a chunk is accepted.
+// Starts at 1: 0 means "no chunk accepted yet" in the per-fd memo.
+static uint32_t writeChunkSeq = 1;
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+// Debug-only fault injection (`swd.py app gemdrive_stall`): stall after
+// committing a write chunk so the ST's synchronous wait times out and it
+// re-sends that chunk. That is the exact shape of the failure the chunk dedup
+// guards against: the write happened, only the answer was lost. There is no
+// runtime watchdog in this firmware, so a plain sleep is safe.
+static volatile uint16_t gemdriveWriteStallChunks = 0;
+static volatile uint16_t gemdriveWriteStallDs = 20;  // 100 ms units
+
+void gemdrive_setWriteStall(uint16_t chunks, uint16_t deciseconds) {
+  gemdriveWriteStallChunks = chunks;
+  if (deciseconds > 0) {
+    gemdriveWriteStallDs = deciseconds;
+  }
+}
+
+static void gemdrive_stallIfRequested(void) {
+  if (gemdriveWriteStallChunks == 0) {
+    return;
+  }
+  gemdriveWriteStallChunks--;
+  DPRINTF("GEMDRIVE Fwrite: stalling this answer on purpose\n");
+  for (uint16_t i = 0; i < gemdriveWriteStallDs; i++) {
+    sleep_ms(100);
+  }
+}
+#endif
+
 static void initVariables(uint32_t mem) {
   const uint16_t numSharedVars = (0x10000 - GEMDRIVE_RANDOM_TOKEN_OFFSET) / 4;
   DPRINTF("Initializing shared variables\n");
@@ -740,6 +777,12 @@ void __not_in_flash_func(gemdrive_init)() {
   memoryFirmwareCode = memorySharedAddress;
 
   initVariables(memorySharedAddress + GEMDRIVE_RANDOM_TOKEN_OFFSET);
+
+  // Serve the current write-chunk sequence to the ST; initVariables() just
+  // zeroed the slot and the ST must never read 0 (0 = "no chunk yet" in the
+  // per-descriptor memo). Keep the running value across re-inits.
+  WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_CHK,
+                          writeChunkSeq);
 
   SettingsConfigEntry *gemDriveLetter = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_DRIVE);
@@ -2104,22 +2147,35 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     case GEMDRVEMUL_WRITE_BUFF_CALL: {
       uint16_t writebuff_fd =
           TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);  // d3 register
-      uint32_t writebuff_bytes_to_write =
+      // d4 carries the chunk sequence the ST read from GEMDRIVE_WRITE_CHK.
+      // A retried chunk re-sends the sequence of its first attempt, so it can
+      // be told apart from the next chunk, which the data alone cannot.
+      uint32_t writebuff_chunk_seq =
           TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d4
       uint32_t writebuff_pending_bytes_to_write =
           TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // skip d5 register
       DPRINTF(
-          "Write buffering file with fd: x%x, bytes_to_write: x%08x, "
+          "Write buffering file with fd: x%x, chunk_seq: x%08x, "
           "pending_bytes_to_write: x%08x\n",
-          writebuff_fd, writebuff_bytes_to_write,
-          writebuff_pending_bytes_to_write);
+          writebuff_fd, writebuff_chunk_seq, writebuff_pending_bytes_to_write);
       // Obtain the file descriptor
       FileDescriptors *file = getFileByFD(fdescriptors, writebuff_fd);
       if (file == NULL) {
         DPRINTF("ERROR: File descriptor not found\n");
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
                                 GEMDOS_EIHNDL);
+      } else if (writebuff_chunk_seq != 0 &&
+                 writebuff_chunk_seq == file->last_write_seq) {
+        // The same chunk again: the write already happened, only the answer
+        // was lost. Report what it wrote and do not touch the file --
+        // appending it a second time duplicates the chunk and loses the tail
+        // of the file.
+        uint32_t replay_bytes = file->last_write_bytes;
+        DPRINTF("Repeat of write chunk x%08x, answering x%x again\n",
+                writebuff_chunk_seq, replay_bytes);
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
+                                replay_bytes);
       } else {
         uint32_t writebuff_offset = file->offset;
         UINT bytes_write = 0;
@@ -2152,8 +2208,22 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           } else {
             // Update the offset of the file
             file->offset += bytes_write;
+            // Remember the accepted chunk before answering: if this answer is
+            // the one that gets lost, the retry has to find it here. Then bump
+            // the served sequence so the next chunk reads a fresh number.
+            file->last_write_seq = writebuff_chunk_seq;
+            file->last_write_bytes = bytes_write;
+            writeChunkSeq++;
+            WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_CHK,
+                                    writeChunkSeq);
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,
                                     bytes_write);
+#if defined(_DEBUG) && (_DEBUG != 0)
+            // The data is committed and the memo stored; delaying here loses
+            // the answer (the token ACK follows this handler), which is what
+            // the dedup must survive.
+            gemdrive_stallIfRequested();
+#endif
           }
         }
       }
