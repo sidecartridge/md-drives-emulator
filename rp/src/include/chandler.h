@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
+#include "romemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"

@@ -8,7 +8,7 @@
 
 #include "commemul.h"
 
-#include "../../build/commemul.pio.h"
+#include "commemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"

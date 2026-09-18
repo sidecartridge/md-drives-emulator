@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
+#include "romemul.pio.h"
 #include "aconfig.h"
 #include "blink.h"
 #include "chandler.h"
