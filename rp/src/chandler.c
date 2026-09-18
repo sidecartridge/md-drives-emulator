@@ -66,7 +66,13 @@ void __not_in_flash_func(chandler_init)() {
 void __not_in_flash_func(chandler_addCB)(CommandCallback cb) {
   if (!cb) return;
   CommandCallbackNode *node = malloc(sizeof(*node));
-  if (!node) return;
+  if (!node) {
+    // Registered once while emulation starts, before anything else grows the
+    // heap, so this is not expected; but a driver whose callback is missing
+    // would ignore every command sent to it, so say so.
+    DPRINTF("ERROR: out of memory registering a command handler\n");
+    return;
+  }
   node->cb = cb;
   node->next = NULL;
   if (!callbackListHead) {

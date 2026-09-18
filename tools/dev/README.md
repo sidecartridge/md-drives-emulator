@@ -80,6 +80,7 @@ python3 tools/dev/swd.py key g                                   # a keystroke, 
 python3 tools/dev/swd.py app countdown_stop                      # stop the setup-menu countdown
 python3 tools/dev/swd.py app gemdrive_stall 2 100                # stall 2 write answers 10 s each
 python3 tools/dev/swd.py app gemdrive_fail_write 1               # the next write chunk fails
+python3 tools/dev/swd.py app heap_hold 16                        # hold 16 KB more heap (0 releases)
 python3 tools/dev/swd.py inject 0x0001 0x0067 0                  # any protocol command
 python3 tools/dev/swd.py crash                                   # why did it last reboot?
 python3 tools/dev/swd.py postmortem                              # halt, backtraces, resume
@@ -125,6 +126,9 @@ GEMDRIVE/floppy/RTC/ACSI handlers during emulation. `app NAME` runs the app comm
   Use ≥ 100 deciseconds so the stall outlasts the ST's write timeout and forces a retry; the
   console then shows `Repeat of write chunk N, answering M again` and the copied file must be
   byte-identical to the source. This is the hardware validation for the Fwrite chunk dedup.
+- `heap_hold KB` — hold KB more kilobytes of heap, on top of what is already held (`heap_hold 0`
+  releases everything). Result 0 when the allocation is refused, so repeated calls walk the heap
+  down to a known remainder. Used to check that allocation failures produce errors, not crashes.
 - `gemdrive_fail_write [CHUNKS]` — make the next CHUNKS GEMDRIVE write chunks fail as an SD error,
   through the real error path. The ST's `Fwrite` must then return promptly (a short count, or
   the error when nothing was written) instead of looping; the console shows `failing this chunk

@@ -113,6 +113,12 @@ static bool usbMassStorageReady = false;
 static volatile bool pendingDriveACycle = false;
 
 #if defined(_DEBUG) && (_DEBUG != 0)
+// Heap held on purpose by DEVHOOKS_APP_HEAP_HOLD, as a list of blocks.
+typedef struct DevhooksHeldBlock {
+  struct DevhooksHeldBlock *next;
+} DevhooksHeldBlock;
+static DevhooksHeldBlock *devhooksHeldHeap = NULL;
+
 // Debug-only app commands for tools/dev/swd.py (`swd.py app NAME`); the
 // DEVHOOKS_APP_* ids are defined in emul.h.
 static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
@@ -128,6 +134,27 @@ static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
       DPRINTF("devhooks: stalling the next %u write chunk(s)\n",
               (unsigned int)chunks);
       return 1;
+    }
+    case DEVHOOKS_APP_HEAP_HOLD: {
+      uint32_t kb = (payloadSize >= 2u) ? payload[0] : 0u;
+      if (kb == 0u) {
+        while (devhooksHeldHeap != NULL) {
+          DevhooksHeldBlock *next = devhooksHeldHeap->next;
+          free(devhooksHeldHeap);
+          devhooksHeldHeap = next;
+        }
+        DPRINTF("devhooks: heap hold released\n");
+        return 1;
+      }
+      DevhooksHeldBlock *block =
+          malloc(sizeof(DevhooksHeldBlock) + kb * 1024u);
+      if (block != NULL) {
+        block->next = devhooksHeldHeap;
+        devhooksHeldHeap = block;
+      }
+      DPRINTF("devhooks: holding %lu KB more heap: %s\n", (unsigned long)kb,
+              (block != NULL) ? "ok" : "refused");
+      return (block != NULL) ? 1u : 0u;
     }
     case DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE: {
       uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
@@ -844,9 +871,11 @@ static void __not_in_flash_func(menu)(void) {
     SettingsConfigEntry *floppyDriveADrive = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A);
     char *driveAValue = right(floppyDriveADrive->value, 16);
-    DPRINTF("Drive A: %s\n", driveAValue);
+    const char *driveAShown =
+        (driveAValue != NULL) ? driveAValue : floppyDriveADrive->value;
+    DPRINTF("Drive A: %s\n", driveAShown);
     term_printString("\n  [(SHFT+)A] Drive: ");
-    term_printString(driveAValue);
+    term_printString(driveAShown);
     if (driveAValue != NULL) {
       free(driveAValue);  // Free the allocated memory for driveAValue
     }
@@ -855,9 +884,11 @@ static void __not_in_flash_func(menu)(void) {
     SettingsConfigEntry *floppyDriveBDrive = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_B);
     char *driveBValue = right(floppyDriveBDrive->value, 16);
-    DPRINTF("Drive B: %s\n", driveBValue);
+    const char *driveBShown =
+        (driveBValue != NULL) ? driveBValue : floppyDriveBDrive->value;
+    DPRINTF("Drive B: %s\n", driveBShown);
     term_printString("\n  [(SHFT+)B] Drive: ");
-    term_printString(driveBValue);
+    term_printString(driveBShown);
     if (driveBValue != NULL) {
       free(driveBValue);  // Free the allocated memory for driveBValue
     }
@@ -1165,7 +1196,22 @@ static void floppyDriveASetRenderBrowser(void) {
   display_refresh();
 }
 
+// The file browser's state is allocated once, when the setup menu starts.
+// If that allocation failed, the browser must not open: every browsing step
+// uses it. Each command that opens the browser checks here first.
+static bool navStateAvailable(void) {
+  if (navState != NULL) {
+    return true;
+  }
+  term_printString("\nNot enough memory for the file browser.\n");
+  display_refresh();
+  return false;
+}
+
 static void floppyDriveASetOpenBrowser(uint8_t slotIndex) {
+  if (!navStateAvailable()) {
+    return;
+  }
   SettingsConfigEntry *floppyDriveFolder = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
 
@@ -1327,6 +1373,9 @@ static enum navStatus __not_in_flash_func(navigate_directory)(
 }
 
 void __not_in_flash_func(cmdGemdriveFolder)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the GEMDRIVE is enabled
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -1484,6 +1533,9 @@ void cmdAcsiEnabled(const char *arg) {
 }
 
 void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   haltCountdown = true;
   enum navStatus status = NAV_DIR_ERROR;
 
@@ -1638,6 +1690,9 @@ void cmdFloppyEnabled(const char *arg) {
 }
 
 void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
@@ -1699,6 +1754,9 @@ void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
 }
 
 static void selectFloppyDrive(const char *arg, bool driveA) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
@@ -2101,7 +2159,9 @@ static void preinit() {
   // Allocate memory for navState
   navState = (DirNavigation *)malloc(sizeof(DirNavigation));
   if (navState == NULL) {
+    // The file browser then refuses to open (navStateAvailable).
     term_printString("Error allocating memory for navState.\n");
+    return;
   }
   // Optional: zero out memory
   memset(navState, 0, sizeof(DirNavigation));

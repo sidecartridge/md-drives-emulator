@@ -719,6 +719,22 @@ static uint32_t memoryFirmwareCode = 0;
 // Starts at 1: 0 means "no chunk accepted yet" in the per-fd memo.
 static uint32_t writeChunkSeq = 1;
 
+// GEMDOS code for a FatFs failure, when the failure is about resources rather
+// than the file: running out of lock entries or of heap says nothing about
+// whether the file or path exists, and reporting "file not found" or "access
+// denied" for it made the desktop show an empty folder or claim the disk was
+// full. Anything else gets the caller's own code.
+static int16_t gemdosResourceError(FRESULT fr, int16_t otherwise) {
+  switch (fr) {
+    case FR_TOO_MANY_OPEN_FILES:
+      return GEMDOS_ENHNDL;
+    case FR_NOT_ENOUGH_CORE:
+      return GEMDOS_ENSMEM;
+    default:
+      return otherwise;
+  }
+}
+
 #if defined(_DEBUG) && (_DEBUG != 0)
 // Debug-only fault injection (`swd.py app gemdrive_stall`): stall after
 // committing a write chunk so the ST's synchronous wait times out and it
@@ -1167,11 +1183,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       FRESULT ferr = f_mkdir(tmpPath);
       if (ferr != FR_OK) {
         DPRINTF("ERROR: Could not create folder (%d)\r\n", ferr);
-        if (ferr == FR_NO_PATH) {
-          dcreateCode = GEMDOS_EPTHNF;
-        } else {
-          dcreateCode = GEMDOS_EACCDN;
-        }
+        dcreateCode = gemdosResourceError(
+            ferr, (ferr == FR_NO_PATH) ? GEMDOS_EPTHNF : GEMDOS_EACCDN);
       } else {
         DPRINTF("Folder created\n");
         dcreateCode = GEMDOS_EOK;
@@ -1463,13 +1476,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           currentDTANode->dj = NULL;
         }
         DPRINTF("Nothing returned from Fsfirst\n");
-        int16_t errorCode = GEMDOS_EFILNF;
-        if (fr == FR_NO_PATH) {
-          errorCode = GEMDOS_EPTHNF;
-        } else if (fr == FR_TOO_MANY_OPEN_FILES) {
-          // A full FatFs lock table is out of handles, not a missing file
-          errorCode = GEMDOS_ENHNDL;
-        }
+        int16_t errorCode = gemdosResourceError(
+            fr, (fr == FR_NO_PATH) ? GEMDOS_EPTHNF : GEMDOS_EFILNF);
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
         if (currentDTANode) {
           releaseDTA(ndta);
@@ -1553,7 +1561,9 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
             dtaNode->dj = NULL;
           }
           DPRINTF("Nothing found\n");
-          int16_t errorCode = GEMDOS_ENMFIL;
+          // A FatFs failure is not the end of the listing: report the
+          // resource error rather than cutting the listing short silently.
+          int16_t errorCode = gemdosResourceError(fr, GEMDOS_ENMFIL);
           DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
           WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, errorCode);
           if (ndtaExists) {
@@ -1612,11 +1622,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         FRESULT fr = f_open(&fobj, tmpFilepath, FatFSOpenMode);
         if (fr != FR_OK) {
           DPRINTF("ERROR: Could not open file (%d)\r\n", fr);
-          // A full FatFs lock table is out of handles, not a missing file
           WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
-                                  (fr == FR_TOO_MANY_OPEN_FILES)
-                                      ? GEMDOS_ENHNDL
-                                      : GEMDOS_EFILNF);
+                                  gemdosResourceError(fr, GEMDOS_EFILNF));
         } else {
           // Add the file to the list of open files
           int fdCount = getFirstAvailableFD(fdescriptors);
@@ -1695,9 +1702,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       uint16_t errorCode = GEMDOS_EOK;
       if (ferr != FR_OK) {
         DPRINTF("ERROR: Could not create file (%d)\r\n", ferr);
-        // A full FatFs lock table is out of handles, not a missing path
-        errorCode = (ferr == FR_TOO_MANY_OPEN_FILES) ? GEMDOS_ENHNDL
-                                                     : GEMDOS_EPTHNF;
+        errorCode = gemdosResourceError(ferr, GEMDOS_EPTHNF);
       } else {
         // Add the file to the list of open files
         int fdCounter = getFirstAvailableFD(fdescriptors);
