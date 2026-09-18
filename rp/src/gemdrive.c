@@ -735,6 +735,23 @@ void gemdrive_setWriteStall(uint16_t chunks, uint16_t deciseconds) {
   }
 }
 
+// Debug-only fault injection (`swd.py app gemdrive_fail_write`): the next N
+// write chunks fail as if the SD card had returned an error, through the same
+// path a real failure takes, so the ST's handling of a failed write can be
+// exercised without a faulty card.
+static volatile uint16_t gemdriveWriteFailChunks = 0;
+
+void gemdrive_setWriteFail(uint16_t chunks) { gemdriveWriteFailChunks = chunks; }
+
+static bool gemdrive_failWriteIfRequested(void) {
+  if (gemdriveWriteFailChunks == 0) {
+    return false;
+  }
+  gemdriveWriteFailChunks--;
+  DPRINTF("GEMDRIVE Fwrite: failing this chunk on purpose\n");
+  return true;
+}
+
 static void gemdrive_stallIfRequested(void) {
   if (gemdriveWriteStallChunks == 0) {
     return;
@@ -2199,8 +2216,25 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           // Write the bytes
           DPRINTF("Write x%x bytes from the file at offset x%x\n", buff_size,
                   writebuff_offset);
-          ferr =
-              f_write(&file->fobject, (void *)target, buff_size, &bytes_write);
+#if defined(_DEBUG) && (_DEBUG != 0)
+          uint32_t writeStartUs = time_us_32();
+          if (gemdrive_failWriteIfRequested()) {
+            ferr = FR_DISK_ERR;
+          } else
+#endif
+            ferr = f_write(&file->fobject, (void *)target, buff_size,
+                           &bytes_write);
+#if defined(_DEBUG) && (_DEBUG != 0)
+          // The ST waits a bounded time for each chunk's answer, then
+          // retries; a write that comes close explains a retry before it
+          // happens. FAT updates and cluster allocation cause the spikes.
+          uint32_t writeUs = time_us_32() - writeStartUs;
+          if (writeUs > GEMDRIVE_SLOW_WRITE_US) {
+            DPRINTF("Slow SD write: %lu us for x%x bytes at offset x%lx\n",
+                    (unsigned long)writeUs, buff_size,
+                    (unsigned long)writebuff_offset);
+          }
+#endif
           if (ferr != FR_OK) {
             DPRINTF("ERROR: Could not write file (%d)\r\n", ferr);
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_WRITE_BYTES,

@@ -52,6 +52,9 @@ enum {
 // chunks to stall, word 1 = stall length in 100 ms units (default 20 = 2 s;
 // use ≥ 100 to outlast the ST's write timeout and force a retry).
 #define DEVHOOKS_APP_GEMDRIVE_STALL 2
+// Makes the next N GEMDRIVE write chunks fail as an SD error, through the
+// real error path. Payload word 0 = how many chunks (default 1).
+#define DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE 3
 
 #define MAX_DOMAIN_LENGTH 255
 #define MAX_LABEL_LENGTH 63
