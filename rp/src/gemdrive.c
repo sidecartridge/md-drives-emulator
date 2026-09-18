@@ -963,16 +963,30 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         WRITE_LONGWORD_RAW(memorySharedAddress, GEMDRIVE_DFREE_STATUS,
                            GEMDOS_ERROR);
       } else {
-        // Calculate the total number of free bytes
-        uint64_t freeBytes = freeClusters * fs->csize * NUM_BYTES_PER_SECTOR;
+        // TOS and the desktop compute bytes as b_free * b_clsize * b_secsize
+        // in 32-bit longs, so anything past 2 GiB - 1 wraps around (a 32 GB
+        // card showed ~720 MB: the free space modulo 4 GiB). Clamp the
+        // reported cluster counts so the ST-side product stays within a
+        // signed 32-bit value, as HDDRIVER, ACSI2STM and Hatari's GEMDOS
+        // drive do. Only the report is capped; the card's real capacity is
+        // untouched.
+        uint32_t bytesPerCluster = (uint32_t)fs->csize * NUM_BYTES_PER_SECTOR;
+        uint32_t maxClusters = 0x7FFFFFFFu / bytesPerCluster;
+        uint32_t totalClusters = fs->n_fatent - 2;
+        uint32_t freeReported =
+            (freeClusters > maxClusters) ? maxClusters : (uint32_t)freeClusters;
+        uint32_t totalReported =
+            (totalClusters > maxClusters) ? maxClusters : totalClusters;
         DPRINTF(
-            "Total clusters: %d, free clusters: %d, bytes per sector: %d, "
-            "sectors per cluster: %d\n",
-            fs->n_fatent - 2, freeClusters, NUM_BYTES_PER_SECTOR, fs->csize);
+            "Total clusters: %lu (reported %lu), free clusters: %lu (reported "
+            "%lu), bytes per sector: %d, sectors per cluster: %d\n",
+            (unsigned long)totalClusters, (unsigned long)totalReported,
+            (unsigned long)freeClusters, (unsigned long)freeReported,
+            NUM_BYTES_PER_SECTOR, fs->csize);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_DFREE_STRUCT,
-                                freeClusters);
+                                freeReported);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_DFREE_STRUCT + 4,
-                                fs->n_fatent - 2);
+                                totalReported);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_DFREE_STRUCT + 8,
                                 NUM_BYTES_PER_SECTOR);
         WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_DFREE_STRUCT + 12,
