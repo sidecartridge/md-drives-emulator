@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.0 (2026-09-17)
+Robustness release: fixes brought over from the `md-devops` microfirmware's v1.1.0 hardening work, adapted to this codebase. No new features.
+
+### Fixes
+- **Files written through GEMDRIVE arrive whole**: when a write chunk's answer was lost (for example behind a slow SD operation), the Atari re-sent the same 1 KB chunk and the RP appended it again — the file gained a duplicated chunk and lost its tail. The RP now serves a chunk sequence number at `GEMDRIVE_WRITE_CHK`; the Atari reads it once per chunk and echoes it with the write command, so a retried chunk is recognized and answered again instead of written twice. The ACSI batch-write path already carried idempotent retries; this closes the same hole in the GEMDRIVE `Fwrite` path.
+- **WiFi password no longer printed**: the AP/STA connection traces printed the WiFi password in clear on the debug console of debug builds. They now print `<set>` or `<none>`, and the settings dump masks password keys the same way.
+- **More FatFs lock entries**: `FF_FS_LOCK` raised from 8 back up to 32. GEMDRIVE keeps a `DIR` open per active `Fsfirst`/`Fsnext` search (one per open desktop window) and a `FIL` per open file, and shares the table with the floppy A/B and ACSI image files; at 8, a busy desktop could exhaust the table and GEMDOS calls failed with misleading errors. Costs 384 extra bytes of RAM.
+- **Out-of-handles reported as such**: when the FatFs lock table is full, `Fopen`, `Fcreate`, and `Fsfirst` now return `ENHNDL` (-35) instead of "file not found" / "path not found".
+- **Sane disk-size numbers on big cards**: `Dfree()` reported the card's real FAT32 cluster counts, and TOS multiplies them in 32-bit longs, so a 32 GB card showed its free space modulo 4 GiB (~720 MB). The reported cluster counts are now clamped so the ST-side product stays below 2 GiB, the same convention HDDRIVER, ACSI2STM and Hatari's GEMDOS drive follow. Only the report is capped — the full card remains usable.
+
+### For developers
+- **`tools/dev/`**: host-side tools brought over from `md-devops` — `console.py` (timestamped capture of the debug UART through the Raspberry Pi Debug Probe, with `since-boot` / `grep` / `wait` queries), `swd.py` (verify/flash/inspect a running RP over SWD: `screen`, `text`, `shared`, `select`, `key`, `app`, `inject`, `crash`, `postmortem`), and `flash.sh` (out-of-tree incremental build + flash + SWD verification). See `tools/dev/README.md`.
+- **Debug UART at 921,600 baud** (was 115,200): DPRINTF blocks on the UART and the slower rate could delay timing-sensitive paths.
+- **Build ID in flash**: every build embeds `release_build_id` (`<sha7>` or `<sha7>-dirty.<diff7>`), read back over SWD by `swd.py build-id`. Release ELFs keep their symbol table (the `.uf2` is unchanged) so the tools can find it.
+- **Debug-only devhooks mailbox** (`rp/src/include/devhooks.h`): lets `swd.py` press keys, inject protocol commands and run app commands (`countdown_stop`, `gemdrive_stall` — the fault injection that validates the Fwrite chunk dedup on hardware). Compiles to nothing in release builds.
+
 ## v1.1.0 (2026-03-30)
 This release focuses on RP2040 memory layout cleanup, splitting ROM emulation from command capture, removing obsolete DMA-era plumbing, and tightening several hot paths and board-support subsystems. It also adds experimental **ACSI hard disk emulation** at the BIOS level and a companion `scripts/atari-hd/atari_hd.py` image creator.
 

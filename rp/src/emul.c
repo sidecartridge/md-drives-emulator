@@ -9,6 +9,7 @@
 #include "emul.h"
 
 #include "commemul.h"
+#include "devhooks.h"
 
 // inclusw in the C file to avoid multiple definitions
 #include "target_firmware.h"  // Include the target firmware binary
@@ -110,6 +111,39 @@ static int appStatus = APP_MODE_SETUP;
 // USB Mass Storage ready
 static bool usbMassStorageReady = false;
 static volatile bool pendingDriveACycle = false;
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+// Debug-only app commands for tools/dev/swd.py (`swd.py app NAME`); the
+// DEVHOOKS_APP_* ids are defined in emul.h.
+static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
+                                 uint16_t payloadSize) {
+  switch (commandId) {
+    case DEVHOOKS_APP_COUNTDOWN_STOP:
+      haltCountdown = true;
+      return 1;
+    case DEVHOOKS_APP_GEMDRIVE_STALL: {
+      uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
+      uint16_t deciseconds = (payloadSize >= 4u) ? payload[1] : 0u;
+      gemdrive_setWriteStall(chunks, deciseconds);
+      DPRINTF("devhooks: stalling the next %u write chunk(s)\n",
+              (unsigned int)chunks);
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+
+// KIND_PROTOCOL mailbox requests land in whichever parser is active: the
+// setup terminal in APP_MODE_SETUP, the drives' command handler otherwise.
+bool emul_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                         uint16_t payloadSize) {
+  if (appStatus == APP_MODE_SETUP) {
+    return term_injectProtocol(commandId, payload, payloadSize);
+  }
+  return chandler_injectProtocol(commandId, payload, payloadSize);
+}
+#endif
 
 // Folder search
 #define NAV_LINES_PER_PAGE 16
@@ -2377,11 +2411,15 @@ void __not_in_flash_func(emul_start)() {
   bool usbInitialized = false;         // USB not initialized yet
   bool usbMassStorageMounted = false;  // USB mass storage not mounted
 
+  // Debug builds only: serve the SWD mailbox of tools/dev/swd.py
+  devhooks_setAppHandler(emul_devhooksApp);
+
   // Initialize the timer for decrementing the countdown
   absolute_time_t lastDecrement = get_absolute_time();
 
   while (getKeepActive()) {
     blink_poll();
+    devhooks_poll();
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode

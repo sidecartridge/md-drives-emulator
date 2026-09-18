@@ -920,11 +920,18 @@ _notlong:
     ble.s .fwrite_loop_custom_buffer     ; If so, use the full buffer
     move.l #BUFFER_WRITE_SIZE, d5        ; If not, use the full buffer size
 .fwrite_loop_custom_buffer:              ; Use the custom buffer
+    ; Chunk sequence served by the RP. Read once per chunk, before the retry
+    ; loop, so every retry of this chunk re-sends the same value and the RP
+    ; can tell a retried chunk (answer lost) from the next one (more data).
+    ; d1 is scratch under the GEMDOS calling convention and sits inside the
+    ; movem below, so it survives every retry of this chunk.
+    move.l GEMDRVEMUL_WRITE_CHK, d1
     move.w #CMD_RETRIES_COUNT, d7        ; Set the number of retries
 .fwrite_custom_buffer_retry:
     movem.l d1-d7/a4, -(sp)                 ; Save the registers
     move.w #CMD_WRITE_BUFF_CALL, d0         ; Command code
     move.l d5 ,d6                           ; Number of bytes to send
+    move.l d1, d4                           ; d4 = chunk sequence (the RP dedups retried chunks on it)
     bsr send_sync_write_command_to_sidecart ; Send the command to the Multi-device
     movem.l (sp)+, d1-d7/a4                 ; Restore the registers
     tst.w d0                                ; Check the result of the command

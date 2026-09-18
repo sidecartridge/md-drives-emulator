@@ -248,7 +248,14 @@ number.
 /  bit1=1: Do not trust last allocated cluster number in the FSINFO.
 */
 
-#define FF_FS_LOCK 8
+/* 32: FF_FS_LOCK counts open files and open non-root directories, shared by
+/  everything on the card. GEMDRIVE holds a FIL per open ST file and a DIR per
+/  active Fsfirst/Fsnext search (a GEM desktop window keeps one open), plus the
+/  floppy A/B image FILs and the ACSI image FIL. The lists are unbounded, so
+/  this is a ceiling, not a computed worst case; at 8 a desktop with a few open
+/  windows plus a file copy exhausted the table and GEMDOS calls failed with
+/  spurious errors. Each entry is a 16-byte FILESEM (512 bytes of .bss). */
+#define FF_FS_LOCK 32
 /* The option FF_FS_LOCK switches file lock function to control duplicated file
 open /  and illegal operation to open objects. This option must be 0 when
 FF_FS_READONLY /  is 1.
