@@ -1,0 +1,139 @@
+# Developer tools
+
+Host-side tools for working on md-drives-emulator with the hardware attached: a SidecarTridge
+Multi-device on an Atari ST, with a Raspberry Pi Debug Probe wired to the RP2040's SWD pins and to
+its debug UART (GPIO 0/1). Python tools use the standard library only. Brought over from the
+`md-devops` microfirmware and adapted to this firmware's layout.
+
+## Debug console: `console.py`
+
+Captures the debug console of a `debug` build (921,600 baud) to `tools/dev/logs/console.log`, with
+a timestamp on every line, and shows it in the terminal. Use it instead of a serial terminal such
+as CoolTerm: only one program can open the port.
+
+```bash
+python3 tools/dev/console.py watch          # leave running in a terminal
+```
+
+`watch` finds the Debug Probe by its USB name (`--port` to choose another device), waits for it when
+it is unplugged, and reopens it when it returns. While it runs, other commands read the log:
+
+```bash
+python3 tools/dev/console.py since-boot                     # everything since the last boot
+python3 tools/dev/console.py since-boot --boot 2            # the boot before that
+python3 tools/dev/console.py tail 100
+python3 tools/dev/console.py grep 'repeat of chunk' --since-boot
+python3 tools/dev/console.py wait 'GEMDRIVE initialized' --timeout 30
+```
+
+`grep` and `wait` take Python regular expressions and exit with 3 when nothing matches. `wait` only
+matches lines that arrive after it starts, so start it before the action that should print the
+line. The log rotates to `console.log.1` at 32 MB.
+
+The settings dump can print bytes that make macOS `grep` treat the log as binary and print
+nothing; use `console.py grep` or `grep -a`.
+
+## Build, flash and verify: `flash.sh`
+
+```bash
+tools/dev/flash.sh debug                  # build, flash with picotool, check over SWD
+tools/dev/flash.sh release --probe        # flash through the Debug Probe instead
+tools/dev/flash.sh debug --build-only     # build only
+tools/dev/flash.sh debug --src /tmp/src   # build a copy of rp/src (for example a patched linker script)
+```
+
+Builds out of tree in `tools/dev/builds/<type>`, incrementally. It does not touch `rp/build` or
+the submodules, and warns when a submodule is not at the version `rp/build.sh` pins. The m68k
+image is not rebuilt: after changing `target/atarist`, run `target/atarist/build.sh` first (it
+regenerates `rp/src/include/target_firmware.h`), then `flash.sh`.
+
+Every build carries a build ID: the git commit, `<sha7>`, or `<sha7>-dirty.<diff7>` when the tree
+has uncommitted changes. The same tree always gives the same ID, and at the same checkout path a
+byte-identical binary (release builds embed source paths, so another path gives other bytes). The
+ID is stored in flash as the `release_build_id` string, and `rp.elf` is kept as
+`tools/dev/builds/elf/<type>-<id>.elf` for resolving crash addresses later.
+
+Flashing uses `picotool load -f -x`, which reboots the running firmware into BOOTSEL over USB; when
+picotool cannot see the RP it falls back to the Debug Probe. Then `flash.sh` checks the result over
+SWD with `swd.py`: the RP booted the ELF, its flash matches the ELF byte for byte, and it carries
+the new build ID. On failure it exits with 1 and prints the console since the last boot.
+
+## Debug probe: `swd.py`
+
+The tools talk to the RP only through picotool, the Debug Probe and the console UART, never through
+the firmware's own services, so they work with any microfirmware built from this template and with
+a hung RP. Memory is read while the CPU keeps running.
+
+```bash
+python3 tools/dev/swd.py running tools/dev/builds/debug/rp.elf   # booted this firmware?
+python3 tools/dev/swd.py verify tools/dev/builds/debug/rp.elf    # flash identical to the ELF?
+python3 tools/dev/swd.py build-id                                # which build is on the RP?
+python3 tools/dev/swd.py read 0x2003e0c0 8000 fb.bin             # dump memory
+python3 tools/dev/swd.py program tools/dev/builds/debug/rp.elf   # flash through the probe
+python3 tools/dev/swd.py screen menu.png                         # the setup menu as the ST shows it
+python3 tools/dev/swd.py text                                    # the setup menu as text
+python3 tools/dev/swd.py shared                                  # token + shared variables
+python3 tools/dev/swd.py resume                                  # release cores a debugger left halted
+python3 tools/dev/swd.py reset                                   # reset the whole chip, watchdog-style
+python3 tools/dev/swd.py select short                            # press SELECT (short press)
+python3 tools/dev/swd.py key g                                   # a keystroke, as if typed on the ST
+python3 tools/dev/swd.py app countdown_stop                      # stop the setup-menu countdown
+python3 tools/dev/swd.py app gemdrive_stall 2 100                # stall 2 write answers 10 s each
+python3 tools/dev/swd.py inject 0x0001 0x0067 0                  # any protocol command
+python3 tools/dev/swd.py crash                                   # why did it last reboot?
+python3 tools/dev/swd.py postmortem                              # halt, backtraces, resume
+```
+
+`screen` renders the 320×200 framebuffer at `DISPLAY_BUFFER_OFFSET` of the cartridge window as a
+PNG (scaled 2×, `--scale`). It shows what the RP draws for the ST: the setup menu, not GEM or a
+running program. `text` prints the terminal's character buffer (the `screen` array of term.c); the
+bottom status line is drawn straight to the framebuffer and only shows in `screen`. `shared`
+prints the random token, the token seed and the shared variables, named after the `*_SVAR_*` /
+`*_SHARED_VARIABLE_*` indexes in `rp/src/include` (all drivers share one array). They take the
+window address from the ELF; without `--elf` they use the cached ELF whose build ID the RP
+carries, so flash the build with `flash.sh` first.
+
+`program` and `reset` restart the chip through the watchdog (PSM `WDSEL` + `WATCHDOG_CTRL.TRIGGER`),
+never with OpenOCD's `reset`. This firmware launches core 1 (the SELECT watcher) within
+milliseconds of booting, and OpenOCD's multi-core reset sequence touches core 1 again just after
+that: core 1 dies in the middle of its first trace holding the SDK's stdio mutex, and every piece
+of debug output then waits out the 1 s `PICO_STDIO_DEADLOCK_TIMEOUT_MS`. The symptom is a debug
+boot that takes 220 s instead of 0.7 s, with traces seconds apart and a dead SELECT button. If
+you ever see that, the chip was reset by a debugger: run `swd.py reset` or power-cycle. The same
+applies to a VS Code debug session's restart button.
+
+A halted RP can still be read. Halting core 1 also pauses the RP2040's timer, so after a debugger
+halt run `resume`, which releases both cores; OpenOCD's own `resume` fails in a new OpenOCD run.
+
+`select` needs no firmware code: it forces the SELECT pin's input high through the RP2040's GPIO
+input override for 300 ms (`short`) or `SELECT_LONG_RESET` + 1 s (`long`). A long press needs
+`--force`, because it erases this app's saved settings. `select release` clears an override left
+behind.
+
+`key`, `app` and `inject` need a `debug` build. They write a small mailbox in RAM
+(`rp/src/include/devhooks.h`, found by its `devhooksMailbox` symbol) and wait for the main loop to
+acknowledge it. `key` and `inject` queue a protocol command as if the ST had sent it; the firmware
+routes it to whichever parser is active — the setup terminal in the setup menu, the drives'
+command handler during emulation — so `key` works at the setup menu and `inject` can reach the
+GEMDRIVE/floppy/RTC/ACSI handlers during emulation. `app NAME` runs the app command defined as
+`DEVHOOKS_APP_<NAME>` in `rp/src/include/emul.h`:
+
+- `countdown_stop` — stop the setup-menu boot countdown, as if a key was pressed.
+- `gemdrive_stall CHUNKS [DECISECONDS]` — make the next CHUNKS GEMDRIVE write chunks stall after
+  the data is committed but before the ST is answered: the exact shape of a lost write answer.
+  Use ≥ 100 deciseconds so the stall outlasts the ST's write timeout and forces a retry; the
+  console then shows `Repeat of write chunk N, answering M again` and the copied file must be
+  byte-identical to the source. This is the hardware validation for the Fwrite chunk dedup.
+
+`crash` prints the watchdog reason and scratch registers of the last reboot without stopping the
+RP, with code addresses resolved to source lines by `addr2line`.
+
+`postmortem` halts the RP and prints both cores' backtraces, the registers, the watchdog registers
+and key variables through GDB (`$ARM_GDB_PATH/bin/arm-none-eabi-gdb`, as in `.vscode/launch.json`),
+then resumes it; `--leave-halted` keeps it stopped for `swd.py resume`. Halting stops the
+cartridge bus, so the ST sees a dead cartridge until the RP resumes.
+
+OpenOCD is `$OPENOCD`, `openocd` on `PATH`, or `../pico/openocd/src/openocd`; its scripts come
+from `$PICO_OPENOCD_PATH`, the variable `.vscode/launch.json` uses. A command that fails on a
+momentary debug-port drop (common while the firmware changes its clock early in boot) is retried.
+Close a VS Code debug session first: only one program can use the probe.
