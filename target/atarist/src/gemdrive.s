@@ -734,29 +734,34 @@ _notlong:
     return_interrupt_l GEMDRVEMUL_FATTRIB_STATUS    ; Return the error code from the Sidecart
 
 .Fdatime:
-    move.l 8(a0),a4                      ; get the datetime struct address
-    move.w 12(a0),d4                     ; get the handle
+    move.w 12(a0),d3                     ; get the handle
+    and.l #$FFFF, d3                     ; Mask the upper word of the handle
+
+    detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
+
+    move.l d3, d4                        ; The RP expects the handle in d4
     move.w 14(a0),d3                     ; get the flag
-    move.l 0(a4), d5                     ; get the datetime information (DOSTIME)
-    move.l 4(a4), d6                     ; get the datetime information (DOSDATE)
     and.l #$FFFF, d3                     ; Mask the upper word of the flag
-    and.l #$FFFF, d4                     ; Mask the upper word of the handle
+    move.l 8(a0),a4                      ; get the DOSTIME address
+    move.l 0(a4), d5                     ; DOSTIME is 4 bytes: time word, date word
 
-
-    detect_emulated_drive_letter         ; If not, exec_old_handler the code. Otherwise continue with the code
-
-    move.l a4, -(sp)
+    movem.l d3/a4, -(sp)
     ; This is an emulated drive, it's our moment!
     send_sync CMD_FDATETIME_CALL, 16
-    move.l (sp)+, a4
-    
+    movem.l (sp)+, d3/a4
+
+    ; Like TOS, only a successful inquire writes the caller's DOSTIME
+    tst.w d3                             ; 0 = inquire, 1 = set
+    bne.s .fdatime_done
+    tst.l GEMDRVEMUL_FDATETIME_STATUS
+    bne.s .fdatime_done
     lea GEMDRVEMUL_FDATETIME_TIME, a6
     move.b 2(a6), 0(a4)
     move.b 3(a6), 1(a4)
     lea GEMDRVEMUL_FDATETIME_DATE, a6
     move.b 2(a6), 2(a4)
     move.b 3(a6), 3(a4)
-
+.fdatime_done:
     return_interrupt_l GEMDRVEMUL_FDATETIME_STATUS    ; Return the error code from the Sidecart
 
 .Fread:
