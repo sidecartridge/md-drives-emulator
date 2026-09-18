@@ -37,7 +37,9 @@ Pass any non-empty third argument to enable file logging. Tests run from the Ata
 
 To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
 
-Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper (prefix with `script -q /dev/null`). Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+
+With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD.
 
 ## Architecture — the parts that span multiple files
 
@@ -89,6 +91,8 @@ Key design points:
 - **Drive-letter gating**: `Dsetdrv()` and `Dsetpath()` in `create_virtual_hard_disk` are only called when the drive is C: (drive number 2). For other letters, these are skipped so TOS doesn't boot from / run AUTO programs from the GEMDRIVE drive. The drive still appears in `_drvbits` for desktop access.
 - **`_bootdev`** is only set for C:. Non-C: drives skip it.
 - **COMMAND_TIMEOUT** in `gemdrive.s` must be `$6FFF` or higher — FatFS operations (Fopen with SD card directory scan) can exceed the old `$FFF` (~20 ms) timeout, causing `send_write_sync` retries that duplicate file descriptors (every Fopen executes twice, leaking fds).
+- **Fwrite chunk dedup**: the RP serves a chunk sequence number at `GEMDRIVE_WRITE_CHK`; `gemdrive.s` reads it once per chunk (before the retry loop) and echoes it in d4 of `CMD_WRITE_BUFF_CALL`. A repeated sequence means the ST never heard the answer, so the RP replays the stored byte count instead of writing again — a retransmit used to append the chunk twice and lose the file tail. Ordering is load-bearing: the per-fd memo and the served-sequence bump must both happen **before** the `WRITE_BYTES` answer.
+- **Dfree cluster counts are clamped** so `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a >4 GB card wrap (a 32 GB card showed ~720 MB). Don't "fix" the clamp by reporting real counts.
 
 ### Floppy drive emulation
 
@@ -136,6 +140,19 @@ Drift example we already caught with this skill: the "first AHDI partition must 
 
 - **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
 - Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`).
+
+## Release workflow
+
+These rules apply to every new version:
+
+- **A version starts with a release branch.** Create `release/vX.Y.Z` from `main`, where `vX.Y.Z`
+  is exactly what `version.txt` will contain for that release.
+- **One branch per epic, cut from the release branch**, named `epic/NN-<slug>`. All work for the
+  epic is committed there, including the `version.txt` bump in the first epic of a release.
+- **An epic's pull request targets `release/vX.Y.Z`, never `main`.** It is merged only after
+  Diego has verified the epic on real hardware.
+- **`main` receives the release branch once**, when the whole version is done and verified.
+- Commit, push, open and merge pull requests only when Diego asks.
 
 ## Working style
 
@@ -193,3 +210,16 @@ docs, or any other artifact. This means **no**:
 
 Write the message as the human author. Do not mention AI tools used to
 produce the work.
+
+### 6. No planning references in released content
+
+The local backlog lives in `docs/` (epics, stories, iterations), which is **gitignored** — it
+exists only on the developer's machine. **Never name an epic, story, iteration or task in
+anything that is committed or pushed**: code comments, documentation, the changelog, commit
+messages, PR descriptions. (Epic branches are the one exception: they are named
+`epic/NN-<slug>`, and the slug says what the work is.) A planning identifier tells a reader of this repository
+nothing and cannot be looked up — and a commit message cannot be cleaned up before a release.
+Write what the code does and why instead: the information, not the pointer. Traceability runs
+one way only: the local story notes record the commit hashes. Before tagging a release, check
+with `git grep -IiE "EPIC-|STORY-|docs/epics" -- ':!CLAUDE.md' ':!AGENTS.md'` (this rule is the
+only allowed match).
