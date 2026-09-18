@@ -102,11 +102,11 @@ Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` config
 
 ### LED ownership
 
-`blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during transfer. `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.
+`blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during traffic (`blink_trafficDip()`, restored by `blink_poll()` after 100 ms quiet). `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.
 
 ### USB mass storage
 
-MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption.
+MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption. `CFG_TUD_MSC_EP_BUFSIZE` is 4096 (16384 measured no faster). `usb_mass_poll()`, called right after every `tud_task()`, writes the chunk the last write callback parked and reads ahead the next one while USB transfers; every MSC callback finishes a parked write first. TinyUSB 0.18 has an RP2040 endpoint race that can panic (`ep XX was already available`); fixed in TinyUSB 0.21, to be taken with Pico SDK 2.3.2 (see AGENTS.md).
 
 ### RTC/NTP WiFi
 

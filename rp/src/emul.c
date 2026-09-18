@@ -2635,6 +2635,7 @@ void __not_in_flash_func(emul_start)() {
         if (usbInitialized) {
           // tinyusb device task
           tud_task();
+          usb_mass_poll();
 
           usbMassStorageMounted = usb_mass_get_mounted();
           // Show on screen the change in the status of the USB mass storage
