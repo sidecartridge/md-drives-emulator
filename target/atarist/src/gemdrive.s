@@ -423,16 +423,28 @@ _notlong:
 ;
 ; Trap #1 handler goes here
 ;
+; Look the call up before saving any register, with scratch registers only
+; (d0, a1; d1 holds the MegaSTE speed). Calls GEMDRIVE does not handle go on
+; to TOS with nothing pushed: TOS 1.04 starts GEM on a 132-byte stack and
+; calls GEMDOS from it (Super, Mshrink, Malloc) with about 110 bytes left
+; above the AES variables that hold the resolution. Saving 48 bytes of
+; registers there left GEM in low resolution and damaged GEMDOS globals.
+	move.w 6(a0), d0                     ; get GEMDOS opcode number
+	cmp.w #$57, d0                       ; Highest opcode handled in the table
+	bhi.s .exec_old_handler_unsaved
+	add.w d0, d0                         ; Multiply opcode by 4
+	add.w d0, d0
+	lea .gemdos_dispatch_table(pc), a1
+	movea.l (a1,d0.w), a1
+	cmpa.l #.exec_old_handler, a1
+	beq.s .exec_old_handler_unsaved
 	save_regs
-
-	move.w 6(a0),d3                      ; get GEMDOS opcode number
-	and.l #$FFFF, d3                     ; Normalize opcode for indexed lookup
-	cmp.w #$57, d3                       ; Highest opcode handled in the table
-	bhi .exec_old_handler
-	add.w d3, d3                         ; Multiply opcode by 4
-	add.w d3, d3
-	movea.l .gemdos_dispatch_table(pc,d3.w), a1
 	jmp (a1)
+
+.exec_old_handler_unsaved:
+	restore_cpu_cache
+	move.l old_handler,-(sp)            ; Fake a return
+	rts                                 ; to old code.
 
 ;.show_vector_calls:
 ;    ; Trace the not implemented GEMDOS call

@@ -68,6 +68,27 @@ MPB_MFL         equ 0
 MPB_MAL         equ 4
 MPB_ROVER       equ 8
 
+; The pool fix works on its own stack. A GEMDOS call can arrive with the
+; supervisor stack only a few hundred bytes above data that matters: TOS 1.04
+; starts GEM with its stack inside GEM's own basepage, and GEMDRIVE nests its
+; GEMDOS calls on that stack. Saving registers and talking to the RP there
+; overwrote GEM's standard handles, and every program lost its console output
+; (it went to MIDI). Interrupts also land on this stack while it is in use.
+PF_STACK_SIZE   equ 1024
+
+; Run \1 on the pool fix's stack, using 4 bytes of the caller's.
+pf_own_stack    macro
+    move.l a6, -(sp)
+    move.l pf_stack, a6
+    move.l sp, -(a6)                    ; the caller's stack pointer, on ours
+    move.l a6, sp
+    movem.l d0-d7/a0-a5, -(sp)
+    bsr \1
+    movem.l (sp)+, d0-d7/a0-a5
+    move.l (sp), sp
+    move.l (sp)+, a6
+    endm
+
 ; Macros should be included before any function code
     include inc/tos.s
     include inc/sidecart_macros.s
@@ -101,10 +122,24 @@ poolfix_start:
     cmp.w #PF_OFD_OPCODE, PF_OFD_OFFSET(a1)
     bne .pf_exit
 
+    move.l a1, -(sp)
+    move.l #PF_STACK_SIZE, -(sp)        ; the pool fix's stack, owned by the
+    gemdos Malloc, 6                    ; initial process, which never ends
+    move.l (sp)+, a1
+    tst.l d0
+    ble.s .pf_exit
+    add.l #PF_STACK_SIZE, d0
+    move.l #pf_stack, d3
+    move.l d0, d4
+    bsr pf_set_long
+    bne.s .pf_exit
+    move.l #pf_flag, d3                 ; a flag left set before an ST reset
+    moveq #0, d4
+    bsr pf_set_long
+    bne.s .pf_exit
     move.l #pf_next, d3                 ; the RP stores the GEMDOS entry in pf_next
     move.l a1, d4
-    send_sync CMD_SET_LONG, 8
-    tst.w d0
+    bsr pf_set_long
     bne.s .pf_exit                      ; the RP did not answer: do not install
 
     move.l #pf_trap, -(sp)
@@ -115,11 +150,21 @@ poolfix_start:
 .pf_exit:
     rts
 
-; Both longs live in the cartridge window, which the ST cannot write: the RP
+; Store d4 at the address d3 through the RP. Out: Z set when it answered.
+pf_set_long:
+    move.l a1, -(sp)
+    send_sync CMD_SET_LONG, 8
+    move.l (sp)+, a1
+    tst.w d0
+    rts
+
+; These longs live in the cartridge window, which the ST cannot write: the RP
 ; stores them through CMD_SET_LONG and CMD_COMPACTED.
     ds.b ((4 - (* & 3)) & 3)            ; bump to the next 4-byte boundary
 pf_flag:
     dc.l 0                              ; not 0: compact before the next GEMDOS call
+pf_stack:
+    dc.l 0                              ; top of the pool fix's stack
     dc.l 'XBRA'
     dc.l 'SDPF'
 pf_next:
@@ -128,13 +173,7 @@ pf_next:
 pf_trap:
     tst.l pf_flag
     beq.s .pf_check_call
-    movem.l d0-d7/a0-a6, -(sp)
-    bsr pf_compact
-    move.l d4, d5
-    move.l d3, d4
-    move.l #pf_flag, d3
-    send_sync CMD_COMPACTED, 12
-    movem.l (sp)+, d0-d7/a0-a6
+    pf_own_stack pf_compact_report
 
 .pf_check_call:
     ; GEMDOS leaves d0-d2/a0-a2 undefined, so a0 and d0 are free here
@@ -159,13 +198,23 @@ pf_trap:
 .pf_frees:
     tst.l pf_flag
     bne.s .pf_pass
-    movem.l d0-d7/a0-a6, -(sp)
+    pf_own_stack pf_raise_flag
+.pf_pass:
+    move.l pf_next, -(sp)
+    rts
+
+pf_raise_flag:
     move.l #pf_flag, d3
     moveq #1, d4
     send_sync CMD_SET_LONG, 8
-    movem.l (sp)+, d0-d7/a0-a6
-.pf_pass:
-    move.l pf_next, -(sp)
+    rts
+
+pf_compact_report:
+    bsr pf_compact
+    move.l d4, d5
+    move.l d3, d4
+    move.l #pf_flag, d3
+    send_sync CMD_COMPACTED, 12
     rts
 
 ; Compact the pool until fewer than MDS_PER_BLOCK descriptor slots are free.

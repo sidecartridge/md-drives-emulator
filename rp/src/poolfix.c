@@ -40,10 +40,8 @@ void __not_in_flash_func(poolfix_loop)(TransmissionProtocol *lastProtocol,
         break;
       }
       WRITE_AND_SWAP_LONGWORD(memory, address & 0xFFFFu, value);
-      if (value > 1) {
-        DPRINTF("Pool fix: installed, GEMDOS entry %08lX\n",
-                (unsigned long)value);
-      }
+      DPRINTF("Pool fix: %08lX = %08lX\n", (unsigned long)address,
+              (unsigned long)value);
       break;
     }
     case POOLFIX_COMPACTED: {
