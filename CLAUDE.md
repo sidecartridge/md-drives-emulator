@@ -100,6 +100,10 @@ Media-change state is RP-owned. Atari-side `floppy.s` must only *read* the share
 
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
+### SELECT button
+
+Watched on core 0 by the non-blocking `select_poll()` (main loop, SD-error wait, Wi-Fi connect callback); core 1 is not used. Setup-menu short press restarts the RP; during emulation a short press cycles floppy A; a 10 s press is a factory reset (by design) and restarts. `tools/dev/select_harness.py` checks every behaviour on hardware; see AGENTS.md for why core 1 must not come back and why the edge interrupt cannot be the only debounce.
+
 ### LED ownership
 
 `blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during traffic (`blink_trafficDip()`, restored by `blink_poll()` after 100 ms quiet). `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.

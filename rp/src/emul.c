@@ -264,6 +264,12 @@ static void ntpProgressPrintCurrentIp(void) {
   display_refresh();
 }
 
+// Runs between Wi-Fi connect attempts, which can take seconds.
+static void ntpConnectPoll(void) {
+  term_loop();
+  select_poll();
+}
+
 static int runOnDemandRtcNtpSync(void) {
   SettingsConfigEntry *wifiMode =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
@@ -291,7 +297,7 @@ static int runOnDemandRtcNtpSync(void) {
     return -1;
   }
 
-  network_setPollingCallback(term_loop);
+  network_setPollingCallback(ntpConnectPoll);
 
   int maxAttempts = 3;
   int attempt = 0;
@@ -343,7 +349,6 @@ static void finishAppLoop(void) {
   DPRINTF("Exiting the app loop...\n");
 
   if (jumpBooster) {
-    select_coreWaitPushDisable();
     sleep_ms(SLEEP_LOOP_MS);
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_RESET);
     sleep_ms(SLEEP_LOOP_MS);
@@ -2199,6 +2204,7 @@ static void waitForSdFailureAndReturnToBooster(const char *message) {
 #ifdef BLINK_H
     blink_poll();
 #endif
+    select_poll();
   }
 
   jumpBooster = true;
@@ -2322,9 +2328,8 @@ void __not_in_flash_func(emul_start)() {
   // Short press: reset the device and restart the app
   // Long press: reset the device and erase the flash.
   select_configure();
-  select_coreWaitPush(handleSelectShortPress,
-                      reset_deviceAndEraseFlash);  // Wait for the SELECT
-                                                   // button to be pushed
+  select_setResetCallback(handleSelectShortPress);
+  select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   // 6. Init the sd card
   // Most of the apps or microfirmwares will need to read and write files
@@ -2486,6 +2491,7 @@ void __not_in_flash_func(emul_start)() {
 
   while (getKeepActive()) {
     blink_poll();
+    select_poll();
     devhooks_poll();
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
