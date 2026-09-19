@@ -34,8 +34,7 @@ compares the whole flashed image with the ELF. `build-id` reads the
 `release_build_id` string from flash; with no ELF it tries every ELF in
 tools/dev/builds/elf. `program` flashes the ELF and resets the RP; `reset` only
 resets it. Both reset the whole chip through the watchdog, never with OpenOCD's
-`reset`, which kills this firmware's core 1 right after it starts (see
-chip_reset).
+`reset` (see chip_reset).
 
 `screen` renders the 320x200 framebuffer of the 64 KB cartridge window
 (DISPLAY_BUFFER_OFFSET in display.h) as a PNG: the setup menu as the ST shows
@@ -524,8 +523,9 @@ def cmd_select(args: argparse.Namespace) -> int:
         print(f"SELECT (GPIO {gpio}) override cleared")
         return 0
     if args.press == "long" and not args.force:
-        raise SwdError("a long press erases this app's saved settings "
-                       "(reset_deviceAndEraseFlash): add --force")
+        raise SwdError("a long press is a factory reset: it erases the global "
+                       "settings, and Booster then clears every app's "
+                       "settings (reset_deviceAndEraseFlash): add --force")
     hold = args.hold_ms or (SELECT_SHORT_MS if args.press == "short"
                             else defs["SELECT_LONG_RESET"] + 1000)
     pressed = normal | (INOVER_HIGH << INOVER_SHIFT)
@@ -728,14 +728,13 @@ WATCHDOG_CTRL_TRIGGER = 0x80000000
 def chip_reset() -> None:
     """Reset the whole chip at once, the way the watchdog does.
 
-    OpenOCD's own `reset` must not be used on this firmware: its multi-core
-    sequence touches core 1 again a few milliseconds after core 0 has started,
-    and by then the firmware has already launched core 1 (the SELECT watcher).
-    Core 1 is killed in the middle of its first trace, holding the SDK's stdio
-    mutex, and from then on every piece of debug output waits out the 1 s
-    PICO_STDIO_DEADLOCK_TIMEOUT_MS: a 0.7 s boot takes 220 s and SELECT is
-    dead. A watchdog-style reset restarts both cores together and leaves the
-    debugger with nothing more to do."""
+    Not OpenOCD's own `reset`: its multi-core sequence touches core 1 again a
+    few milliseconds after core 0 has started. Up to v1.1.0 the firmware had
+    launched core 1 (the SELECT watcher) by then, and killing it mid-trace
+    left the SDK's stdio mutex held, so every piece of debug output waited out
+    the 1 s PICO_STDIO_DEADLOCK_TIMEOUT_MS (a 0.7 s boot took 220 s). SELECT
+    now runs on core 0, but a watchdog-style reset still restarts both cores
+    together, like a power-on reset, and leaves the debugger nothing to do."""
     openocd(f"mww 0x{PSM_WDSEL:08x} 0x{PSM_WDSEL_ALL_BUT_OSCILLATORS:08x}",
             f"mww 0x{WATCHDOG_CTRL:08x} 0x{WATCHDOG_CTRL_TRIGGER:08x}",
             check=False)

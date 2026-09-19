@@ -96,20 +96,22 @@ window address from the ELF; without `--elf` they use the cached ELF whose build
 carries, so flash the build with `flash.sh` first.
 
 `program` and `reset` restart the chip through the watchdog (PSM `WDSEL` + `WATCHDOG_CTRL.TRIGGER`),
-never with OpenOCD's `reset`. This firmware launches core 1 (the SELECT watcher) within
-milliseconds of booting, and OpenOCD's multi-core reset sequence touches core 1 again just after
-that: core 1 dies in the middle of its first trace holding the SDK's stdio mutex, and every piece
-of debug output then waits out the 1 s `PICO_STDIO_DEADLOCK_TIMEOUT_MS`. The symptom is a debug
-boot that takes 220 s instead of 0.7 s, with traces seconds apart and a dead SELECT button. If
-you ever see that, the chip was reset by a debugger: run `swd.py reset` or power-cycle. The same
-applies to a VS Code debug session's restart button.
+never with OpenOCD's `reset`. Up to v1.1.0 this firmware launched core 1 (the SELECT watcher)
+within milliseconds of booting, and OpenOCD's multi-core reset sequence touched core 1 again just
+after that: core 1 died in the middle of its first trace holding the SDK's stdio mutex, and every
+piece of debug output then waited out the 1 s `PICO_STDIO_DEADLOCK_TIMEOUT_MS` (a debug boot of
+220 s instead of 0.7 s, and a dead SELECT button). SELECT is now watched on core 0 and core 1 is
+not started, but a watchdog-style reset is still the one that leaves the chip exactly as a power-on
+reset does, with DMA and PIO stopped. If an old build shows that symptom, run `swd.py reset` or
+power-cycle. The same applies to a VS Code debug session's restart button.
 
 A halted RP can still be read. Halting core 1 also pauses the RP2040's timer, so after a debugger
 halt run `resume`, which releases both cores; OpenOCD's own `resume` fails in a new OpenOCD run.
 
 `select` needs no firmware code: it forces the SELECT pin's input high through the RP2040's GPIO
 input override for 300 ms (`short`) or `SELECT_LONG_RESET` + 1 s (`long`). A long press needs
-`--force`, because it erases this app's saved settings. `select release` clears an override left
+`--force`, because it is a factory reset: it erases the global settings, and Booster then clears
+every app's settings. `select release` clears an override left
 behind.
 
 `key`, `app` and `inject` need a `debug` build. They write a small mailbox in RAM
@@ -146,3 +148,30 @@ OpenOCD is `$OPENOCD`, `openocd` on `PATH`, or `../pico/openocd/src/openocd`; it
 from `$PICO_OPENOCD_PATH`, the variable `.vscode/launch.json` uses. A command that fails on a
 momentary debug-port drop (common while the firmware changes its clock early in boot) is retried.
 Close a VS Code debug session first: only one program can use the probe.
+
+## SELECT regression checks: `select_harness.py`
+
+Presses SELECT through `swd.py select` and reads the firmware's own state over SWD (app state,
+floppy A slot and image, the media-change flag the ST reads, the LED count sequence, uptime) to
+check each thing the button does. Works on release and debug builds; it only needs the ELF of the
+running build, found by build ID like `swd.py`.
+
+```bash
+python3 tools/dev/select_harness.py status                         # what the cases read
+python3 tools/dev/select_harness.py setup-bounce                   # setup menu: 15 ms press ignored
+python3 tools/dev/select_harness.py setup-short                    # setup menu: short press resets
+python3 tools/dev/select_harness.py runtime-bounce                 # emulation: 15 ms press ignored
+python3 tools/dev/select_harness.py runtime-short                  # emulation: floppy A cycles
+python3 tools/dev/select_harness.py runtime-short --expect ignore  # emulation, < 2 slots: nothing
+python3 tools/dev/select_harness.py runtime-double                 # two presses 0.5 s apart
+python3 tools/dev/select_harness.py long --force                   # 10 s press: factory reset
+python3 tools/dev/select_harness.py restore tools/dev/logs/settings-<time>.bin
+```
+
+Each case first checks the RP is in the state it needs and exits with 2 if not; it prints PASS or
+FAIL (exit 0 or 1). A short press in the setup menu reboots the RP under the running ST, so reset
+the ST after `setup-short`. `long` saves the settings flash to `tools/dev/logs/` before pressing
+(or to the file given) and prints the `restore` command; `restore` writes the backup back with the
+cores and DMA stopped, as `swd.py program` does, then resets the RP. After `runtime-short`, open A:
+on the ST desktop: `status` should then show the media-change flag cleared, which proves the ST
+read the new disk.
