@@ -54,7 +54,7 @@ release: prepare dist
 prepare: clean
 	mkdir -p $(BUILD_DIR)
 
-clean-compile : clean main.o gemdrive.o floppy.o acsi.o rtc.o
+clean-compile : clean main.o gemdrive.o floppy.o acsi.o rtc.o poolfix.o
 
 main.o: prepare
 	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/main.s -o $(BUILD_DIR)/main.o
@@ -71,8 +71,11 @@ acsi.o: prepare
 rtc.o: prepare
 	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/rtc.s -o $(BUILD_DIR)/rtc.o
 
+poolfix.o: prepare
+	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/poolfix.s -o $(BUILD_DIR)/poolfix.o
+
 .PHONY: build
-build: main.o gemdrive.o floppy.o acsi.o rtc.o
+build: main.o gemdrive.o floppy.o acsi.o rtc.o poolfix.o
 	$(VLINK) $(addprefix $(BUILD_DIR)/,$^) $(VLINKFLAGS) -o $(BUILD_DIR)/$(BIN)
 
 .PHONY: dist

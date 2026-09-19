@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <sys/types.h>
 
 #include "chksum_tests.h"
@@ -7,6 +8,18 @@
 #include "folder_tests.h"
 #include "test_runner.h"
 #include "workdir_tests.h"
+// Suites named on the command line (run as FSTESTS.TTP), or all of them.
+static int suiteArgc = 0;
+static char **suiteArgv = NULL;
+
+static int suite_selected(const char *name) {
+  if (suiteArgc < 2) return TRUE;
+  for (int i = 1; i < suiteArgc; i++) {
+    if (strcasecmp(suiteArgv[i], name) == 0) return TRUE;
+  }
+  return FALSE;
+}
+
 //================================================================
 // Main program
 static int run() {
@@ -24,11 +37,31 @@ static int run() {
 
   print("Current path: %s\r\n\r\n", path);
 
-  run_files_tests(FALSE);
-  run_folder_tests(FALSE);
-  run_folder_listing_tests(FALSE);
-  run_workdir_tests(FALSE);
-  run_chksum_tests(FALSE);
+  static const struct {
+    const char *name;
+    void (*fn)(void);
+  } singleTests[] = {
+      {"wd-chdir", test_change_directory_and_getpath},
+      {"wd-noexist", test_change_to_nonexistent_directory},
+      {"wd-parent", test_return_to_parent_directory},
+      {"wd-dfreec", test_query_free_space_on_drive_C},
+      {"wd-dfree", test_query_free_space_on_default_drive},
+      {"wd-drive", test_get_and_set_drive},
+      {"wd-relative", test_relative_file_operations_in_current_directory},
+  };
+  for (unsigned i = 0; i < sizeof(singleTests) / sizeof(singleTests[0]);
+       i++) {
+    if (suiteArgc >= 2 && suite_selected(singleTests[i].name)) {
+      print("=== %s ===\r\n", singleTests[i].name);
+      singleTests[i].fn();
+    }
+  }
+
+  if (suite_selected("files")) run_files_tests(FALSE);
+  if (suite_selected("folder")) run_folder_tests(FALSE);
+  if (suite_selected("listing")) run_folder_listing_tests(FALSE);
+  if (suite_selected("workdir")) run_workdir_tests(FALSE);
+  if (suite_selected("chksum")) run_chksum_tests(FALSE);
 
 #ifdef _LOG
   close_log();
@@ -41,6 +74,8 @@ static int run() {
 //================================================================
 // Standard C entry point
 int main(int argc, char *argv[]) {
+  suiteArgc = argc;
+  suiteArgv = argv;
   // switching to supervisor mode and execute run()
   // needed because of direct memory access for reading/writing the palette
   Supexec(&run);

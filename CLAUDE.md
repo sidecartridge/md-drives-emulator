@@ -62,6 +62,7 @@ $FA0000  Cart header + main.s code (~32 KB)
 $FA1000  GEMDRIVE code (gemdrive.s)
 $FA2800  FLOPPY code (floppy.s)
 $FA3400  RTC code (rtc.s)
+$FA4C00  GEMDOS pool fix (poolfix.s, TOS 1.04/1.06 only)
 $FA5400  ACSI code (acsi.s)
 $FA8000  Framebuffer / exchange buffer (shared, 8 KB)
 $FA8208  Shared variables (token + SVARs per driver)
@@ -99,6 +100,14 @@ Key design points:
 Media-change state is RP-owned. Atari-side `floppy.s` must only *read* the shared media-change flags. Working behavior: RP raises `MED_CHANGED` on drive-A slot swap and clears it after the first successful read of the new disk's root-directory start sector.
 
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
+
+### Start order and boot drive
+
+`main.s` starts the modules in this order: pool fix, floppy, GEMDRIVE, ACSI, RTC. The pool fix must be first (it has to see the ROM's GEMDOS entry). Floppy sets `_bootdev` to A: and may run the image's boot sector; GEMDRIVE (when it is C:) and ACSI (when its first partition is C:) then set C:, like a real hard-disk driver booting after the floppy, so `C:\AUTO\` and `C:\DESKTOP.INF` are used.
+
+### GEMDOS pool fix (TOS 1.04/1.06)
+
+TOS 1.04/1.06 GEMDOS has a broken pool-compaction routine (what Atari's POOLFIX3.PRG fixes); POOLFIX3 cannot install once the cartridge has hooked trap #1. `poolfix.s` installs its own XBRA `SDPF` hook first (only on GEMDOS $1500 + TOS 1.04/1.06 with the expected ROM code), compacts the pool before the next GEMDOS call after Mfree/Mshrink/Pterm, and chains to the ROM. Its variables live in its own window and are written by the RP (`rp/src/poolfix.c`, app $06), including `pf_enabled` at `$FA4C04` from the `POOLFIX_ENABLED` setting (setup menu `[K]`, default on). See AGENTS.md.
 
 ### SELECT button
 

@@ -115,6 +115,7 @@ set(RP_SOURCES
     gemdrive.c
     hw_config.c
     network.c
+    poolfix.c
     reset.c
     romemul.c
     rtc.c

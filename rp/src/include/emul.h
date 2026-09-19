@@ -25,6 +25,7 @@
 #include "network.h"
 #include "pico/stdlib.h"
 #include "romemul.h"
+#include "poolfix.h"
 #include "rtc.h"
 #include "sdcard.h"
 #include "select.h"

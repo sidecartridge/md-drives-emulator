@@ -216,6 +216,14 @@ acsi_start:
     bsr acsi_rebind_bcb_buffers
     bsr install_hdv_hooks
 
+    ; A hard-disk driver booted from the disk sets _bootdev to C:, after any
+    ; floppy boot sector has run, and TOS then runs C:\AUTO\ and reads
+    ; C:\DESKTOP.INF. Nothing loads such a driver here, so do its part. This
+    ; runs after the floppy driver, which sets _bootdev to A:.
+    cmp.l #2, (ACSIEMUL_SHARED_VARIABLES + (SVAR_FIRST_VOLUME_DRIVE * 4))
+    bne.s acsi_exit_graciously
+    move.w #2, _bootdev.w
+
 acsi_exit_graciously:
     rts
 

@@ -40,6 +40,9 @@ static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_8, SETTINGS_TYPE_STRING, ""},
     {ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_9, SETTINGS_TYPE_STRING, ""},
     {ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A_10, SETTINGS_TYPE_STRING, ""},
+
+    // GEMDOS pool fix for TOS 1.04 and 1.06
+    {ACONFIG_PARAM_POOLFIX_ENABLED, SETTINGS_TYPE_BOOL, "true"},
 };
 
 // Create a global context for our settings
