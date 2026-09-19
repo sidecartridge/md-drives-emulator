@@ -842,7 +842,7 @@ static void __not_in_flash_func(menu)(void) {
              acsiDriveLetter);
     term_printString(acsiIdDriveLine);
   } else {
-    term_printString("No\n\n\n\n\n");
+    term_printString("No\n\n\n\n");
   }
 
   // Display GEMDRIVE options
