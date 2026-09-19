@@ -25,6 +25,7 @@ Usage:
     python3 tools/dev/swd.py inject COMMAND_ID [WORD ...] [--elf ELF]
     python3 tools/dev/swd.py crash [--elf ELF]
     python3 tools/dev/swd.py postmortem [--elf ELF] [--leave-halted]
+    python3 tools/dev/swd.py heap [--elf ELF] [--watch SECONDS] [--csv FILE]
 
 `running` waits until the vector table register (VTOR) holds the ELF's RAM
 vector table, which the SDK's runtime init installs, and core 0 is not halted:
@@ -491,6 +492,107 @@ def cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+HEAP_SYMBOLS = ("end", "__StackLimit", "heap_end.0", "__malloc_sbrk_base",
+                "__malloc_max_sbrked_mem", "__malloc_av_")
+
+
+def heap_snapshot(elf: str) -> dict:
+    """Heap figures read from newlib's own malloc state, no firmware help.
+
+    The heap grows by sbrk from `end` towards `__StackLimit` and never gives
+    memory back, so __malloc_max_sbrked_mem is the peak the heap ever reached,
+    transient peaks included. Free space inside the heap comes from walking
+    its chunks: each chunk's size word carries PREV_INUSE for the chunk
+    before it, and the walk ends at the top chunk (av_[2]). The walk reads
+    RAM while the CPU runs, so a chunk that changes mid-read can break it:
+    `walk_ok` is False then and the caller may simply read again."""
+    sym = elf_symbols(elf, *HEAP_SYMBOLS)
+    missing = [n for n in HEAP_SYMBOLS if n not in sym]
+    if missing:
+        raise SwdError(f"{os.path.basename(elf)} lacks {', '.join(missing)}")
+    start, limit = sym["end"][0], sym["__StackLimit"][0]
+    brk, base, peak, top = struct.unpack("<4I", b"".join(
+        read_memory(sym[n][0] + off, 4) for n, off in
+        (("heap_end.0", 0), ("__malloc_sbrk_base", 0),
+         ("__malloc_max_sbrked_mem", 0), ("__malloc_av_", 8))))
+    snap = {"size": limit - start, "arena": (brk - start) if brk else 0,
+            "peak": peak, "headroom": limit - (brk or start),
+            "peak_headroom": limit - start - peak, "walk_ok": False}
+    if not brk or base in (0, 0xFFFFFFFF) or not (base <= top < brk):
+        return snap
+    heap = read_memory(base, brk - base)
+
+    def word(addr: int) -> int:
+        return struct.unpack_from("<I", heap, addr - base)[0]
+
+    used = free = largest = free_chunks = 0
+    p = base
+    while p < top:
+        size = word(p + 4) & ~3
+        if size < 16 or p + size > top:
+            return snap
+        if word(p + size + 4) & 1:
+            used += size
+        else:
+            free += size
+            free_chunks += 1
+            largest = max(largest, size)
+        p += size
+    top_size = word(top + 4) & ~3
+    if p != top or top + top_size > brk + 16:
+        return snap
+    snap.update(walk_ok=True, used=used, free=free + top_size,
+                largest=max(largest, top_size), free_chunks=free_chunks)
+    return snap
+
+
+def heap_line(snap: dict) -> str:
+    kb = lambda n: f"{n / 1024:.1f} KB"
+    line = (f"heap {kb(snap['size'])}: arena {kb(snap['arena'])}, "
+            f"peak {kb(snap['peak'])} (closest to the stack: "
+            f"{kb(snap['peak_headroom'])}), never used {kb(snap['headroom'])}")
+    if snap["walk_ok"]:
+        line += (f"; in use {kb(snap['used'])}, free in arena "
+                 f"{kb(snap['free'])} in {snap['free_chunks'] + 1} blocks, "
+                 f"largest {kb(snap['largest'])}")
+    else:
+        line += "; chunk walk failed (heap changed while reading)"
+    return line
+
+
+def cmd_heap(args: argparse.Namespace) -> int:
+    elf = matching_elf(args.elf)
+    csv = None
+    if args.csv:
+        new = not os.path.exists(args.csv)
+        csv = open(args.csv, "a")
+        if new:
+            csv.write("time,arena,peak,peak_headroom,headroom,used,free,"
+                      "largest,free_blocks\n")
+    try:
+        while True:
+            snap = heap_snapshot(elf)
+            if not snap["walk_ok"]:
+                snap = heap_snapshot(elf)
+            print(time.strftime("%H:%M:%S ") + heap_line(snap), flush=True)
+            if csv:
+                csv.write(",".join([time.strftime("%Y-%m-%d %H:%M:%S")] + [
+                    str(snap.get(k, "")) for k in
+                    ("arena", "peak", "peak_headroom", "headroom", "used",
+                     "free", "largest")] +
+                    [str(snap["free_chunks"] + 1) if snap["walk_ok"] else ""])
+                    + "\n")
+                csv.flush()
+            if not args.watch:
+                return 0
+            time.sleep(args.watch)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if csv:
+            csv.close()
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     """Release both cores from a debug halt. OpenOCD's own resume fails in a
     new OpenOCD run, and a halted core 1 also pauses the RP2040's timer,
@@ -832,6 +934,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     rst = sub.add_parser("reset", help="reset the whole chip, watchdog-style")
     rst.set_defaults(func=cmd_reset)
+
+    hp = sub.add_parser("heap", help="heap size, peak and free space")
+    hp.add_argument("--elf")
+    hp.add_argument("--watch", type=float, metavar="SECONDS",
+                    help="sample again every SECONDS until Ctrl-C")
+    hp.add_argument("--csv", help="also append each sample to this CSV file")
+    hp.set_defaults(func=cmd_heap)
 
     se = sub.add_parser("select", help="press the SELECT button")
     se.add_argument("press", choices=("short", "long", "release"))

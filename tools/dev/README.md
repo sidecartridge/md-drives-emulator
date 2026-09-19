@@ -84,6 +84,8 @@ python3 tools/dev/swd.py app heap_hold 16                        # hold 16 KB mo
 python3 tools/dev/swd.py inject 0x0001 0x0067 0                  # any protocol command
 python3 tools/dev/swd.py crash                                   # why did it last reboot?
 python3 tools/dev/swd.py postmortem                              # halt, backtraces, resume
+python3 tools/dev/swd.py heap                                    # heap size, peak, free space
+python3 tools/dev/swd.py heap --watch 5 --csv tools/dev/logs/heap.csv   # sample during a test
 ```
 
 `screen` renders the 320×200 framebuffer at `DISPLAY_BUFFER_OFFSET` of the cartridge window as a
@@ -143,6 +145,17 @@ RP, with code addresses resolved to source lines by `addr2line`.
 and key variables through GDB (`$ARM_GDB_PATH/bin/arm-none-eabi-gdb`, as in `.vscode/launch.json`),
 then resumes it; `--leave-halted` keeps it stopped for `swd.py resume`. Halting stops the
 cartridge bus, so the ST sees a dead cartridge until the RP resumes.
+
+`heap` reads newlib's own malloc state while the RP keeps running, so it needs no firmware code
+and works on release builds. It prints the heap's size (from the end of `.bss` to
+`__StackLimit`), the arena taken from it so far, the **peak** arena ever reached
+(`__malloc_max_sbrked_mem`) with how close that came to the stack, and, by walking the heap's
+chunks, the bytes in use, the free bytes inside the arena, how many free blocks they are in and the
+largest one. The heap only grows (memory freed stays in the arena for reuse), so the peak also
+catches short-lived allocations between samples. A shortage shows as a peak with little room left
+before the stack, or as plenty of free bytes but a small largest block (fragmentation). `--watch
+SECONDS` samples until Ctrl-C; `--csv FILE` appends every sample for later comparison. If the
+heap changes while it is read, the chunk walk is retried once and otherwise reported as failed.
 
 OpenOCD is `$OPENOCD`, `openocd` on `PATH`, or `../pico/openocd/src/openocd`; its scripts come
 from `$PICO_OPENOCD_PATH`, the variable `.vscode/launch.json` uses. A command that fails on a
