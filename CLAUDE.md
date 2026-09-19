@@ -93,6 +93,7 @@ Key design points:
 - **`_bootdev`** is only set for C:. Non-C: drives skip it.
 - **COMMAND_TIMEOUT** in `gemdrive.s` must be `$6FFF` or higher — FatFS operations (Fopen with SD card directory scan) can exceed the old `$FFF` (~20 ms) timeout, causing `send_write_sync` retries that duplicate file descriptors (every Fopen executes twice, leaking fds).
 - **Fwrite chunk dedup**: the RP serves a chunk sequence number at `GEMDRIVE_WRITE_CHK`; `gemdrive.s` reads it once per chunk (before the retry loop) and echoes it in d4 of `CMD_WRITE_BUFF_CALL`. A repeated sequence means the ST never heard the answer, so the RP replays the stored byte count instead of writing again — a retransmit used to append the chunk twice and lose the file tail. Ordering is load-bearing: the per-fd memo and the served-sequence bump must both happen **before** the `WRITE_BYTES` answer.
+- **Handles are closed when their program ends**: Fopen/Fcreate send the running basepage (`os_run`; TOS 1.00 `$602C`/`$873C`) in d4 and the RP records it as the handle's owner; Pterm0/Ptermres/Pterm send `CMD_PTERM_CALL` with the ending basepage and the RP closes that owner's files, as TOS's `ixterm()` does. A crash ends through a real `trap #1` Pterm, so it is covered.
 - **Dfree cluster counts are clamped** so `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a >4 GB card wrap (a 32 GB card showed ~720 MB). Don't "fix" the clamp by reporting real counts.
 
 ### Floppy drive emulation

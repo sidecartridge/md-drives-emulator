@@ -35,7 +35,13 @@ static int run() {
   char path[66];     /* GEMDOS path buffer; 64 + drive & NUL is safe */
   Dgetpath(path, 0); /* fills e.g. "\FOLDER\SUBLEVEL" */
 
-  print("Current path: %s\r\n\r\n", path);
+  print("Current path: %s\r\n", path);
+  // Standard handles of this process (basepage offset $30). Damaged values
+  // here send the console output elsewhere (a device, or a file).
+  extern BASEPAGE *_base;
+  const signed char *uft = (const signed char *)_base + 0x30;
+  print("Standard handles: %d %d %d %d %d %d\r\n\r\n", uft[0], uft[1], uft[2],
+        uft[3], uft[4], uft[5]);
 
   static const struct {
     const char *name;
@@ -67,19 +73,31 @@ static int run() {
   close_log();
 #endif
 
-  // press_key("All tests completed.\r\n");
-  print("All tests completed.\r\n");
+  return 0;
 }
 
 //================================================================
 // Standard C entry point
 int main(int argc, char *argv[]) {
+  // Child of test_handles_closed_on_pterm(): create a file and end without
+  // closing it.
+  if (argc >= 2 && strcasecmp(argv[1], "leakchild") == 0) {
+    int handle = Fcreate("LEAKCHLD.TMP", 0);
+    print("leakchild: Fcreate LEAKCHLD.TMP = %d\r\n", handle);
+    Pterm(0);
+  }
   suiteArgc = argc;
   suiteArgv = argv;
   // switching to supervisor mode and execute run()
   // needed because of direct memory access for reading/writing the palette
   Supexec(&run);
 
+  // Starts child programs, so it runs here in user mode, not under Supexec.
+  if (suite_selected("files") || suite_selected("pterm"))
+    test_handles_closed_on_pterm();
+
+  print("All tests completed.\r\n");
+  press_key("Press a key.\r\n");
   Pterm(0);
   return EXIT_SUCCESS;
 }

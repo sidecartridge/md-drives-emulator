@@ -313,6 +313,8 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
 
 #define GEMDRVEMUL_PEXEC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
+#define GEMDRVEMUL_PTERM_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x4C)  // A process ends: close the files it owns
 #define GEMDRVEMUL_MALLOC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x48)  // Show the Malloc call
 
@@ -431,6 +433,9 @@ typedef struct __attribute__((aligned(4))) DTANode {
 typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
   int fd;
+  // Basepage of the process that opened the file. TOS closes a process's
+  // files when it ends (Pterm0, Ptermres, Pterm), and so does GEMDRIVE.
+  uint32_t owner;
   uint32_t offset;
   bool seek_dirty;
   // Last write chunk accepted on this descriptor. The ST re-sends the same

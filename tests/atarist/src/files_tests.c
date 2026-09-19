@@ -765,6 +765,41 @@ void test_fdatime_other_current_drive() {
   Fdelete("A:\\FDTTOS.TXT");
 }
 
+// TOS closes the files of a process when it ends; GEMDRIVE must do the same
+// with its handles. FSTESTS runs itself as a child that creates a file and
+// ends without closing it, more times than FatFs has lock entries (32).
+// Runs in user mode: Pexec from supervisor mode is not something to rely on.
+#define PTERM_CHILD_RUNS 40
+void test_handles_closed_on_pterm(void) {
+  print("=== Handles closed when their program ends ===\r\n");
+  int before = Fcreate("PTERM.TMP", 0);
+  assert_result("Create PTERM.TMP", before >= 16384, TRUE);
+  if (before < 0) return;
+  Fclose(before);
+
+  const char *child = "FSTESTS.TTP";
+  long rc = Pexec(0, child, "\011leakchild", NULL);
+  if (rc < 0) {
+    child = "FSTESTS.TOS";
+    rc = Pexec(0, child, "\011leakchild", NULL);
+  }
+  int runs = (rc == 0) ? 1 : 0;
+  while ((rc == 0) && (runs < PTERM_CHILD_RUNS)) {
+    rc = Pexec(0, child, "\011leakchild", NULL);
+    if (rc == 0) runs++;
+  }
+  if (rc != 0) print("Pexec %s returned %ld after %d runs\r\n", child, rc, runs);
+  assert_result("Child left a file open and ended, every run", runs,
+                PTERM_CHILD_RUNS);
+
+  int after = Fopen("PTERM.TMP", 0);
+  assert_result("Next handle is the same as before the children", after,
+                before);
+  if (after >= 0) Fclose(after);
+  Fdelete("PTERM.TMP");
+  Fdelete("LEAKCHLD.TMP");
+}
+
 void test_eof_and_closed_handle_behavior() {
   int handle = Fcreate("EOFCLOSE.TXT", 0);
   Fwrite(handle, 5, "ABCDE");

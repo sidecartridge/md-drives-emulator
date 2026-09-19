@@ -86,6 +86,7 @@ CMD_FDATETIME_CALL      equ ($57 + APP_GEMDRVEMUL)           ; Command code to s
 
 CMD_MALLOC_CALL         equ ($48 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the malloc() command executed
 CMD_PEXEC_CALL          equ ($4B + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed
+CMD_PTERM_CALL          equ ($4C + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 that a process terminates (Pterm0, Ptermres, Pterm)
 
 ; This commands are not direct GEMDOS calls, but they are used to send data to the Sidecart
 CMD_READ_BUFF_CALL      equ ($81 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the read the buffer
@@ -458,7 +459,7 @@ _notlong:
 
 	even
 .gemdos_dispatch_table:
-	dc.l .exec_old_handler ; 0x00
+	dc.l .Pterm            ; 0x00
 	dc.l .exec_old_handler ; 0x01
 	dc.l .exec_old_handler ; 0x02
 	dc.l .exec_old_handler ; 0x03
@@ -507,7 +508,7 @@ _notlong:
 	dc.l .exec_old_handler ; 0x2E
 	dc.l .exec_old_handler ; 0x2F
 	dc.l .exec_old_handler ; 0x30
-	dc.l .exec_old_handler ; 0x31
+	dc.l .Pterm            ; 0x31
 	dc.l .exec_old_handler ; 0x32
 	dc.l .exec_old_handler ; 0x33
 	dc.l .exec_old_handler ; 0x34
@@ -534,7 +535,7 @@ _notlong:
 	dc.l .exec_old_handler ; 0x49
 	dc.l .exec_old_handler ; 0x4A
 	dc.l .Pexec            ; 0x4B
-	dc.l .exec_old_handler ; 0x4C
+	dc.l .Pterm            ; 0x4C
 	dc.l .exec_old_handler ; 0x4D
 	dc.l .Fsfirst          ; 0x4E
 	dc.l .Fsnext           ; 0x4F
@@ -549,6 +550,15 @@ _notlong:
 
 
 ; Start of the GEMDOS calls
+
+; Pterm0, Ptermres and Pterm: TOS closes every file the ending process opened.
+; Do the same for its GEMDRIVE files, then let TOS terminate the process.
+.Pterm:
+    bsr get_run_basepage                 ; d4 = basepage of the ending process
+    move.l d4, d3
+    send_sync CMD_PTERM_CALL, 4          ; Close the files that process owns
+    bra .exec_old_handler
+
 
 ; Set the current DTA
 .Fsetdta:
@@ -661,6 +671,7 @@ _notlong:
     detect_emulated_drive_letter         ; If not, exec_old_handler the code. Otherwise continue with the code
 
     ; This is an emulated drive, it's our moment!
+    bsr get_run_basepage                 ; d4 = owner of the new handle
     send_write_sync CMD_FOPEN_CALL, 256
     
     return_interrupt_l GEMDRVEMUL_FOPEN_HANDLE    ; Return the error code from the Sidecart
@@ -682,6 +693,7 @@ _notlong:
     detect_emulated_drive_letter         ; If not, exec_old_handler the code. Otherwise continue with the code
 
     ; This is an emulated drive, it's our moment!
+    bsr get_run_basepage                 ; d4 = owner of the new handle
     send_write_sync CMD_FCREATE_CALL, 256
 
     return_interrupt_w GEMDRVEMUL_FCREATE_HANDLE    ; Return the error code from the Sidecart
@@ -1102,6 +1114,7 @@ _notlong:
 .pexec_load_go:
     move.l GEMDRVEMUL_PEXEC_FNAME, a4
     clr.w d3                              ; open mode read only 
+    bsr get_run_basepage                  ; d4 = owner of the new handle
     send_write_sync CMD_FOPEN_CALL, 256
     move.l GEMDRVEMUL_FOPEN_HANDLE, d0    ; Error code obtained from the Sidecart
     ; If d0 is negative, there is an error
@@ -1307,6 +1320,31 @@ _notlong:
     subq.l #1, d5                       ; Decrement the counter
     bne.s .fill_zero_loop               ; Loop until the counter is 0
 .fill_zero_exit:
+    rts
+
+; Return in d4 the basepage of the running process (the one TOS closes files
+; for when it ends). TOS 1.02 and later publish its address in the OS header
+; (os_run); TOS 1.00 keeps it at a fixed address, different on the Spanish ROM.
+; Output registers:
+; d4.l: basepage of the running process
+; a5: modified
+get_run_basepage:
+    move.l _sysbase.w, a5
+    move.l 8(a5), a5                    ; os_beg: the ROM's own OS header
+    cmp.w #$0102, 2(a5)                 ; os_version
+    bcs.s .run_basepage_tos100
+    move.l $28(a5), a5                  ; os_run: where the basepage pointer lives
+    move.l (a5), d4
+    rts
+.run_basepage_tos100:
+    move.w $1C(a5), d4                  ; os_conf: country code in bits 1 and up
+    lsr.w #1, d4
+    cmp.w #4, d4                        ; Spain
+    beq.s .run_basepage_tos100_es
+    move.l $602C.w, d4
+    rts
+.run_basepage_tos100_es:
+    move.l $873C, d4
     rts
 
 ; Shared functions included at the end of the file

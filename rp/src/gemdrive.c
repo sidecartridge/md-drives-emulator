@@ -445,19 +445,20 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
 static void __not_in_flash_func(addFile)(FileDescriptors **head,
                                          FileDescriptors *newFDescriptor,
                                          const char *fpath, FIL fobject,
-                                         uint16_t new_fd) {
+                                         uint16_t new_fd, uint32_t owner) {
   strncpy(newFDescriptor->fpath, fpath, sizeof(newFDescriptor->fpath) - 1);
   newFDescriptor->fpath[sizeof(newFDescriptor->fpath) - 1] =
       '\0';  // Ensure null-termination
   newFDescriptor->fobject = fobject;
   newFDescriptor->fd = new_fd;
+  newFDescriptor->owner = owner;
   newFDescriptor->offset = 0;
   newFDescriptor->seek_dirty = false;
   newFDescriptor->last_write_seq = 0;
   newFDescriptor->last_write_bytes = 0;
   newFDescriptor->next = *head;
   *head = newFDescriptor;
-  DPRINTF("File %s added with fd %i\n", fpath, new_fd);
+  DPRINTF("File %s added with fd %i, owner %x\n", fpath, new_fd, owner);
 }
 
 static inline FRESULT __not_in_flash_func(syncFileOffsetIfNeeded)(
@@ -1590,6 +1591,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     case GEMDRVEMUL_FOPEN_CALL: {
       uint16_t fopenMode = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d3
+      uint32_t fopenOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d4
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d5
 
@@ -1640,7 +1642,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
                                     GEMDOS_EINTRN);
           } else {
-            addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount);
+            addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount,
+                    fopenOwner);
 
             DPRINTF("File opened with file descriptor: %d\n", fdCount);
             // Return the file descriptor
@@ -1678,11 +1681,32 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       WRITE_WORD(memorySharedAddress, GEMDRIVE_FCLOSE_STATUS, exitCode);
       break;
     }
+    case GEMDRVEMUL_PTERM_CALL: {
+      // TOS closes every file of an ending process; close its GEMDRIVE files
+      // too, or each keeps a FatFs FIL and lock entry until the next reset.
+      uint32_t ptermOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
+      int closed = 0;
+      FileDescriptors **link = &fdescriptors;
+      while (*link != NULL) {
+        FileDescriptors *cur = *link;
+        if (cur->owner == ptermOwner) {
+          f_close(&cur->fobject);
+          *link = cur->next;
+          free(cur);
+          closed++;
+        } else {
+          link = &cur->next;
+        }
+      }
+      DPRINTF("Pterm of basepage %x: %d file(s) closed\n", ptermOwner, closed);
+      break;
+    }
 
     case GEMDRVEMUL_FCREATE_CALL: {
       uint16_t fCreateMode =
           TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);  // d3 register
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d3
+      uint32_t fCreateOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d4
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d5
 
@@ -1719,7 +1743,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           }
           errorCode = GEMDOS_EINTRN;
         } else {
-          addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter);
+          addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter,
+                  fCreateOwner);
 
           // MISSING ATTRIBUTE MODIFICATION
           char fattrSTStr[7] = "";
