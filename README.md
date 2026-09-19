@@ -36,7 +36,7 @@ After launching, the app will automatically run every time your Atari computer i
 When you boot your Atari ST/STE/Mega ST/Mega STe, the app displays a **setup screen** for 5 seconds.  
 If no key is pressed, the emulator will start emulating the floppy and hard disk drives configured in the setup screen.
 
-This menu will pop up every time you power on your Atari computer, but not when you reset it. If you want to enter into this menu without powering off your Atari, you can press the **`SELECT`** button on your Multi-device and press the reset button on your Atari.
+This menu will pop up every time you power on your Atari computer, but not when you reset it. If you want to enter into this menu without powering off your Atari, press the **`RESET`** button on your Multi-device and then press the reset button on your Atari.
 
 During normal runtime, a short press on **`SELECT`** can also cycle floppy **A:** to the next configured image if you have configured multiple images for drive A.
 
@@ -225,7 +225,7 @@ Pressing **`E`** on the setup screen will exit the emulator and return to the At
 
 If RTC is enabled, the emulator may briefly initialize WiFi at this point to obtain the NTP time before continuing. The screen will show the connection progress and, when successful, the assigned IP address and time-sync result.
 
-To return to the setup screen, press **`SELECT`** on your Multi-device and reboot. Or simply power off your Atari and power it on again.  
+To return to the setup screen, press **`RESET`** on your Multi-device and then reset your Atari. Or simply power off your Atari and power it on again.  
 Note that during runtime, a short **`SELECT`** press is used for floppy A image cycling if multiple drive-A slots are configured.
 
 ### System reset behavior
