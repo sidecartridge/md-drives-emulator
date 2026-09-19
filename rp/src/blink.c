@@ -114,8 +114,13 @@ void blink_activityPulse(void) {
     return;
   }
 
-  blinkActivityLedOn = true;
-  blink_on();
+  // During a burst the LED is already on: only the first pulse writes it (on
+  // a Pico W every write is a ~200 us bus transaction to the Wi-Fi chip), the
+  // rest just push the off time back.
+  if (!blinkActivityLedOn) {
+    blinkActivityLedOn = true;
+    blink_on();
+  }
   blinkActivityOffTime = make_timeout_time_us(BLINK_ACTIVITY_ON_US);
 }
 

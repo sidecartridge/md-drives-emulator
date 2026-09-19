@@ -90,8 +90,9 @@ void blink_toogle();
 /**
  * @brief Emits a short non-blocking activity pulse on the LED.
  *
- * The LED is turned on immediately and will be turned off by `blink_poll()`
- * after `BLINK_ACTIVITY_ON_US` without blocking the caller.
+ * The LED is turned on immediately (written only if it is off) and will be
+ * turned off by `blink_poll()` after `BLINK_ACTIVITY_ON_US` without a pulse,
+ * without blocking the caller.
  */
 void blink_activityPulse(void);
 
