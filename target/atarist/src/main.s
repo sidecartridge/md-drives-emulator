@@ -36,6 +36,7 @@ GEMDRIVE			equ $FA1000 ; GEMDRIVE address
 FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
 RTCEMUL 			equ $FA3400 ; RTC emulation address
 ACSIEMUL 			equ $FA5400 ; ACSI emulation address
+POOLFIX 			equ $FA4C00 ; GEMDOS pool fix (TOS 1.04 and 1.06)
 
 ; Reservation carved below _membot before GEMDOS init so TOS never hands
 ; this region out as TPA. Holds the BCB pool (8 BCBs × 4096 B on stock
@@ -340,8 +341,14 @@ rom_function:
 	jmp (a0)
 .rom_function_no_reset:
 	; Place here your driver code
-	jsr GEMDRIVE		; Jump to the GEMDRIVE code
+	; The pool fix must see the ROM's GEMDOS entry, so it goes before any
+	; driver hooks the GEMDOS trap.
+	jsr POOLFIX			; GEMDOS pool fix (TOS 1.04 and 1.06 only)
+	; Floppy first, as on a real ST: it sets the boot drive to A: (and may
+	; run the image's boot sector), then the emulated hard disks may set it
+	; to C:, like a hard-disk driver loaded after the floppy boot.
 	jsr FLOPPYEMUL		; Call the floppy emulation code
+	jsr GEMDRIVE		; Jump to the GEMDRIVE code
 	jsr ACSIEMUL		; Call the ACSI placeholder code
 	jmp RTCEMUL 		; Call the RTC emulation code
 

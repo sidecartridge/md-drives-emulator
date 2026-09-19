@@ -40,6 +40,7 @@ static void cmdBootEnabled(const char *arg);
 static void cmdXbiosEnabled(const char *arg);
 static void cmdRTCEnabled(const char *arg);
 static void cmdY2KPatch(const char *arg);
+static void cmdPoolfixEnabled(const char *arg);
 static void cmdUTCOffset(const char *arg);
 static void cmdHost(const char *arg);
 static void cmdPort(const char *arg);
@@ -68,6 +69,7 @@ static const Command commands[] = {
     {"s", cmdXbiosEnabled},
     {"r", cmdRTCEnabled},
     {"y", cmdY2KPatch},
+    {"k", cmdPoolfixEnabled},
     {"u", cmdUTCOffset},
     {"h", cmdHost},
     {"p", cmdPort},
@@ -667,6 +669,24 @@ static void drawSetupInfoLine(const char *message) {
   u8g2_SetFont(display_getU8g2Ref(), u8g2_font_amstrad_cpc_extended_8f);
 }
 
+// The last terminal row, drawn in the narrow font of the status bar below it.
+// The terminal cursor is parked in the first cell after the text: moving the
+// cursor erases its previous cell, which must never be part of this text.
+static void drawSetupCommandLine(const char *text) {
+  u8g2_t *u8g2 = display_getU8g2Ref();
+  int top = (TERM_SCREEN_SIZE_Y - 1) * DISPLAY_TERM_CHAR_HEIGHT;
+  u8g2_SetDrawColor(u8g2, 0);
+  u8g2_DrawBox(u8g2, 0, top, DISPLAY_WIDTH, DISPLAY_TERM_CHAR_HEIGHT);
+  u8g2_SetDrawColor(u8g2, 1);
+  u8g2_SetFont(u8g2, u8g2_font_squeezed_b7_tr);
+  u8g2_DrawStr(u8g2, 0, top + DISPLAY_TERM_CHAR_HEIGHT - 1, text);
+  int width = u8g2_GetStrWidth(u8g2, text);
+  u8g2_SetFont(u8g2, u8g2_font_amstrad_cpc_extended_8f);
+  int col = (width + DISPLAY_TERM_CHAR_WIDTH) / DISPLAY_TERM_CHAR_WIDTH;
+  if (col > TERM_SCREEN_SIZE_X - 1) col = TERM_SCREEN_SIZE_X - 1;
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, col);
+}
+
 static void refreshSetupInfoLine(void) {
   if (usbMassStorageReady) {
     drawSetupInfoLine("USB Mass Storage Connected");
@@ -964,15 +984,18 @@ static void __not_in_flash_func(menu)(void) {
   } else {
     term_printString("No\n");
   }
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 2, 0);
-  if (!usbMassStorageReady) {
-    term_printString("[E]xit desktop    [X] Return to Booster");
-  } else {
-    term_printString("[X] Return to Booster");
-  }
 
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
-  term_printString("Select an option: ");
+  // GEMDOS pool fix, right after the RTC block
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 3, 0);
+  term_printString("TOS 1.04/1.06 pool fix [K]? ");
+  SettingsConfigEntry *poolfix = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED);
+  term_printString((poolfix == NULL || isTrue(poolfix->value)) ? "Yes" : "No");
+
+  drawSetupCommandLine(!usbMassStorageReady
+                           ? "[E]xit desktop    [X] Return to Booster    "
+                             "Select an option:"
+                           : "[X] Return to Booster    Select an option:");
   refreshSetupInfoLine();
 }
 
@@ -2007,6 +2030,19 @@ void cmdRTCEnabled(const char *arg) {
   display_refresh();
 }
 
+void cmdPoolfixEnabled(const char *arg) {
+  (void)arg;
+  SettingsConfigEntry *poolfix = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED);
+  bool enabled = (poolfix == NULL) || isTrue(poolfix->value);
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED,
+                    !enabled);
+  settings_save(aconfig_getContext(), true);
+  haltCountdown = true;
+  menu();
+  display_refresh();
+}
+
 void cmdY2KPatch(const char *arg) {
   SettingsConfigEntry *rtc = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
@@ -2569,11 +2605,13 @@ void __not_in_flash_func(emul_start)() {
         // Initialize the RTC
         DPRINTF("Initializing the RTC...\n");
         rtc_initf();  // Initialize the RTC emulator
+        poolfix_init();  // GEMDOS pool fix on or off (TOS 1.04/1.06)
 
         chandler_addCB(gemdrive_loop);  // Add the GEMDRIVE loop
         chandler_addCB(acsi_loop);      // Add the ACSI loop
         chandler_addCB(floppy_loop);    // Add the floppy drives loop
         chandler_addCB(rtc_loop);       // Add the RTC loop
+        chandler_addCB(poolfix_loop);   // GEMDOS pool fix (TOS 1.04/1.06)
 
         // Check remote commands
         appStatus = APP_EMULATION_RUNTIME;

@@ -21,6 +21,11 @@ SECTIONS
         rtc.o(.text)
     }
 
+    /* Place poolfix.s .text at 0x004C00 (the tail of the RTC window) */
+    .text_poolfix 0x004C00 : {
+        poolfix.o(.text)
+    }
+
     /* Place acsi.s .text at 0x005400 */
     .text_acsi 0x005400 : {
         acsi.o(.text)
