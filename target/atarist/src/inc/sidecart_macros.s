@@ -2,6 +2,16 @@
 
 ; Macros
 
+; What a send keeps and what it destroys. Check it before holding anything
+; across one of these: the senders leave a0-a3 pointing into the ROM3 command
+; window, and reading a payload from there makes the RP reject the command.
+;
+;   send_sync        keeps d1-d7          destroys d0, a0-a3
+;   send_write_sync  keeps d1-d6, a4      destroys d0, d7, a0-a3
+;
+; Take what you need into a kept register before the send, and reload address
+; registers after it.
+
 ; Send a synchronous command to the Multi-device passing arguments in the Dx registers
 ; /1 : The command code
 ; /2 : The payload size (even number always)
