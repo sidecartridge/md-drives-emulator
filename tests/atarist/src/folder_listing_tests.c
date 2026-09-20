@@ -143,7 +143,9 @@ void test_listing_with_attributes() {
     count++;
     result = Fsnext();
   }
-  assert_result("List visible files in ATTRTEST", count, 1);
+  // Both files: GEMDOS returns normal files whatever the attribute mask says,
+  // and the hidden bit only adds hidden ones. Our drive and Hatari's agree.
+  assert_result("List visible files in ATTRTEST", count, 2);
 
   result = Fsfirst("ATTRTEST\\*.*", 0x02);  // List hidden
   count = 0;
@@ -151,7 +153,7 @@ void test_listing_with_attributes() {
     count++;
     result = Fsnext();
   }
-  assert_result("List hidden files in ATTRTEST", count, 1);
+  assert_result("List hidden files in ATTRTEST", count, 2);
 
   cleanup_attrtest_folder();
 }
@@ -306,6 +308,20 @@ void test_multiple_dtas_independent_listing() {
 // and 1.02 keep a pointer in it, and wiping it made a repeated Fsnext follow a
 // null one.
 #define GEMDRIVE_DTA_MARK 0xAA555344L
+
+// Which drive is answering: GEMDRIVE hands out handles from 16384, Hatari's
+// GEMDOS drive from 64, TOS from 6. The two checks below are about GEMDRIVE's
+// own promises (its mark, and keeping the caller's buffer), so they only mean
+// something when GEMDRIVE is the one answering.
+static int gemdrive_is_answering(void) {
+  int handle = Fcreate("WHOAMI.TMP", 0);
+  int ours = (handle >= 16384);
+  if (handle >= 0) {
+    Fclose(handle);
+    Fdelete("WHOAMI.TMP");
+  }
+  return ours;
+}
 void test_dta_end_of_search_and_marker(void) {
   print("=== DTA at the end of a search ===\r\n");
   static DTA own_dta;
@@ -318,9 +334,14 @@ void test_dta_end_of_search_and_marker(void) {
   assert_result("A repeated Fsnext says the same", Fsnext(), -49);
 
   const unsigned char *dta = (const unsigned char *)Fgetdta();
-  assert_result("The DTA is still marked as GEMDRIVE's",
-                *(const long *)(dta + 2) == GEMDRIVE_DTA_MARK, TRUE);
-  assert_result("The DTA was not wiped", dta[30] != 0, TRUE);
+  if (gemdrive_is_answering()) {
+    assert_result("The DTA is still marked as GEMDRIVE's",
+                  *(const long *)(dta + 2) == GEMDRIVE_DTA_MARK, TRUE);
+    assert_result("The DTA was not wiped", dta[30] != 0, TRUE);
+  } else {
+    print("[SKIP] Another drive answered: its mark and its end-of-search "
+          "behaviour are its own\r\n");
+  }
 
   // A search TOS answers takes the same DTA over: it writes its own pattern
   // where the mark was.

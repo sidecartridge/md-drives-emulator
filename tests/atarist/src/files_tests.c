@@ -19,6 +19,21 @@ static unsigned short dos_make_date(unsigned short year, unsigned short month,
                           ((month & 0x0F) << 5) | (day & 0x1F));
 }
 
+// Whether the drive under test keeps the attribute bits an Atari drive keeps.
+// GEMDRIVE does, on FAT. Hatari's GEMDOS drive is a host directory: it maps
+// read-only to the write permission and has nowhere to put hidden or system
+// (its own source says so). Handles tell them apart: GEMDRIVE hands out
+// handles from 16384, Hatari from 64.
+static int gemdrive_keeps_attributes(void) {
+  int handle = Fcreate("WHOKEEPS.TMP", 0);
+  int ours = (handle >= 16384);
+  if (handle >= 0) {
+    Fclose(handle);
+    Fdelete("WHOKEEPS.TMP");
+  }
+  return ours;
+}
+
 static void cleanup_fattrib_test_file(void) {
   Fattrib("FATTR.TXT", 1, 0x00);
   Fdelete("FATTR.TXT");
@@ -26,7 +41,7 @@ static void cleanup_fattrib_test_file(void) {
 
 void test_create_write_read_file() {
   int handle = Fcreate("TEST1.TXT", 0);
-  assert_result("Create file TEST1.TXT", handle >= 16384, TRUE);
+  assert_result("Create file TEST1.TXT", A_VALID_HANDLE(handle), TRUE);
 
   const char *msg = "Hello, GEMDOS!!!!!";
   long written = Fwrite(handle, strlen(msg), msg);
@@ -455,11 +470,17 @@ void test_concurrent_handles() {
   int fd = Fcreate("DUAL.TXT", 0);
   Fclose(fd);
 
-  // IMPORTANT: FATFS does not support concurrent file access when opening
-  // files in write mode
+  // GEMDRIVE refuses a second writer: FatFs locks the file, and we keep that
+  // on purpose. TOS and Hatari's GEMDOS drive allow it, so this is one of the
+  // places where we do not follow Hatari.
   int h1 = Fopen("DUAL.TXT", 1);
   int h2 = Fopen("DUAL.TXT", 1);
-  assert_result("Concurrent write to an open file must fail.", h2, -33);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Concurrent write to an open file must fail.", h2, -33);
+  } else {
+    print("[SKIP] Another drive answered: it allows a second writer, "
+          "GEMDRIVE refuses one on purpose\r\n");
+  }
   Fwrite(h1, 6, "ONETWO");
   Fclose(h1);
 
@@ -482,7 +503,12 @@ void test_concurrent_handles() {
 void test_delete_while_open() {
   int h = Fcreate("LOCK.TXT", 0);
   int res = Fdelete("LOCK.TXT");
-  assert_result("Delete open file should fail", res < 0, 1);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Delete open file should fail", res < 0, 1);
+  } else {
+    print("[SKIP] Another drive answered: it allows deleting an open file, "
+          "GEMDRIVE refuses on purpose\r\n");
+  }
   Fclose(h);
   Fdelete("LOCK.TXT");
 }
@@ -569,32 +595,36 @@ void test_fattrib_roundtrip() {
   long result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Inquire attributes of FATTR.TXT", result >= 0, 1);
 
+  // Setting answers with the attributes asked for, as TOS and Hatari do.
   result = Fattrib("FATTR.TXT", 1, 0x01);
-  assert_result("Set readonly on FATTR.TXT returns previous attributes", result,
-                0x20);
+  assert_result("Set readonly on FATTR.TXT answers with them", result, 0x01);
 
   result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Readonly bit is set on FATTR.TXT", result & 0x03, 0x01);
 
   result = Fattrib("FATTR.TXT", 1, 0x02);
-  assert_result("Set hidden on FATTR.TXT returns previous attributes", result,
-                0x21);
+  assert_result("Set hidden on FATTR.TXT answers with them", result, 0x02);
 
   result = Fattrib("FATTR.TXT", 0, 0);
-  assert_result("Hidden bit is set on FATTR.TXT", result & 0x03, 0x02);
+  // The hidden bit is a real bit on a FAT drive, as on an Atari. Hatari's
+  // drive is a host directory and cannot keep it, so only ask where it can.
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Hidden bit is set on FATTR.TXT", result & 0x03, 0x02);
+  }
 
   result = Fattrib("FATTR.TXT", 1, 0x03);
-  assert_result("Set readonly+hidden on FATTR.TXT returns previous attributes",
-                result, 0x22);
-
-  result = Fattrib("FATTR.TXT", 0, 0);
-  assert_result("Readonly+hidden bits are set on FATTR.TXT", result & 0x03,
+  assert_result("Set readonly+hidden on FATTR.TXT answers with them", result,
                 0x03);
 
+  result = Fattrib("FATTR.TXT", 0, 0);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Readonly+hidden bits are set on FATTR.TXT", result & 0x03,
+                  0x03);
+  }
+
   result = Fattrib("FATTR.TXT", 1, 0x00);
-  assert_result(
-      "Clear readonly+hidden on FATTR.TXT returns previous attributes", result,
-      0x23);
+  assert_result("Clear readonly+hidden on FATTR.TXT answers with them", result,
+                0x00);
 
   result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Readonly+hidden bits are cleared on FATTR.TXT", result & 0x03,
@@ -724,14 +754,14 @@ void test_fdatime_other_current_drive() {
   DosDateTime query = {0};
 
   int handle = Fcreate("FDTOTHER.TXT", 0);
-  assert_result("Create FDTOTHER.TXT", handle >= 16384, TRUE);
+  assert_result("Create FDTOTHER.TXT", A_VALID_HANDLE(handle), TRUE);
   if (handle >= 0) {
     Fwrite(handle, 4, "TIME");
     Fclose(handle);
   }
 
   handle = Fopen("FDTOTHER.TXT", 2);
-  assert_result("Open FDTOTHER.TXT read/write", handle >= 16384, TRUE);
+  assert_result("Open FDTOTHER.TXT read/write", A_VALID_HANDLE(handle), TRUE);
   if (handle >= 0) {
     Dsetdrv(0);
     int set_result = Fdatime(&set_value, handle, 1);
@@ -757,7 +787,12 @@ void test_fdatime_other_current_drive() {
     return;
   }
   DosDateTime tos_query = {0};
-  assert_result("TOS handle is below the GEMDRIVE range", handle < 16384,
+  int emulated = Fcreate("FDTRANGE.TXT", 0); /* one from the drive under test */
+  if (emulated >= 0) {
+    Fclose(emulated);
+    Fdelete("FDTRANGE.TXT");
+  }
+  assert_result("A TOS handle is not one of the drive's", handle < emulated,
                 TRUE);
   assert_result("Fdatime inquire on TOS handle with GEMDRIVE current",
                 Fdatime(&tos_query, handle, 0), 0);
@@ -773,7 +808,7 @@ void test_fdatime_other_current_drive() {
 void test_handles_closed_on_pterm(void) {
   print("=== Handles closed when their program ends ===\r\n");
   int before = Fcreate("PTERM.TMP", 0);
-  assert_result("Create PTERM.TMP", before >= 16384, TRUE);
+  assert_result("Create PTERM.TMP", A_VALID_HANDLE(before), TRUE);
   if (before < 0) return;
   Fclose(before);
 
@@ -806,7 +841,7 @@ void test_handles_closed_on_pterm(void) {
 void test_fforce_onto_gemdrive_file(void) {
   print("=== Standard output forced onto a GEMDRIVE file ===\r\n");
   int handle = Fcreate("FORCE.TXT", 0);
-  assert_result("Create FORCE.TXT", handle >= 16384, TRUE);
+  assert_result("Create FORCE.TXT", A_VALID_HANDLE(handle), TRUE);
   if (handle < 0) return;
 
   long saved = Fdup(1);

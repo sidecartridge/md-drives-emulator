@@ -1975,7 +1975,12 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
 
       } else {
         uint32_t fattrST = sdcard_attribsFAT2ST(fno.fattrib);
-        errorCode = fattrST;
+        // Inquire answers with what the file has. Set answers with what it was
+        // asked to set: that is what TOS's own Fattrib returns (`xchmod` ends
+        // with `return mod & 0xff`), and what Hatari's GEMDOS drive returns.
+        // The Compendium says "the file's old attributes", and contradicts
+        // itself in the same entry; the ROM and Hatari agree, so they win.
+        errorCode = (fattrFlag == FATTRIB_INQUIRE) ? fattrST : fattrNew;
         char fattrSTStr[7] = "";
         sdcard_getAttribsSTStr(fattrSTStr, fattrST);
         if (fattrFlag == FATTRIB_INQUIRE) {
