@@ -247,13 +247,14 @@ static inline size_t __not_in_flash_func(hash)(uint32_t x) { return x; }
 
 // Insert function (allocates DTA node and prepends to list). Returns -2 on
 // duplicate key
-static int __not_in_flash_func(insertDTA)(uint32_t key) {
+static int __not_in_flash_func(insertDTA)(uint32_t key, uint32_t owner) {
   for (DTANode *p = dtaHead; p; p = p->next) {
     if (p->key == key) return -2;  // already exists
   }
   DTANode *n = dta_node_alloc();
   if (!n) return -1;
   n->key = key;
+  n->owner = owner;
   n->attribs = 0xFFFFFFFF;
   memset(&n->data, 0, sizeof n->data);
   n->dj = NULL;
@@ -291,6 +292,27 @@ static void __not_in_flash_func(releaseDTA)(uint32_t key) {
     prev = p;
     p = p->next;
   }
+}
+
+// Release every search a process left behind. Returns how many there were.
+static int __not_in_flash_func(releaseDTAsOfOwner)(uint32_t owner) {
+  int released = 0;
+  DTANode *p = dtaHead, *prev = NULL;
+  while (p) {
+    DTANode *next = p->next;
+    if (p->owner == owner) {
+      if (prev)
+        prev->next = next;
+      else
+        dtaHead = next;
+      dta_node_free(p);
+      released++;
+    } else {
+      prev = p;
+    }
+    p = next;
+  }
+  return released;
 }
 
 // Count the number of elements
@@ -1282,24 +1304,13 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     }
     case GEMDRVEMUL_FSETDTA_CALL: {
       uint32_t ndta = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d3 register
-      DPRINTF("Setting DTA: %x\n", ndta);
-      int err = insertDTA(ndta);
-      switch (err) {
-        case 0:
-          DPRINTF("FSETDTA Added ndta: %x.\n", ndta);
-          break;
-        case -1:
-          DPRINTF("FSETDTA Error: DTA table full. Cannot add DTA at %x.\n",
-                  ndta);
-          break;
-        case -2:
-          DPRINTF("FSETDTA Error: DTA at %x already exists. Cannot add.\n",
-                  ndta);
-          break;
-        default:
-          DPRINTF("FSETDTA Error: Unknown error adding DTA at %x.\n", ndta);
-          break;
-      }
+      // Just note where the caller wants its results. The table holds
+      // searches, and Fsfirst is what starts one: it releases whatever is at
+      // this address and inserts a fresh node. Adding a node here instead
+      // logged an error every time a program pointed the DTA at an address it
+      // had used before, which is what programs do, and left a node behind for
+      // every address that never began a search at all.
+      DPRINTF("Fsetdta at %x. Searches under way: %d\n", ndta, countDTA());
       break;
     }
     case GEMDRVEMUL_DTA_EXIST_CALL: {
@@ -1328,7 +1339,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     case GEMDRVEMUL_FSFIRST_CALL: {
       uint32_t ndta = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d3 register
       uint32_t attribs = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d4
-      uint32_t fspecSTBufAddr =
+      // d5 used to carry the ST address of the file specification, which only
+      // ever reached a trace: the string itself comes in the buffer. It says
+      // who is searching instead, so the search can be released when that
+      // process ends.
+      uint32_t searchOwner =
           TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // Skip d6 register
 
@@ -1370,11 +1385,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         char attribsStr[7] = "";
         sdcard_getAttribsSTStr(attribsStr, attribs);
 
-        DPRINTF(
-            "FSFIRST params ndta: %x, attribs: %s, fspecSTBufAddr: %x, "
-            "fspecSTBufAddr string: "
-            "%s\n",
-            ndta, attribsStr, fspecSTBufAddr, fspecString);
+        DPRINTF("FSFIRST params ndta: %x, attribs: %s, owner: %x, fspec: %s\n",
+                ndta, attribsStr, searchOwner, fspecString);
       }
 
       // Remove all the trailing spaces in the pattern
@@ -1383,21 +1395,17 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       releaseDTA(ndta);  // Just in case, release the DTA if it exists
       DTANode *currentDTANode = NULL;
       DPRINTF("Setting DTA: %x\n", ndta);
-      int err = insertDTA(ndta);
+      int err = insertDTA(ndta, searchOwner);
       switch (err) {
         case 0:
-          DPRINTF("FSFIRST Added ndta: %x.\n", ndta);
+          DPRINTF("Fsfirst at %x. Searches under way: %d\n", ndta, countDTA());
           break;
         case -1:
-          DPRINTF(
-              "FSFIRST Error: Out of memory creating DTA node at %x.\n", ndta);
-          break;
-        case -2:
-          DPRINTF("FSFIRST Error: DTA at %x already exists. Cannot add.\n",
-                  ndta);
+          DPRINTF("ERROR: out of memory starting the search at %x\n", ndta);
           break;
         default:
-          DPRINTF("FSFIRST Error: Unknown error adding DTA at %x.\n", ndta);
+          // The release above means the address cannot be taken.
+          DPRINTF("ERROR: could not start the search at %x (%d)\n", ndta, err);
           break;
       }
       if (err != 0) {
@@ -1750,7 +1758,12 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         }
       }
       unforceHandles(memorySharedAddress, 0, ptermOwner);
-      DPRINTF("Pterm of basepage %x: %d file(s) closed\n", ptermOwner, closed);
+      // A search the process walked to its end is already gone; one it
+      // abandoned is not, and it holds an open directory. It ends with its
+      // process, as the files do.
+      int searches = releaseDTAsOfOwner(ptermOwner);
+      DPRINTF("Pterm of basepage %x: %d file(s) closed, %d search(es) ended\n",
+              ptermOwner, closed, searches);
       break;
     }
     case GEMDRVEMUL_FFORCE_CALL: {

@@ -437,6 +437,9 @@ typedef struct {
 
 typedef struct __attribute__((aligned(4))) DTANode {
   uint32_t key;
+  // The basepage of the process that started this search, so that a search
+  // abandoned half way is released when that process ends, as its files are.
+  uint32_t owner;
   uint32_t attribs;
   TCHAR fname[14];
   DTA data;

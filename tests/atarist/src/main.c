@@ -126,9 +126,14 @@ static int restart_device_and_reboot(void) {
 // Standard C entry point
 int main(int argc, char *argv[]) {
   // Child of test_handles_closed_on_pterm(): create a file and end without
-  // closing it.
+  // closing it, and start a search without reading it to its end. Both belong
+  // to the process, and both have to go when it does: an abandoned search
+  // holds a directory open on the other side.
   if (argc >= 2 && strcasecmp(argv[1], "leakchild") == 0) {
+    static char child_dta[44];
     int handle = Fcreate("LEAKCHLD.TMP", 0);
+    Fsetdta(child_dta);
+    Fsfirst("*.*", 0);
     print("leakchild: Fcreate LEAKCHLD.TMP = %d\r\n", handle);
     Pterm(0);
   }

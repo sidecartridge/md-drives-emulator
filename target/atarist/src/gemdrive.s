@@ -1068,7 +1068,13 @@ _notlong:
     reentry_gem_unlock
 
     move.l (sp), d3                            ; Restore the DTA value
-    move.l a4, d5                              ; Save the address of the file specification string
+    ; d5 carried the address of the file specification, which the RP only ever
+    ; traced: the string itself goes in the buffer. Say who is searching
+    ; instead, so a search this process abandons ends when the process does.
+    ; get_run_basepage answers in d4, where the attributes are, hence the exg.
+    move.l d4, d5
+    bsr get_run_basepage
+    exg d4, d5                                 ; d4 attributes again, d5 the basepage
     send_write_sync CMD_FSFIRST_CALL, 192      ; Send the command to the Sidecart. 256 bytes of buffer to send
 
 .populate_fsdta_struct:
