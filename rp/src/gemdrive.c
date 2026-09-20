@@ -440,9 +440,11 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
       }
     }
   } else {
-    // No DTA structure found, return error
+    // A search we do not know: it ended and its node is gone, so it has no
+    // more files. The ST keeps the caller's DTA as it is.
     DPRINTF("DTA not found at %x\n", dta_address);
-    WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND, 0xFFFF);
+    WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND,
+               (uint16_t)GEMDOS_ENMFIL);
   }
 }
 
@@ -1600,8 +1602,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           nullifyDTA(memorySharedAddress);
         }
       } else {
-        DPRINTF("FsFirst not initalized\n");
-        int16_t errorCode = GEMDOS_EINTRN;
+        // The search ended and its node is gone, or we never had one: either
+        // way this DTA has no more files. The ST keeps the caller's DTA, so a
+        // program that keeps calling Fsnext gets the same answer.
+        DPRINTF("Fsnext on a search that is over\n");
+        int16_t errorCode = GEMDOS_ENMFIL;
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
         WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, errorCode);
         if (ndtaExists) {

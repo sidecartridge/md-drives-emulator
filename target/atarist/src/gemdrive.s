@@ -1099,10 +1099,10 @@ _notlong:
     move.l d0, -(sp)                            ; Save the error code in the stack
     move.l a5, d3                               ; Restore the DTA value
 
-    moveq #(DTA_SIZE - 1), d2                   ; Number of bytes to copy minus 1
-.clean_fsdta_struct_loop:
-    clr.b (a5)+                                 ; Clean the DTA
-    dbf d2, .clean_fsdta_struct_loop            ; Loop until we clean all the bytes
+    ; The search is over. Leave the caller's DTA alone and only mark it as ours,
+    ; so a repeated Fsnext is answered here with "no more files": zeroing it took
+    ; the DND pointer TOS 1.00 and 1.02 keep at offset 16 with it.
+    move.l #DTA_MAGIC, DTA_MAGIC_OFFSET(a5)
 
     send_sync CMD_DTA_RELEASE_CALL, 4           ; Send the command to the Sidecart. 4 bytes of payload
 

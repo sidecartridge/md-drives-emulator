@@ -301,6 +301,34 @@ void test_multiple_dtas_independent_listing() {
   cleanup_multidta_folders();
 }
 
+// A search GEMDRIVE answered marks the DTA as its own, and that mark decides
+// who answers Fsnext. When the search ends the DTA keeps its contents: TOS 1.00
+// and 1.02 keep a pointer in it, and wiping it made a repeated Fsnext follow a
+// null one.
+#define GEMDRIVE_DTA_MARK 0xAA555344L
+void test_dta_end_of_search_and_marker(void) {
+  print("=== DTA at the end of a search ===\r\n");
+  int result = Fsfirst("*.*", 0x10);
+  assert_result("Fsfirst on the GEMDRIVE drive", result, 0);
+  while (result == 0) result = Fsnext();
+  assert_result("The search ends with no more files", result, -49);
+  assert_result("A repeated Fsnext says the same", Fsnext(), -49);
+
+  const unsigned char *dta = (const unsigned char *)Fgetdta();
+  assert_result("The DTA is still marked as GEMDRIVE's",
+                *(const long *)(dta + 2) == GEMDRIVE_DTA_MARK, TRUE);
+  assert_result("The DTA was not wiped", dta[30] != 0, TRUE);
+
+  // A search TOS answers takes the same DTA over: it writes its own pattern
+  // where the mark was.
+  if (Fsfirst("A:\\*.*", 0x10) == 0) {
+    assert_result("A TOS search clears the mark",
+                  *(const long *)(dta + 2) != GEMDRIVE_DTA_MARK, TRUE);
+  } else {
+    print("[SKIP] No disk in A:, the TOS-search case did not run\r\n");
+  }
+}
+
 int run_folder_listing_tests(int presskey) {
   print("=== GEMDOS Folder Listing Test Suite ===\n\r");
   test_directory_listing_wildcards();
@@ -314,6 +342,8 @@ int run_folder_listing_tests(int presskey) {
   test_directory_listing_by_extension();
   if (presskey) press_key("");
   test_listing_with_attributes();
+  if (presskey) press_key("");
+  test_dta_end_of_search_and_marker();
   if (presskey) press_key("");
   test_fsnext_after_end();
   if (presskey) press_key("");
