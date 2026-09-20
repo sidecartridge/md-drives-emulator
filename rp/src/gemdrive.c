@@ -389,6 +389,10 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
       data->d_date = fno->fdate;
       data->d_length = (uint32_t)fno->fsize;
 
+      WRITE_AND_SWAP_LONGWORD(
+          memory_address_dta,
+          GEMDRIVE_DTA_TRANSFER + GEMDRIVE_DTA_MAGIC_OFFSET,
+          GEMDRIVE_DTA_MAGIC);
       WRITE_AND_SWAP_LONGWORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 12,
                               data->d_offset_drive);
       WRITE_BYTE(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 20, data->d_attrib);

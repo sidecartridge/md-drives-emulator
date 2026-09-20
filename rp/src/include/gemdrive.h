@@ -43,6 +43,15 @@
 #define SHARED_VARIABLES_SIZE 7
 #define DTA_SIZE_ON_ST 44
 
+// Written into the DTA GEMDRIVE fills, at offset 2 (inside the area TOS uses
+// for the search pattern, where no file name can produce these bytes). It is
+// what tells an Fsnext apart from a TOS search: TOS keeps "directory position |
+// drive" at offset 12, which a TOS search on a drive with our number, at
+// position 0, would leave looking exactly like the drive number GEMDRIVE used
+// to write there.
+#define GEMDRIVE_DTA_MAGIC 0xAA555344u
+#define GEMDRIVE_DTA_MAGIC_OFFSET 2
+
 #define GEMDRIVE_MAX_FOLDER_LENGTH \
   128  // Max length of the folder name in GEMDOS
 

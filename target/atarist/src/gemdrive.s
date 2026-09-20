@@ -182,6 +182,12 @@ GEMDOS_EIO_WRITE        equ -92 ; GEMDOS I/O write error
 GEMDOS_EIO_READ         equ -93 ; GEMDOS I/O read error
 
 DTA_SIZE                equ     44
+; Written by the RP into every DTA GEMDRIVE fills, at an offset TOS uses for the
+; search pattern: it says the search is ours. The drive number TOS keeps at
+; offset 12 cannot say it, a TOS search on a drive with our number at position 0
+; leaves the same value there.
+DTA_MAGIC               equ     $AA555344
+DTA_MAGIC_OFFSET        equ     2
 
 
 ; Macros
@@ -1120,9 +1126,8 @@ _notlong:
     reentry_gem_unlock
 
     move.l (sp), a0                       ; Restore the DTA value into a0
-    move.l 12(a0), d0                     ; Get the drive number from the DTA
-    cmp.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)),d0 ; Check if the drive is the emulated one
-    bne .Fsnext_bypass                  ; If not, exec_old_handler the code
+    cmp.l #DTA_MAGIC, DTA_MAGIC_OFFSET(a0); Is this one of our searches?
+    bne .Fsnext_bypass                    ; If not, exec_old_handler the code
 
     move.l (sp), d3                       ; Restore the DTA value
     send_sync CMD_FSNEXT_CALL, 4          ; Send the command to the Sidecart.
