@@ -833,6 +833,23 @@ void test_fforce_onto_gemdrive_file(void) {
   Fdelete("FORCE.TXT");
 }
 
+// A program on the GEMDRIVE drive must start whatever the current drive is:
+// Pexec is routed by the program's name, not by the current drive.
+void test_pexec_from_another_current_drive(void) {
+  print("=== Pexec routed by the program's name ===\r\n");
+  int gem_drive = Dgetdrv();
+  char path[24];
+  sprintf(path, "%c:\\FSTESTS.TTP", 'A' + gem_drive);
+
+  Dsetdrv(0); /* A: */
+  long rc = Pexec(0, path, "\012forcechild", NULL);
+  int after = Dgetdrv();
+  Dsetdrv(gem_drive);
+
+  assert_result("A GEMDRIVE program starts with another drive current", rc, 0);
+  assert_result("Pexec left the current drive alone", after, 0);
+}
+
 void test_eof_and_closed_handle_behavior() {
   int handle = Fcreate("EOFCLOSE.TXT", 0);
   Fwrite(handle, 5, "ABCDE");

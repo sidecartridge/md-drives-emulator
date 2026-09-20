@@ -101,6 +101,8 @@ int main(int argc, char *argv[]) {
     test_handles_closed_on_pterm();
   if (suite_selected("files") || suite_selected("fforce"))
     test_fforce_onto_gemdrive_file();
+  if (suite_selected("files") || suite_selected("pexec"))
+    test_pexec_from_another_current_drive();
 
   print("All tests completed.\r\n");
   press_key("Press a key.\r\n");

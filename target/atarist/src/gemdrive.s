@@ -246,6 +246,7 @@ reentry_gem_unlock  macro
                 	endm
 ; Check if the drive is the emulated one. If not, exec_old_handler the code
 ; otherwise continue with the code
+; Clobbers d0 and a0-a3: it sends commands, and send_sync saves d1-d7 only.
 detect_emulated_drive   macro
                         reentry_gem_lock
                         gemdos Dgetdrv, 2                    ; Call Dgetdrv() and get the drive number
@@ -1140,10 +1141,24 @@ _notlong:
     bra .exec_old_handler
 
 .Pexec:
-    move.l a0, d3                         ; Address of the buffer with the parameters
-    move.l a0, a4                         ; Address of the buffer with the parameters
+    ; Route by the program being started, not by the current drive: a program on
+    ; another drive started while ours is current is TOS's, and one of ours
+    ; started from another drive is ours. Only the modes that take a file name
+    ; are ours; the rest (go, create basepage) belong to TOS.
+    move.w 8(a0), d0                      ; Pexec mode
+    cmp.w #PE_LOAD_GO, d0
+    beq.s .pexec_by_name
+    cmp.w #PE_LOAD, d0
+    bne .exec_old_handler
+.pexec_by_name:
+    move.l a0, d3                         ; Address of the buffer with the parameters. Taken now:
+                                          ; the detect below may send commands, and send_sync
+                                          ; leaves a0-a3 pointing into the ROM3 command window
+    move.l 10(a0), a4                     ; the program's file name
 
     detect_emulated_drive_letter          ; If not, exec_old_handler the code. Otherwise continue with the code
+
+    move.l d3, a4                         ; Address of the buffer with the parameters
 
 
     send_write_sync CMD_PEXEC_CALL, 32    ; Send the command to the Sidecart. 32 bytes of buffer to send
