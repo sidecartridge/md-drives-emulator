@@ -143,7 +143,9 @@ void test_listing_with_attributes() {
     count++;
     result = Fsnext();
   }
-  assert_result("List visible files in ATTRTEST", count, 1);
+  // Both files: GEMDOS returns normal files whatever the attribute mask says,
+  // and the hidden bit only adds hidden ones. Our drive and Hatari's agree.
+  assert_result("List visible files in ATTRTEST", count, 2);
 
   result = Fsfirst("ATTRTEST\\*.*", 0x02);  // List hidden
   count = 0;
@@ -151,7 +153,7 @@ void test_listing_with_attributes() {
     count++;
     result = Fsnext();
   }
-  assert_result("List hidden files in ATTRTEST", count, 1);
+  assert_result("List hidden files in ATTRTEST", count, 2);
 
   cleanup_attrtest_folder();
 }
@@ -301,25 +303,92 @@ void test_multiple_dtas_independent_listing() {
   cleanup_multidta_folders();
 }
 
+// A search GEMDRIVE answered marks the DTA as its own, and that mark decides
+// who answers Fsnext. When the search ends the DTA keeps its contents: TOS 1.00
+// and 1.02 keep a pointer in it, and wiping it made a repeated Fsnext follow a
+// null one.
+#define GEMDRIVE_DTA_MARK 0xAA555344L
+
+// Which drive is answering: GEMDRIVE hands out handles from 16384, Hatari's
+// GEMDOS drive from 64, TOS from 6. The two checks below are about GEMDRIVE's
+// own promises (its mark, and keeping the caller's buffer), so they only mean
+// something when GEMDRIVE is the one answering.
+static int gemdrive_is_answering(void) {
+  int handle = Fcreate("WHOAMI.TMP", 0);
+  int ours = (handle >= 16384);
+  if (handle >= 0) {
+    Fclose(handle);
+    Fdelete("WHOAMI.TMP");
+  }
+  return ours;
+}
+void test_dta_end_of_search_and_marker(void) {
+  print("=== DTA at the end of a search ===\r\n");
+  static DTA own_dta;
+  void *old_dta = (void *)Fgetdta();
+  Fsetdta(&own_dta);
+  int result = Fsfirst("*.*", 0x10);
+  assert_result("Fsfirst on the GEMDRIVE drive", result, 0);
+  while (result == 0) result = Fsnext();
+  assert_result("The search ends with no more files", result, -49);
+  assert_result("A repeated Fsnext says the same", Fsnext(), -49);
+
+  const unsigned char *dta = (const unsigned char *)Fgetdta();
+  if (gemdrive_is_answering()) {
+    assert_result("The DTA is still marked as GEMDRIVE's",
+                  *(const long *)(dta + 2) == GEMDRIVE_DTA_MARK, TRUE);
+    assert_result("The DTA was not wiped", dta[30] != 0, TRUE);
+  } else {
+    print("[SKIP] Another drive answered: its mark and its end-of-search "
+          "behaviour are its own\r\n");
+  }
+
+  // A search TOS answers takes the same DTA over: it writes its own pattern
+  // where the mark was.
+  if (Fsfirst("A:\\*.*", 0x10) == 0) {
+    assert_result("A TOS search clears the mark",
+                  *(const long *)(dta + 2) != GEMDRIVE_DTA_MARK, TRUE);
+  } else {
+    print("[SKIP] No disk in A:, the TOS-search case did not run\r\n");
+  }
+  Fsetdta(old_dta);
+}
+
 int run_folder_listing_tests(int presskey) {
+  // The tests point the DTA at their own locals. Put it back after each one:
+  // a DTA left pointing into a dead stack frame is overwritten by whatever
+  // runs next, and the search state in it with it.
+  void *suite_dta = (void *)Fgetdta();
   print("=== GEMDOS Folder Listing Test Suite ===\n\r");
   test_directory_listing_wildcards();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_all_files();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_empty_folder();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_nonexistent_folder();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_by_extension();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_listing_with_attributes();
+  Fsetdta(suite_dta);
+  if (presskey) press_key("");
+  test_dta_end_of_search_and_marker();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_fsnext_after_end();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_includes_subdirs();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_multiple_dtas_independent_listing();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   print("=== End of GEMDOS Folder Listing Test Suite ===\n\r");
 }

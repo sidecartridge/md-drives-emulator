@@ -293,8 +293,14 @@ If you need a brand new suite:
 1. Add `tests/atarist/src/<name>_tests.c`.
 2. Add `tests/atarist/src/include/<name>_tests.h`.
 3. Include the header from `tests/atarist/src/main.c`.
-4. Call `run_<name>_tests(FALSE)` from `run()` in `tests/atarist/src/main.c`.
+4. Call `run_<name>_tests(FALSE)` from `run()` in `tests/atarist/src/main.c`, through
+   `run_suite()` so the runner restores what the suite borrows.
 5. Add the new object file to the compile/link lists in `tests/atarist/Makefile`.
+
+A test may change the DTA, the current drive and the current path: the runner takes a copy before
+each suite and puts it back after, and says in the log which suite left something behind. Do not
+rely on what the previous test left, and do not leave the DTA pointing at a local of your own -
+once that frame dies, a later `Fsnext` reads whatever overwrote it.
 
 ### Building the tests
 
@@ -327,6 +333,13 @@ The program prints:
 - `All tests completed.` when it reaches the end
 
 The main program currently calls all suites with `FALSE`, so the test run is automatic and does not pause between cases.
+
+### Running the tests unattended
+
+The same binary, copied to `AUTO\FSTESTS.PRG` in the GEMDRIVE folder with GEMDRIVE as C:, runs at
+boot. Started from the AUTO folder it does not wait for a key at the end: it asks the device to
+restart, so the device comes back in the setup menu with the card available over USB and `LOG.TXT`
+can be read from a computer. Build with file logging on for there to be a log.
 
 ## Project docs
 

@@ -842,7 +842,7 @@ static void __not_in_flash_func(menu)(void) {
              acsiDriveLetter);
     term_printString(acsiIdDriveLine);
   } else {
-    term_printString("No\n\n\n\n\n");
+    term_printString("No\n\n\n\n");
   }
 
   // Display GEMDRIVE options
@@ -2532,6 +2532,12 @@ void __not_in_flash_func(emul_start)() {
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
+
+        if (gemdrive_restartRequested()) {
+          DPRINTF("Restarting the device: the Atari asked for it\n");
+          sleep_ms(50);  // let the answer reach the Atari first
+          reset_device();
+        }
 
         if (pendingDriveACycle) {
           pendingDriveACycle = false;

@@ -43,6 +43,15 @@
 #define SHARED_VARIABLES_SIZE 7
 #define DTA_SIZE_ON_ST 44
 
+// Written into the DTA GEMDRIVE fills, at offset 2 (inside the area TOS uses
+// for the search pattern, where no file name can produce these bytes). It is
+// what tells an Fsnext apart from a TOS search: TOS keeps "directory position |
+// drive" at offset 12, which a TOS search on a drive with our number, at
+// position 0, would leave looking exactly like the drive number GEMDRIVE used
+// to write there.
+#define GEMDRIVE_DTA_MAGIC 0xAA555344u
+#define GEMDRIVE_DTA_MAGIC_OFFSET 2
+
 #define GEMDRIVE_MAX_FOLDER_LENGTH \
   128  // Max length of the folder name in GEMDOS
 
@@ -201,7 +210,18 @@ void gemdrive_setWriteFail(uint16_t chunks);
 #define GEMDRIVE_PEXEC_ENVSTR \
   (GEMDRIVE_PEXEC_CMDLINE + 4)  // pexec cmd line + 4 bytes
 
+// The basepage of the program Pexec is starting: CMD_SAVE_BASEPAGE fills the
+// whole 256-byte structure here, not just a pointer.
 #define GEMDRIVE_EXEC_PD (GEMDRIVE_PEXEC_ENVSTR + 4)  // pexec envstr + 4 bytes
+#define GEMDRIVE_EXEC_PD_SIZE 256
+#define GEMDRIVE_FFORCE_STATUS \
+  (GEMDRIVE_EXEC_PD + GEMDRIVE_EXEC_PD_SIZE)  // exec pd + 256 bytes
+// Standard handles (0-5) forced onto GEMDRIVE files with Fforce: per standard
+// handle, the GEMDRIVE handle (0 = not forced) and the basepage of the process
+// that forced it. The ST reads it to route Fread/Fwrite/Fseek on a standard
+// handle without asking the RP.
+#define GEMDRIVE_FORCED (GEMDRIVE_FFORCE_STATUS + 4)  // fforce status + 4 bytes
+#define GEMDRIVE_FORCED_COUNT 6
 
 #define GEMDRIVE_ASSERT_ALIGNED_2(offset) \
   _Static_assert(((offset) & 0x1u) == 0u, #offset " must stay 2-byte aligned")
@@ -313,6 +333,10 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
 
 #define GEMDRVEMUL_PEXEC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
+#define GEMDRVEMUL_FFORCE_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x46)  // Fforce of a standard handle
+#define GEMDRVEMUL_PTERM_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x4C)  // A process ends: close the files it owns
 #define GEMDRVEMUL_MALLOC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x48)  // Show the Malloc call
 
@@ -334,6 +358,8 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
   (APP_GEMDRVEMUL << 8 | 0x8A)  // Check if the DTA exists in the rp2040 memory
 #define GEMDRVEMUL_DTA_RELEASE_CALL \
   (APP_GEMDRVEMUL << 8 | 0x8B)  // Release the DTA from the rp2040 memory
+#define GEMDRVEMUL_RESTART_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x8C)  // Restart the device
 
 // Atari ST FATTRIB flag
 #define FATTRIB_INQUIRE 0x00
@@ -411,6 +437,9 @@ typedef struct {
 
 typedef struct __attribute__((aligned(4))) DTANode {
   uint32_t key;
+  // The basepage of the process that started this search, so that a search
+  // abandoned half way is released when that process ends, as its files are.
+  uint32_t owner;
   uint32_t attribs;
   TCHAR fname[14];
   DTA data;
@@ -431,6 +460,9 @@ typedef struct __attribute__((aligned(4))) DTANode {
 typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
   int fd;
+  // Basepage of the process that opened the file. TOS closes a process's
+  // files when it ends (Pterm0, Ptermres, Pterm), and so does GEMDRIVE.
+  uint32_t owner;
   uint32_t offset;
   bool seek_dirty;
   // Last write chunk accepted on this descriptor. The ST re-sends the same
@@ -500,6 +532,13 @@ typedef struct ExecHeader {
 
 // Function Prototypes
 void __not_in_flash_func(gemdrive_init)();
+/**
+ * @brief Whether the Atari asked the device to restart, with
+ *        GEMDRVEMUL_RESTART_CALL. The Atari gets its answer first, so the
+ *        restart happens from the main loop and not from inside the command.
+ */
+bool gemdrive_restartRequested(void);
+
 void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *protocol,
                                         uint16_t *payloadPtr);
 #endif  // GEMDRIVE_H

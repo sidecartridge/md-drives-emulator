@@ -33,7 +33,7 @@ BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
 PRE_RESET_WAIT		equ $FFFFF
 TRANSTABLE			equ $FA0800	; Translation table for high resolution
 GEMDRIVE			equ $FA1000 ; GEMDRIVE address
-FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
+FLOPPYEMUL 			equ $FA2A00 ; Floppy emulation address
 RTCEMUL 			equ $FA3400 ; RTC emulation address
 ACSIEMUL 			equ $FA5400 ; ACSI emulation address
 POOLFIX 			equ $FA4C00 ; GEMDOS pool fix (TOS 1.04 and 1.06)
@@ -382,6 +382,7 @@ cart_early_header:
 	even
 
 cart_early_init:
+	movem.l d0-d1/a0-a1, -(sp)			; TOS calls this during its own startup
 	cmp.l #ACSIEMUL_SVAR_DISABLED_VALUE, ACSIEMUL_SVAR_ENABLED_ADDR
 	beq.s .cart_early_done			; RP explicitly disabled ACSI — skip reservation
 	move.l $432.w, d0					; d0 = _membot
@@ -393,9 +394,17 @@ cart_early_init:
 	add.l #3, d0						; long-align pool base upward
 	and.l #$FFFFFFFC, d0
 	move.l d0, a0						; a0 = aligned pool base
+	move.l a0, a1						; clear the pool: what a previous session
+	move.w #((ACSIEMUL_BCB_POOL_BYTES/4)-1), d1	; left here is not ours to keep
+.cart_early_clear:
+	clr.l (a1)+
+	dbf d1, .cart_early_clear
 	move.l #ACSIEMUL_BCB_MAGIC, (a0)	; stamp magic at aligned pool base
+	move.l a0, 4(a0)					; and the base itself: a stamp left at another
+										; address by an earlier session cannot pass
 	add.l #ACSIEMUL_BCB_POOL_BYTES, d0	; d0 = aligned base + pool
 	move.l d0, $432.w					; _membot raised (POOL is 4-aligned, so d0 stays aligned)
 .cart_early_done:
+	movem.l (sp)+, d0-d1/a0-a1
 	rts
 end_cart_early_init:

@@ -247,13 +247,14 @@ static inline size_t __not_in_flash_func(hash)(uint32_t x) { return x; }
 
 // Insert function (allocates DTA node and prepends to list). Returns -2 on
 // duplicate key
-static int __not_in_flash_func(insertDTA)(uint32_t key) {
+static int __not_in_flash_func(insertDTA)(uint32_t key, uint32_t owner) {
   for (DTANode *p = dtaHead; p; p = p->next) {
     if (p->key == key) return -2;  // already exists
   }
   DTANode *n = dta_node_alloc();
   if (!n) return -1;
   n->key = key;
+  n->owner = owner;
   n->attribs = 0xFFFFFFFF;
   memset(&n->data, 0, sizeof n->data);
   n->dj = NULL;
@@ -291,6 +292,27 @@ static void __not_in_flash_func(releaseDTA)(uint32_t key) {
     prev = p;
     p = p->next;
   }
+}
+
+// Release every search a process left behind. Returns how many there were.
+static int __not_in_flash_func(releaseDTAsOfOwner)(uint32_t owner) {
+  int released = 0;
+  DTANode *p = dtaHead, *prev = NULL;
+  while (p) {
+    DTANode *next = p->next;
+    if (p->owner == owner) {
+      if (prev)
+        prev->next = next;
+      else
+        dtaHead = next;
+      dta_node_free(p);
+      released++;
+    } else {
+      prev = p;
+    }
+    p = next;
+  }
+  return released;
 }
 
 // Count the number of elements
@@ -389,6 +411,10 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
       data->d_date = fno->fdate;
       data->d_length = (uint32_t)fno->fsize;
 
+      WRITE_AND_SWAP_LONGWORD(
+          memory_address_dta,
+          GEMDRIVE_DTA_TRANSFER + GEMDRIVE_DTA_MAGIC_OFFSET,
+          GEMDRIVE_DTA_MAGIC);
       WRITE_AND_SWAP_LONGWORD(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 12,
                               data->d_offset_drive);
       WRITE_BYTE(memory_address_dta, GEMDRIVE_DTA_TRANSFER + 20, data->d_attrib);
@@ -436,28 +462,31 @@ static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
       }
     }
   } else {
-    // No DTA structure found, return error
+    // A search we do not know: it ended and its node is gone, so it has no
+    // more files. The ST keeps the caller's DTA as it is.
     DPRINTF("DTA not found at %x\n", dta_address);
-    WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND, 0xFFFF);
+    WRITE_WORD(memory_address_dta, GEMDRIVE_DTA_F_FOUND,
+               (uint16_t)GEMDOS_ENMFIL);
   }
 }
 
 static void __not_in_flash_func(addFile)(FileDescriptors **head,
                                          FileDescriptors *newFDescriptor,
                                          const char *fpath, FIL fobject,
-                                         uint16_t new_fd) {
+                                         uint16_t new_fd, uint32_t owner) {
   strncpy(newFDescriptor->fpath, fpath, sizeof(newFDescriptor->fpath) - 1);
   newFDescriptor->fpath[sizeof(newFDescriptor->fpath) - 1] =
       '\0';  // Ensure null-termination
   newFDescriptor->fobject = fobject;
   newFDescriptor->fd = new_fd;
+  newFDescriptor->owner = owner;
   newFDescriptor->offset = 0;
   newFDescriptor->seek_dirty = false;
   newFDescriptor->last_write_seq = 0;
   newFDescriptor->last_write_bytes = 0;
   newFDescriptor->next = *head;
   *head = newFDescriptor;
-  DPRINTF("File %s added with fd %i\n", fpath, new_fd);
+  DPRINTF("File %s added with fd %i, owner %x\n", fpath, new_fd, owner);
 }
 
 static inline FRESULT __not_in_flash_func(syncFileOffsetIfNeeded)(
@@ -476,7 +505,8 @@ static inline FRESULT __not_in_flash_func(syncFileOffsetIfNeeded)(
 
 static void __not_in_flash_func(printFDs)(FileDescriptors *head) {
   for (const FileDescriptors *cur = head; cur; cur = cur->next) {
-    DPRINTF("File descriptor: %u - Path: %s\n", cur->fd, cur->fpath);
+    DPRINTF("File descriptor: %u - Path: %s (owner %x)\n", cur->fd, cur->fpath,
+            cur->owner);
   }
 }
 
@@ -540,6 +570,23 @@ static uint16_t __not_in_flash_func(getFirstAvailableFD)(
     }
     if (!found) return candidate;
     candidate++;
+  }
+}
+
+// Forget every Fforce alias whose file handle is `fd` (0: all of them) or
+// whose forcing process is `owner` (0: any).
+static void __not_in_flash_func(unforceHandles)(uint32_t memory, uint16_t fd,
+                                                uint32_t owner) {
+  for (int std = 0; std < GEMDRIVE_FORCED_COUNT; std++) {
+    uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+    uint32_t forced = READ_AND_SWAP_LONGWORD(memory, offset);
+    uint32_t forcer = READ_AND_SWAP_LONGWORD(memory, offset + 4);
+    if (forced == 0) continue;
+    if ((fd == 0 || forced == fd) && (owner == 0 || forcer == owner)) {
+      WRITE_AND_SWAP_LONGWORD(memory, offset, 0);
+      WRITE_AND_SWAP_LONGWORD(memory, offset + 4, 0);
+      DPRINTF("Fforce: standard handle %d released\n", std);
+    }
   }
 }
 
@@ -718,6 +765,11 @@ static uint32_t memoryFirmwareCode = 0;
 // distinct chunks ever share one. Bumped only when a chunk is accepted.
 // Starts at 1: 0 means "no chunk accepted yet" in the per-fd memo.
 static uint32_t writeChunkSeq = 1;
+// Set by GEMDRVEMUL_RESTART_CALL; the main loop restarts the device once the
+// Atari has its answer.
+static volatile bool restartRequested = false;
+
+bool gemdrive_restartRequested(void) { return restartRequested; }
 
 // GEMDOS code for a FatFs failure, when the failure is about resources rather
 // than the file: running out of lock entries or of heap says nothing about
@@ -869,6 +921,9 @@ void __not_in_flash_func(gemdrive_init)() {
 
   uint16_t buffType = 0;  // 0: Diskbuffer, 1: Stack
 
+  // Outside the firmware image the window is not initialized.
+  unforceHandles(memorySharedAddress, 0, 0);
+
   SET_SHARED_VAR(GEMDRIVE_SHARED_VARIABLE_FIRST_FILE_DESCRIPTOR,
                  FIRST_FILE_DESCRIPTOR, memorySharedAddress,
                  GEMDRIVE_SHARED_VARIABLES_OFFSET);
@@ -966,6 +1021,13 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       // Reset the shared variables
       cleanDTAHashTable();
       cleanFileDescriptors(&fdescriptors);
+      unforceHandles(memorySharedAddress, 0, 0);
+      // The current folder of the emulated drive is ours, and it outlives an
+      // Atari reset: without this a boot would resolve relative names against
+      // wherever the last session happened to be. TOS starts every drive at
+      // its root.
+      dpathStr[0] = '\\';
+      dpathStr[1] = '\0';
       // Set the continue to continue booting
       SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
       break;
@@ -1014,6 +1076,14 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       // Get the drive letter
       uint16_t dgetdriveVal = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
       DPRINTF("Dgetdrive value: %x\n", dgetdriveVal);
+      break;
+    }
+    case GEMDRVEMUL_RESTART_CALL: {
+      // The Atari asks the device to restart, so it comes back in the setup
+      // menu with the card on USB. The restart itself happens in the main
+      // loop: the answer to this command has to reach the Atari first.
+      DPRINTF("Restart asked for from the Atari\n");
+      restartRequested = true;
       break;
     }
     case GEMDRVEMUL_REENTRY_LOCK: {
@@ -1234,24 +1304,13 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     }
     case GEMDRVEMUL_FSETDTA_CALL: {
       uint32_t ndta = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d3 register
-      DPRINTF("Setting DTA: %x\n", ndta);
-      int err = insertDTA(ndta);
-      switch (err) {
-        case 0:
-          DPRINTF("FSETDTA Added ndta: %x.\n", ndta);
-          break;
-        case -1:
-          DPRINTF("FSETDTA Error: DTA table full. Cannot add DTA at %x.\n",
-                  ndta);
-          break;
-        case -2:
-          DPRINTF("FSETDTA Error: DTA at %x already exists. Cannot add.\n",
-                  ndta);
-          break;
-        default:
-          DPRINTF("FSETDTA Error: Unknown error adding DTA at %x.\n", ndta);
-          break;
-      }
+      // Just note where the caller wants its results. The table holds
+      // searches, and Fsfirst is what starts one: it releases whatever is at
+      // this address and inserts a fresh node. Adding a node here instead
+      // logged an error every time a program pointed the DTA at an address it
+      // had used before, which is what programs do, and left a node behind for
+      // every address that never began a search at all.
+      DPRINTF("Fsetdta at %x. Searches under way: %d\n", ndta, countDTA());
       break;
     }
     case GEMDRVEMUL_DTA_EXIST_CALL: {
@@ -1280,7 +1339,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     case GEMDRVEMUL_FSFIRST_CALL: {
       uint32_t ndta = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);  // d3 register
       uint32_t attribs = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d4
-      uint32_t fspecSTBufAddr =
+      // d5 used to carry the ST address of the file specification, which only
+      // ever reached a trace: the string itself comes in the buffer. It says
+      // who is searching instead, so the search can be released when that
+      // process ends.
+      uint32_t searchOwner =
           TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // Skip d6 register
 
@@ -1322,11 +1385,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         char attribsStr[7] = "";
         sdcard_getAttribsSTStr(attribsStr, attribs);
 
-        DPRINTF(
-            "FSFIRST params ndta: %x, attribs: %s, fspecSTBufAddr: %x, "
-            "fspecSTBufAddr string: "
-            "%s\n",
-            ndta, attribsStr, fspecSTBufAddr, fspecString);
+        DPRINTF("FSFIRST params ndta: %x, attribs: %s, owner: %x, fspec: %s\n",
+                ndta, attribsStr, searchOwner, fspecString);
       }
 
       // Remove all the trailing spaces in the pattern
@@ -1335,21 +1395,17 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       releaseDTA(ndta);  // Just in case, release the DTA if it exists
       DTANode *currentDTANode = NULL;
       DPRINTF("Setting DTA: %x\n", ndta);
-      int err = insertDTA(ndta);
+      int err = insertDTA(ndta, searchOwner);
       switch (err) {
         case 0:
-          DPRINTF("FSFIRST Added ndta: %x.\n", ndta);
+          DPRINTF("Fsfirst at %x. Searches under way: %d\n", ndta, countDTA());
           break;
         case -1:
-          DPRINTF(
-              "FSFIRST Error: Out of memory creating DTA node at %x.\n", ndta);
-          break;
-        case -2:
-          DPRINTF("FSFIRST Error: DTA at %x already exists. Cannot add.\n",
-                  ndta);
+          DPRINTF("ERROR: out of memory starting the search at %x\n", ndta);
           break;
         default:
-          DPRINTF("FSFIRST Error: Unknown error adding DTA at %x.\n", ndta);
+          // The release above means the address cannot be taken.
+          DPRINTF("ERROR: could not start the search at %x (%d)\n", ndta, err);
           break;
       }
       if (err != 0) {
@@ -1574,8 +1630,11 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           nullifyDTA(memorySharedAddress);
         }
       } else {
-        DPRINTF("FsFirst not initalized\n");
-        int16_t errorCode = GEMDOS_EINTRN;
+        // The search ended and its node is gone, or we never had one: either
+        // way this DTA has no more files. The ST keeps the caller's DTA, so a
+        // program that keeps calling Fsnext gets the same answer.
+        DPRINTF("Fsnext on a search that is over\n");
+        int16_t errorCode = GEMDOS_ENMFIL;
         DPRINTF("DTA at %x showing error code: %x\n", ndta, errorCode);
         WRITE_WORD(memorySharedAddress, GEMDRIVE_DTA_F_FOUND, errorCode);
         if (ndtaExists) {
@@ -1590,6 +1649,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
     case GEMDRVEMUL_FOPEN_CALL: {
       uint16_t fopenMode = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d3
+      uint32_t fopenOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d4
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);  // skip d5
 
@@ -1640,7 +1700,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
             WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FOPEN_HANDLE,
                                     GEMDOS_EINTRN);
           } else {
-            addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount);
+            addFile(&fdescriptors, newFDescriptor, tmpFilepath, fobj, fdCount,
+                    fopenOwner);
 
             DPRINTF("File opened with file descriptor: %d\n", fdCount);
             // Return the file descriptor
@@ -1672,10 +1733,65 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         } else {
           // Remove the file from the list of open files
           deleteFileByFD(&fdescriptors, fcloseFD);
+          unforceHandles(memorySharedAddress, fcloseFD, 0);
           DPRINTF("File closed\n");
         }
       }
       WRITE_WORD(memorySharedAddress, GEMDRIVE_FCLOSE_STATUS, exitCode);
+      break;
+    }
+    case GEMDRVEMUL_PTERM_CALL: {
+      // TOS closes every file of an ending process; close its GEMDRIVE files
+      // too, or each keeps a FatFs FIL and lock entry until the next reset.
+      uint32_t ptermOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
+      int closed = 0;
+      FileDescriptors **link = &fdescriptors;
+      while (*link != NULL) {
+        FileDescriptors *cur = *link;
+        if (cur->owner == ptermOwner) {
+          f_close(&cur->fobject);
+          *link = cur->next;
+          free(cur);
+          closed++;
+        } else {
+          link = &cur->next;
+        }
+      }
+      unforceHandles(memorySharedAddress, 0, ptermOwner);
+      // A search the process walked to its end is already gone; one it
+      // abandoned is not, and it holds an open directory. It ends with its
+      // process, as the files do.
+      int searches = releaseDTAsOfOwner(ptermOwner);
+      DPRINTF("Pterm of basepage %x: %d file(s) closed, %d search(es) ended\n",
+              ptermOwner, closed, searches);
+      break;
+    }
+    case GEMDRVEMUL_FFORCE_CALL: {
+      // Fforce(std, handle): make a standard handle an alias of a GEMDRIVE
+      // file (handle 0: drop the alias). TOS cannot, it refuses any handle it
+      // did not allocate.
+      uint16_t std = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t handle = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr) & 0xFFFFu;
+      uint32_t forcer = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
+      int32_t status = GEMDOS_EOK;
+      if (std >= GEMDRIVE_FORCED_COUNT) {
+        status = GEMDOS_EIHNDL;
+      } else if (handle == 0) {
+        uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset, 0);
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset + 4, 0);
+        DPRINTF("Fforce: standard handle %u released\n", std);
+      } else if (getFileByFD(fdescriptors, (uint16_t)handle) == NULL) {
+        status = GEMDOS_EIHNDL;
+      } else {
+        uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset, handle);
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset + 4, forcer);
+        DPRINTF("Fforce: standard handle %u -> %lu (basepage %lx)\n", std,
+                (unsigned long)handle, (unsigned long)forcer);
+      }
+      WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FFORCE_STATUS,
+                              (uint32_t)status);
       break;
     }
 
@@ -1683,6 +1799,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       uint16_t fCreateMode =
           TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);  // d3 register
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d3
+      uint32_t fCreateOwner = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d4
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);       // skip d5
 
@@ -1719,7 +1836,8 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           }
           errorCode = GEMDOS_EINTRN;
         } else {
-          addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter);
+          addFile(&fdescriptors, newFDescriptor, tmpFilepath, fObj, fdCounter,
+                  fCreateOwner);
 
           // MISSING ATTRIBUTE MODIFICATION
           char fattrSTStr[7] = "";
@@ -1884,7 +2002,12 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
 
       } else {
         uint32_t fattrST = sdcard_attribsFAT2ST(fno.fattrib);
-        errorCode = fattrST;
+        // Inquire answers with what the file has. Set answers with what it was
+        // asked to set: that is what TOS's own Fattrib returns (`xchmod` ends
+        // with `return mod & 0xff`), and what Hatari's GEMDOS drive returns.
+        // The Compendium says "the file's old attributes", and contradicts
+        // itself in the same entry; the ROM and Hatari agree, so they win.
+        errorCode = (fattrFlag == FATTRIB_INQUIRE) ? fattrST : fattrNew;
         char fattrSTStr[7] = "";
         sdcard_getAttribsSTStr(fattrSTStr, fattrST);
         if (fattrFlag == FATTRIB_INQUIRE) {
@@ -2353,7 +2476,10 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       if (pexec_pd == NULL) {
         pexec_pd = (PD *)(memorySharedAddress + GEMDRIVE_EXEC_PD);
       }
-      memcpy(pexec_pd, origin, sizeof(PD));
+      // The ST sends the basepage, 256 bytes: sizeof(PD) is larger here (its
+      // p_curdir is a word array), and copying that much read past the payload
+      // and wrote past the buffer, over whatever the window holds next.
+      memcpy(pexec_pd, origin, GEMDRIVE_EXEC_PD_SIZE);
       DPRINTF("pexec_pd->p_lowtpa: %x\n", SWAP_LONGWORD(pexec_pd->p_lowtpa));
       DPRINTF("pexec_pd->p_hitpa: %x\n", SWAP_LONGWORD(pexec_pd->p_hitpa));
       DPRINTF("pexec_pd->p_tbase: %x\n", SWAP_LONGWORD(pexec_pd->p_tbase));

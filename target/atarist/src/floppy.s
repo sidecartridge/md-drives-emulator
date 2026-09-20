@@ -86,7 +86,7 @@ _longframe      equ $59e    ; Address of the long frame flag. If this value is 0
     include inc/sidecart_macros.s
 
     
-    org $FA2800         ; Start of the code. First 4KB bytes are reserved for the terminal.
+    org $FA2A00         ; Start of the code. First 4KB bytes are reserved for the terminal.
 
 floppy_start:
     tst.l (FLOPPY_SHARED_VARIABLES + (SVAR_ENABLED * 4))

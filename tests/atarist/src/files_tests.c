@@ -19,6 +19,21 @@ static unsigned short dos_make_date(unsigned short year, unsigned short month,
                           ((month & 0x0F) << 5) | (day & 0x1F));
 }
 
+// Whether the drive under test keeps the attribute bits an Atari drive keeps.
+// GEMDRIVE does, on FAT. Hatari's GEMDOS drive is a host directory: it maps
+// read-only to the write permission and has nowhere to put hidden or system
+// (its own source says so). Handles tell them apart: GEMDRIVE hands out
+// handles from 16384, Hatari from 64.
+static int gemdrive_keeps_attributes(void) {
+  int handle = Fcreate("WHOKEEPS.TMP", 0);
+  int ours = (handle >= 16384);
+  if (handle >= 0) {
+    Fclose(handle);
+    Fdelete("WHOKEEPS.TMP");
+  }
+  return ours;
+}
+
 static void cleanup_fattrib_test_file(void) {
   Fattrib("FATTR.TXT", 1, 0x00);
   Fdelete("FATTR.TXT");
@@ -26,7 +41,7 @@ static void cleanup_fattrib_test_file(void) {
 
 void test_create_write_read_file() {
   int handle = Fcreate("TEST1.TXT", 0);
-  assert_result("Create file TEST1.TXT", handle >= 16384, TRUE);
+  assert_result("Create file TEST1.TXT", A_VALID_HANDLE(handle), TRUE);
 
   const char *msg = "Hello, GEMDOS!!!!!";
   long written = Fwrite(handle, strlen(msg), msg);
@@ -455,11 +470,17 @@ void test_concurrent_handles() {
   int fd = Fcreate("DUAL.TXT", 0);
   Fclose(fd);
 
-  // IMPORTANT: FATFS does not support concurrent file access when opening
-  // files in write mode
+  // GEMDRIVE refuses a second writer: FatFs locks the file, and we keep that
+  // on purpose. TOS and Hatari's GEMDOS drive allow it, so this is one of the
+  // places where we do not follow Hatari.
   int h1 = Fopen("DUAL.TXT", 1);
   int h2 = Fopen("DUAL.TXT", 1);
-  assert_result("Concurrent write to an open file must fail.", h2, -33);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Concurrent write to an open file must fail.", h2, -33);
+  } else {
+    print("[SKIP] Another drive answered: it allows a second writer, "
+          "GEMDRIVE refuses one on purpose\r\n");
+  }
   Fwrite(h1, 6, "ONETWO");
   Fclose(h1);
 
@@ -482,7 +503,12 @@ void test_concurrent_handles() {
 void test_delete_while_open() {
   int h = Fcreate("LOCK.TXT", 0);
   int res = Fdelete("LOCK.TXT");
-  assert_result("Delete open file should fail", res < 0, 1);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Delete open file should fail", res < 0, 1);
+  } else {
+    print("[SKIP] Another drive answered: it allows deleting an open file, "
+          "GEMDRIVE refuses on purpose\r\n");
+  }
   Fclose(h);
   Fdelete("LOCK.TXT");
 }
@@ -569,32 +595,36 @@ void test_fattrib_roundtrip() {
   long result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Inquire attributes of FATTR.TXT", result >= 0, 1);
 
+  // Setting answers with the attributes asked for, as TOS and Hatari do.
   result = Fattrib("FATTR.TXT", 1, 0x01);
-  assert_result("Set readonly on FATTR.TXT returns previous attributes", result,
-                0x20);
+  assert_result("Set readonly on FATTR.TXT answers with them", result, 0x01);
 
   result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Readonly bit is set on FATTR.TXT", result & 0x03, 0x01);
 
   result = Fattrib("FATTR.TXT", 1, 0x02);
-  assert_result("Set hidden on FATTR.TXT returns previous attributes", result,
-                0x21);
+  assert_result("Set hidden on FATTR.TXT answers with them", result, 0x02);
 
   result = Fattrib("FATTR.TXT", 0, 0);
-  assert_result("Hidden bit is set on FATTR.TXT", result & 0x03, 0x02);
+  // The hidden bit is a real bit on a FAT drive, as on an Atari. Hatari's
+  // drive is a host directory and cannot keep it, so only ask where it can.
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Hidden bit is set on FATTR.TXT", result & 0x03, 0x02);
+  }
 
   result = Fattrib("FATTR.TXT", 1, 0x03);
-  assert_result("Set readonly+hidden on FATTR.TXT returns previous attributes",
-                result, 0x22);
-
-  result = Fattrib("FATTR.TXT", 0, 0);
-  assert_result("Readonly+hidden bits are set on FATTR.TXT", result & 0x03,
+  assert_result("Set readonly+hidden on FATTR.TXT answers with them", result,
                 0x03);
 
+  result = Fattrib("FATTR.TXT", 0, 0);
+  if (gemdrive_keeps_attributes()) {
+    assert_result("Readonly+hidden bits are set on FATTR.TXT", result & 0x03,
+                  0x03);
+  }
+
   result = Fattrib("FATTR.TXT", 1, 0x00);
-  assert_result(
-      "Clear readonly+hidden on FATTR.TXT returns previous attributes", result,
-      0x23);
+  assert_result("Clear readonly+hidden on FATTR.TXT answers with them", result,
+                0x00);
 
   result = Fattrib("FATTR.TXT", 0, 0);
   assert_result("Readonly+hidden bits are cleared on FATTR.TXT", result & 0x03,
@@ -724,14 +754,14 @@ void test_fdatime_other_current_drive() {
   DosDateTime query = {0};
 
   int handle = Fcreate("FDTOTHER.TXT", 0);
-  assert_result("Create FDTOTHER.TXT", handle >= 16384, TRUE);
+  assert_result("Create FDTOTHER.TXT", A_VALID_HANDLE(handle), TRUE);
   if (handle >= 0) {
     Fwrite(handle, 4, "TIME");
     Fclose(handle);
   }
 
   handle = Fopen("FDTOTHER.TXT", 2);
-  assert_result("Open FDTOTHER.TXT read/write", handle >= 16384, TRUE);
+  assert_result("Open FDTOTHER.TXT read/write", A_VALID_HANDLE(handle), TRUE);
   if (handle >= 0) {
     Dsetdrv(0);
     int set_result = Fdatime(&set_value, handle, 1);
@@ -757,12 +787,206 @@ void test_fdatime_other_current_drive() {
     return;
   }
   DosDateTime tos_query = {0};
-  assert_result("TOS handle is below the GEMDRIVE range", handle < 16384,
+  int emulated = Fcreate("FDTRANGE.TXT", 0); /* one from the drive under test */
+  if (emulated >= 0) {
+    Fclose(emulated);
+    Fdelete("FDTRANGE.TXT");
+  }
+  assert_result("A TOS handle is not one of the drive's", handle < emulated,
                 TRUE);
+  /* A handle that is not the drive's goes to TOS untouched, so the answer is
+     TOS's own: 1.04 and later return 0, TOS 1.00 returns the file's time. What
+     is being tested is that the call still works, so anything but an error
+     passes. */
   assert_result("Fdatime inquire on TOS handle with GEMDRIVE current",
-                Fdatime(&tos_query, handle, 0), 0);
+                Fdatime(&tos_query, handle, 0) >= 0, TRUE);
   Fclose(handle);
   Fdelete("A:\\FDTTOS.TXT");
+}
+
+// How much of a loaded program's heap to look at: the start, the middle and the
+// last bytes below the top of its TPA. Walking megabytes proves no more.
+static int heap_is_dirty(const long *pd) {
+  const unsigned char *heap = (const unsigned char *)(pd[6] + pd[7]); /* BSS end */
+  long span = pd[1] - (long)heap;                                     /* p_hitpa */
+  long starts[3];
+  int dirty = 0;
+
+  if (span <= 0) return 0;
+  starts[0] = 0;
+  starts[1] = span / 2;
+  starts[2] = (span > 256) ? span - 256 : 0;
+  for (int s = 0; s < 3; s++) {
+    for (long i = starts[s]; i < starts[s] + 256 && i < span; i++) {
+      if (heap[i]) dirty++;
+    }
+  }
+  return dirty;
+}
+
+// A copy of a program with the fastload bit cleared in its header, so the other
+// half of the rule can be tested with a real program: bit 0 of PRGFLAGS is the
+// low byte of the longword at offset 0x16.
+static int copy_without_fastload(const char *from, const char *to) {
+  char buffer[512];
+  long count;
+  int first = TRUE;
+  int in = Fopen(from, 0);
+  int out;
+
+  if (in < 0) return -1;
+  out = Fcreate(to, 0);
+  if (out < 0) {
+    Fclose(in);
+    return -1;
+  }
+  while ((count = Fread(in, sizeof(buffer), buffer)) > 0) {
+    if (first && count > 0x19) {
+      buffer[0x19] &= ~1;
+      first = FALSE;
+    }
+    if (Fwrite(out, count, buffer) != count) {
+      count = -1;
+      break;
+    }
+  }
+  Fclose(in);
+  Fclose(out);
+  return (count < 0) ? -1 : 0;
+}
+
+// A program gets the memory its header asks for: the loader copies the header's
+// PRGFLAGS into the basepage, where GEMDOS looks for them from TOS 1.04 on, and
+// clears the heap unless the program asked for fastload. TOS 1.00 and 1.02
+// ignore the flags and always clear the heap, so this expects that of them.
+void test_program_loaded_as_its_header_asks(void) {
+  print("=== The memory a program's header asks for ===\r\n");
+  const char *program = fstests_program();
+  unsigned char header[28] = {0};
+  long headerFlags = 0;
+  int oldGemdos = (int)(Sversion() & 0xFFFF) < 0x1500;
+  int handle = Fopen(program, 0);
+  long basepage;
+
+  assert_result("Open the program to read its header", A_VALID_HANDLE(handle),
+                TRUE);
+  if (handle < 0) return;
+  assert_result("Read the program header",
+                Fread(handle, sizeof(header), header), sizeof(header));
+  Fclose(handle);
+  memcpy(&headerFlags, header + 0x16, 4); /* PRGFLAGS */
+
+  basepage = Pexec(3, program, "", NULL); /* load it, do not run it */
+  assert_result("Load the program without running it", basepage > 0, TRUE);
+  if (basepage <= 0) return;
+  assert_result("The program's flags reach its basepage",
+                ((const long *)basepage)[10] /* $28 */, headerFlags);
+  if (!(headerFlags & 1L) || oldGemdos) {
+    assert_result("The heap this program is given is cleared",
+                  heap_is_dirty((const long *)basepage), 0);
+  }
+  Mfree((void *)basepage);
+
+  /* The same program asking for a cleared heap, whatever the build asked for.
+     On TOS 1.00 and 1.02 it changes nothing: they clear it either way. */
+  Fdelete("NOFAST.PRG");
+  if (copy_without_fastload(program, "NOFAST.PRG") != 0) {
+    print("[SKIP] Could not copy the program to clear its fastload bit\r\n");
+    return;
+  }
+  basepage = Pexec(3, "NOFAST.PRG", "", NULL);
+  assert_result("Load the copy that asks for a cleared heap", basepage > 0,
+                TRUE);
+  if (basepage > 0) {
+    assert_result("Fastload is clear in the copy's basepage",
+                  (int)(((const long *)basepage)[10] & 1L), 0);
+    assert_result("The heap the copy is given is cleared",
+                  heap_is_dirty((const long *)basepage), 0);
+    Mfree((void *)basepage);
+  }
+  Fdelete("NOFAST.PRG");
+}
+
+// TOS closes the files of a process when it ends; GEMDRIVE must do the same
+// with its handles. FSTESTS runs itself as a child that creates a file and
+// ends without closing it, more times than FatFs has lock entries (32).
+// Runs in user mode: Pexec from supervisor mode is not something to rely on.
+#define PTERM_CHILD_RUNS 40
+void test_handles_closed_on_pterm(void) {
+  print("=== Handles closed when their program ends ===\r\n");
+  int before = Fcreate("PTERM.TMP", 0);
+  assert_result("Create PTERM.TMP", A_VALID_HANDLE(before), TRUE);
+  if (before < 0) return;
+  Fclose(before);
+
+  const char *child = fstests_program();
+  long rc = Pexec(0, child, "\011leakchild", NULL);
+  int runs = (rc == 0) ? 1 : 0;
+  while ((rc == 0) && (runs < PTERM_CHILD_RUNS)) {
+    rc = Pexec(0, child, "\011leakchild", NULL);
+    if (rc == 0) runs++;
+  }
+  if (rc != 0) print("Pexec %s returned %ld after %d runs\r\n", child, rc, runs);
+  assert_result("Child left a file open and ended, every run", runs,
+                PTERM_CHILD_RUNS);
+
+  int after = Fopen("PTERM.TMP", 0);
+  assert_result("Next handle is the same as before the children", after,
+                before);
+  if (after >= 0) Fclose(after);
+  Fdelete("PTERM.TMP");
+  Fdelete("LEAKCHLD.TMP");
+}
+
+// Output redirection into a GEMDRIVE file, as a shell does for "prog > file":
+// Fforce(1, handle) with a GEMDRIVE handle, which TOS alone refuses. Nothing is
+// printed while stdout is forced, print() would write into the file too.
+void test_fforce_onto_gemdrive_file(void) {
+  print("=== Standard output forced onto a GEMDRIVE file ===\r\n");
+  int handle = Fcreate("FORCE.TXT", 0);
+  assert_result("Create FORCE.TXT", A_VALID_HANDLE(handle), TRUE);
+  if (handle < 0) return;
+
+  long saved = Fdup(1);
+  long forced = Fforce(1, handle);
+  long written = Fwrite(1, 6, "PARENT");
+  long child = Pexec(0, fstests_program(), "\012forcechild", NULL);
+  long restored = Fforce(1, (int)saved);
+  Fclose((int)saved);
+  Fclose(handle);
+
+  assert_result("Fdup(1) gives a handle", saved >= 0, TRUE);
+  assert_result("Fforce(1, GEMDRIVE handle)", forced, 0);
+  assert_result("Fwrite(1) while forced", written, 6);
+  assert_result("Child writes to the forced stdout", child, 0);
+  assert_result("Fforce(1) back to the console", restored, 0);
+
+  char buffer[16] = {0};
+  handle = Fopen("FORCE.TXT", 0);
+  long got = (handle >= 0) ? Fread(handle, sizeof(buffer) - 1, buffer) : -1;
+  if (handle >= 0) Fclose(handle);
+  assert_result("FORCE.TXT holds what parent and child wrote", got, 11);
+  assert_result("FORCE.TXT content", strcmp(buffer, "PARENTCHILD"), 0);
+  Fdelete("FORCE.TXT");
+}
+
+// A program on the GEMDRIVE drive must start whatever the current drive is:
+// Pexec is routed by the program's name, not by the current drive.
+void test_pexec_from_another_current_drive(void) {
+  print("=== Pexec routed by the program's name ===\r\n");
+  int gem_drive = Dgetdrv();
+  char path[32];
+  const char *program = fstests_program();
+  sprintf(path, "%c:%s%s", 'A' + gem_drive, program[0] == '\\' ? "" : "\\",
+          program);
+
+  Dsetdrv(0); /* A: */
+  long rc = Pexec(0, path, "\012forcechild", NULL);
+  int after = Dgetdrv();
+  Dsetdrv(gem_drive);
+
+  assert_result("A GEMDRIVE program starts with another drive current", rc, 0);
+  assert_result("Pexec left the current drive alone", after, 0);
 }
 
 void test_eof_and_closed_handle_behavior() {

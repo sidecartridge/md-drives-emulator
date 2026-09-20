@@ -16,6 +16,7 @@ typedef struct {
   char d_fname[14];        /* file name: filename.typ 30-43 */
 } DTA;
 
+void test_dta_end_of_search_and_marker(void);
 int run_folder_listing_tests(int presskey);
 
 #endif  // FOLDER_TESTS_H

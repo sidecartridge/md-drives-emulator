@@ -86,6 +86,8 @@ CMD_FDATETIME_CALL      equ ($57 + APP_GEMDRVEMUL)           ; Command code to s
 
 CMD_MALLOC_CALL         equ ($48 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the malloc() command executed
 CMD_PEXEC_CALL          equ ($4B + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed
+CMD_FFORCE_CALL         equ ($46 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 an Fforce() onto a GEMDRIVE handle
+CMD_PTERM_CALL          equ ($4C + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 that a process terminates (Pterm0, Ptermres, Pterm)
 
 ; This commands are not direct GEMDOS calls, but they are used to send data to the Sidecart
 CMD_READ_BUFF_CALL      equ ($81 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the read the buffer
@@ -148,6 +150,10 @@ GEMDRVEMUL_PEXEC_FNAME      equ (GEMDRVEMUL_PEXEC_STACK_ADDR + 4)   ; pexec mode
 GEMDRVEMUL_PEXEC_CMDLINE    equ (GEMDRVEMUL_PEXEC_FNAME + 4)        ; pexec fname + 4 bytes
 GEMDRVEMUL_PEXEC_ENVSTR     equ (GEMDRVEMUL_PEXEC_CMDLINE + 4)      ; pexec cmd line + 4 bytes
 GEMDRVEMUL_EXEC_PD          equ (GEMDRVEMUL_PEXEC_ENVSTR + 4)       ; exec PD + 4 bytes
+GEMDRVEMUL_EXEC_PD_SIZE     equ 256                                 ; CMD_SAVE_BASEPAGE fills the whole basepage here
+GEMDRVEMUL_FFORCE_STATUS    equ (GEMDRVEMUL_EXEC_PD + GEMDRVEMUL_EXEC_PD_SIZE)
+GEMDRVEMUL_FORCED           equ (GEMDRVEMUL_FFORCE_STATUS + 4)      ; per standard handle: GEMDRIVE handle.l (0 = none), forcing basepage.l
+GEMDRIVE_STD_HANDLES        equ 6                                   ; standard handles 0-5
 
 GEMDRVEMUL_SHARED_VARIABLES equ (RANDOM_TOKEN_SEED_ADDR + 4)        ; RANDOM_TOKEN_SEED_ADDR + 4 bytes
 
@@ -176,6 +182,12 @@ GEMDOS_EIO_WRITE        equ -92 ; GEMDOS I/O write error
 GEMDOS_EIO_READ         equ -93 ; GEMDOS I/O read error
 
 DTA_SIZE                equ     44
+; Written by the RP into every DTA GEMDRIVE fills, at an offset TOS uses for the
+; search pattern: it says the search is ours. The drive number TOS keeps at
+; offset 12 cannot say it, a TOS search on a drive with our number at position 0
+; leaves the same value there.
+DTA_MAGIC               equ     $AA555344
+DTA_MAGIC_OFFSET        equ     2
 
 
 ; Macros
@@ -234,6 +246,7 @@ reentry_gem_unlock  macro
                 	endm
 ; Check if the drive is the emulated one. If not, exec_old_handler the code
 ; otherwise continue with the code
+; Clobbers d0 and a0-a3: it sends commands, and send_sync saves d1-d7 only.
 detect_emulated_drive   macro
                         reentry_gem_lock
                         gemdos Dgetdrv, 2                    ; Call Dgetdrv() and get the drive number
@@ -423,16 +436,28 @@ _notlong:
 ;
 ; Trap #1 handler goes here
 ;
+; Look the call up before saving any register, with scratch registers only
+; (d0, a1; d1 holds the MegaSTE speed). Calls GEMDRIVE does not handle go on
+; to TOS with nothing pushed: TOS 1.04 starts GEM on a 132-byte stack and
+; calls GEMDOS from it (Super, Mshrink, Malloc) with about 110 bytes left
+; above the AES variables that hold the resolution. Saving 48 bytes of
+; registers there left GEM in low resolution and damaged GEMDOS globals.
+	move.w 6(a0), d0                     ; get GEMDOS opcode number
+	cmp.w #$57, d0                       ; Highest opcode handled in the table
+	bhi.s .exec_old_handler_unsaved
+	add.w d0, d0                         ; Multiply opcode by 4
+	add.w d0, d0
+	lea .gemdos_dispatch_table(pc), a1
+	movea.l (a1,d0.w), a1
+	cmpa.l #.exec_old_handler, a1
+	beq.s .exec_old_handler_unsaved
 	save_regs
-
-	move.w 6(a0),d3                      ; get GEMDOS opcode number
-	and.l #$FFFF, d3                     ; Normalize opcode for indexed lookup
-	cmp.w #$57, d3                       ; Highest opcode handled in the table
-	bhi .exec_old_handler
-	add.w d3, d3                         ; Multiply opcode by 4
-	add.w d3, d3
-	movea.l .gemdos_dispatch_table(pc,d3.w), a1
 	jmp (a1)
+
+.exec_old_handler_unsaved:
+	restore_cpu_cache
+	move.l old_handler,-(sp)            ; Fake a return
+	rts                                 ; to old code.
 
 ;.show_vector_calls:
 ;    ; Trace the not implemented GEMDOS call
@@ -446,7 +471,7 @@ _notlong:
 
 	even
 .gemdos_dispatch_table:
-	dc.l .exec_old_handler ; 0x00
+	dc.l .Pterm            ; 0x00
 	dc.l .exec_old_handler ; 0x01
 	dc.l .exec_old_handler ; 0x02
 	dc.l .exec_old_handler ; 0x03
@@ -495,7 +520,7 @@ _notlong:
 	dc.l .exec_old_handler ; 0x2E
 	dc.l .exec_old_handler ; 0x2F
 	dc.l .exec_old_handler ; 0x30
-	dc.l .exec_old_handler ; 0x31
+	dc.l .Pterm            ; 0x31
 	dc.l .exec_old_handler ; 0x32
 	dc.l .exec_old_handler ; 0x33
 	dc.l .exec_old_handler ; 0x34
@@ -516,13 +541,13 @@ _notlong:
 	dc.l .Fattrib          ; 0x43
 	dc.l .exec_old_handler ; 0x44
 	dc.l .exec_old_handler ; 0x45
-	dc.l .exec_old_handler ; 0x46
+	dc.l .Fforce           ; 0x46
 	dc.l .Dgetpath         ; 0x47
 	dc.l .exec_old_handler ; 0x48
 	dc.l .exec_old_handler ; 0x49
 	dc.l .exec_old_handler ; 0x4A
 	dc.l .Pexec            ; 0x4B
-	dc.l .exec_old_handler ; 0x4C
+	dc.l .Pterm            ; 0x4C
 	dc.l .exec_old_handler ; 0x4D
 	dc.l .Fsfirst          ; 0x4E
 	dc.l .Fsnext           ; 0x4F
@@ -537,6 +562,37 @@ _notlong:
 
 
 ; Start of the GEMDOS calls
+
+; Fforce(std, handle): TOS refuses handles it did not allocate, so GEMDRIVE
+; keeps the alias of a standard handle onto one of its files (the RP stores it,
+; see resolve_forced_handle). Forcing a standard handle back to a TOS handle
+; drops the alias and lets TOS do the rest.
+.Fforce:
+    move.w 8(a0), d3                     ; standard handle
+    cmp.w #GEMDRIVE_STD_HANDLES, d3
+    bhs .exec_old_handler
+    and.l #$FFFF, d3
+    bsr get_run_basepage                 ; d4 = the forcing process
+    move.l d4, d5
+    moveq #0, d4
+    move.w 10(a0), d4                    ; handle to force onto it
+    cmp.w (GEMDRVEMUL_SHARED_VARIABLES + 2 + (SHARED_VARIABLE_FIRST_FILE_DESCRIPTOR * 4)), d4
+    blt.s .Fforce_tos
+    send_sync CMD_FFORCE_CALL, 12
+    return_interrupt_l GEMDRVEMUL_FFORCE_STATUS
+.Fforce_tos:
+    moveq #0, d4                         ; drop our alias, if any
+    send_sync CMD_FFORCE_CALL, 12
+    bra .exec_old_handler
+
+; Pterm0, Ptermres and Pterm: TOS closes every file the ending process opened.
+; Do the same for its GEMDRIVE files, then let TOS terminate the process.
+.Pterm:
+    bsr get_run_basepage                 ; d4 = basepage of the ending process
+    move.l d4, d3
+    send_sync CMD_PTERM_CALL, 4          ; Close the files that process owns
+    bra .exec_old_handler
+
 
 ; Set the current DTA
 .Fsetdta:
@@ -649,6 +705,7 @@ _notlong:
     detect_emulated_drive_letter         ; If not, exec_old_handler the code. Otherwise continue with the code
 
     ; This is an emulated drive, it's our moment!
+    bsr get_run_basepage                 ; d4 = owner of the new handle
     send_write_sync CMD_FOPEN_CALL, 256
     
     return_interrupt_l GEMDRVEMUL_FOPEN_HANDLE    ; Return the error code from the Sidecart
@@ -656,6 +713,15 @@ _notlong:
 .Fclose:
     move.w 8(a0),d3                      ; get the file handle
     and.l #$FFFF, d3                     ; Mask the upper word of the file handle
+    move.w d3, d2
+    bsr resolve_forced_handle
+    cmp.w d3, d2
+    beq.s .Fclose_not_forced
+    move.w d2, d3                        ; closing a forced standard handle only drops the alias;
+    clr.l d4                             ; TOS then closes its own entry
+    send_sync CMD_FFORCE_CALL, 12
+    bra .exec_old_handler
+.Fclose_not_forced:
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -670,6 +736,7 @@ _notlong:
     detect_emulated_drive_letter         ; If not, exec_old_handler the code. Otherwise continue with the code
 
     ; This is an emulated drive, it's our moment!
+    bsr get_run_basepage                 ; d4 = owner of the new handle
     send_write_sync CMD_FCREATE_CALL, 256
 
     return_interrupt_w GEMDRVEMUL_FCREATE_HANDLE    ; Return the error code from the Sidecart
@@ -714,6 +781,7 @@ _notlong:
     move.l 8(a0),d4                      ; get the offset
     move.w 12(a0),d3                     ; get the handle
     move.w 14(a0),d5                     ; get the mode
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -768,6 +836,7 @@ _notlong:
     move.w 8(a0),d3                      ; get the file handle
     move.l 10(a0),d4                     ; get number of bytes to read
     move.l 14(a0),a4                     ; get address of buffer to read into
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -904,6 +973,7 @@ _notlong:
     move.w 8(a0),d3                      ; get the file handle
     move.l 10(a0),d4                     ; get number of bytes to write
     move.l 14(a0),a4                     ; get address of buffer to the data to write
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -998,7 +1068,13 @@ _notlong:
     reentry_gem_unlock
 
     move.l (sp), d3                            ; Restore the DTA value
-    move.l a4, d5                              ; Save the address of the file specification string
+    ; d5 carried the address of the file specification, which the RP only ever
+    ; traced: the string itself goes in the buffer. Say who is searching
+    ; instead, so a search this process abandons ends when the process does.
+    ; get_run_basepage answers in d4, where the attributes are, hence the exg.
+    move.l d4, d5
+    bsr get_run_basepage
+    exg d4, d5                                 ; d4 attributes again, d5 the basepage
     send_write_sync CMD_FSFIRST_CALL, 192      ; Send the command to the Sidecart. 256 bytes of buffer to send
 
 .populate_fsdta_struct:
@@ -1016,13 +1092,6 @@ _notlong:
     move.b (a4)+, (a5)+                         ; Copy the DTA
     dbf d2, .populate_fsdta_struct_loop         ; Loop until we copy all the bytes
 
-    ; We need to exit with the emulated drive as current drive
-    reentry_gem_lock
-    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
-    move.w d0, -(sp)                            ; Save the drive number in the stack
-    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
-    reentry_gem_unlock
-
     moveq.l #0, d0                               ; Error code. 0 is E_OK
     return_rte
 
@@ -1030,19 +1099,12 @@ _notlong:
     move.l d0, -(sp)                            ; Save the error code in the stack
     move.l a5, d3                               ; Restore the DTA value
 
-    moveq #(DTA_SIZE - 1), d2                   ; Number of bytes to copy minus 1
-.clean_fsdta_struct_loop:
-    clr.b (a5)+                                 ; Clean the DTA
-    dbf d2, .clean_fsdta_struct_loop            ; Loop until we clean all the bytes
+    ; The search is over. Leave the caller's DTA alone and only mark it as ours,
+    ; so a repeated Fsnext is answered here with "no more files": zeroing it took
+    ; the DND pointer TOS 1.00 and 1.02 keep at offset 16 with it.
+    move.l #DTA_MAGIC, DTA_MAGIC_OFFSET(a5)
 
     send_sync CMD_DTA_RELEASE_CALL, 4           ; Send the command to the Sidecart. 4 bytes of payload
-
-    ; We need to exit with the emulated drive as current drive
-    reentry_gem_lock
-    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
-    move.w d0, -(sp)                            ; Save the drive number in the stack
-    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
-    reentry_gem_unlock
 
     move.l (sp)+, d0                            ; Restore the error code
     ext.l d0                                    ; Sign-extend GEMDOS 16-bit errors
@@ -1057,9 +1119,8 @@ _notlong:
     reentry_gem_unlock
 
     move.l (sp), a0                       ; Restore the DTA value into a0
-    move.l 12(a0), d0                     ; Get the drive number from the DTA
-    cmp.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)),d0 ; Check if the drive is the emulated one
-    bne .Fsnext_bypass                  ; If not, exec_old_handler the code
+    cmp.l #DTA_MAGIC, DTA_MAGIC_OFFSET(a0); Is this one of our searches?
+    bne .Fsnext_bypass                    ; If not, exec_old_handler the code
 
     move.l (sp), d3                       ; Restore the DTA value
     send_sync CMD_FSNEXT_CALL, 4          ; Send the command to the Sidecart.
@@ -1072,10 +1133,24 @@ _notlong:
     bra .exec_old_handler
 
 .Pexec:
-    move.l a0, d3                         ; Address of the buffer with the parameters
-    move.l a0, a4                         ; Address of the buffer with the parameters
+    ; Route by the program being started, not by the current drive: a program on
+    ; another drive started while ours is current is TOS's, and one of ours
+    ; started from another drive is ours. Only the modes that take a file name
+    ; are ours; the rest (go, create basepage) belong to TOS.
+    move.w 8(a0), d0                      ; Pexec mode
+    cmp.w #PE_LOAD_GO, d0
+    beq.s .pexec_by_name
+    cmp.w #PE_LOAD, d0
+    bne .exec_old_handler
+.pexec_by_name:
+    move.l a0, d3                         ; Address of the buffer with the parameters. Taken now:
+                                          ; the detect below may send commands, and send_sync
+                                          ; leaves a0-a3 pointing into the ROM3 command window
+    move.l 10(a0), a4                     ; the program's file name
 
     detect_emulated_drive_letter          ; If not, exec_old_handler the code. Otherwise continue with the code
+
+    move.l d3, a4                         ; Address of the buffer with the parameters
 
 
     send_write_sync CMD_PEXEC_CALL, 32    ; Send the command to the Sidecart. 32 bytes of buffer to send
@@ -1090,6 +1165,7 @@ _notlong:
 .pexec_load_go:
     move.l GEMDRVEMUL_PEXEC_FNAME, a4
     clr.w d3                              ; open mode read only 
+    bsr get_run_basepage                  ; d4 = owner of the new handle
     send_write_sync CMD_FOPEN_CALL, 256
     move.l GEMDRVEMUL_FOPEN_HANDLE, d0    ; Error code obtained from the Sidecart
     ; If d0 is negative, there is an error
@@ -1145,6 +1221,13 @@ _notlong:
     move.l d7, 24(a4)                     ; Save the address of the start of the bss segment
     move.l d5, 28(a4)                     ; Save the size of the bss segment
 
+; Pexec mode 5 hands back a basepage built without ever reading the program, so
+; the flags in its header are ours to copy: from TOS 1.04 Malloc reads them here
+; to decide which RAM a program's allocations come from, and MiNT its memory
+; protection. The field is unused on TOS 1.00 and 1.02, where writing it is
+; harmless (checked against the Compendium).
+    move.l 22(a5), 40(a4)                 ; PRGFLAGS of the program -> p_flags
+
     send_write_sync CMD_SAVE_BASEPAGE, 256 ; Send the command to the Sidecart. 256 bytes of buffer to send
 
 ; Now we need to load the file in the area where the memory is
@@ -1197,11 +1280,28 @@ _notlong:
 
 ; Do not reloc here
 .zeroing_bss_no_reloc:
-; Zeroing the BSS segment
+; Clearing the memory the program is about to be given
+;
+; Bit 0 of the program's flags is fastload: set, and only the declared BSS is
+; cleared; clear, and everything up to the top of the TPA is, which is the heap
+; the program then finds zeroed. TOS 1.00 and 1.02 ignore the flags and always
+; clear the whole heap, so below GEMDOS $1500 so do we: the point is to hand a
+; program the memory its TOS would have handed it.
 .zeroing_bss:
     move.l GEMDRVEMUL_EXEC_PD, a4        ; load the pointer to the basepage of the new process of the file
     move.l 24(a4), a5                    ; Get the address of the start of the bss segment
     move.l 28(a4), d5                    ; Get the size of the bss segment
+
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_SVERSION * 4)), d0
+    and.l #$FFFF, d0                     ; GEMDOS version
+    cmp.w #$1500, d0                     ; TOS 1.04 is where the flags start counting
+    bcs.s .zeroing_whole_heap            ; older: the whole heap, as that TOS does
+    btst #0, (GEMDRVEMUL_EXEC_HEADER + 25)  ; fastload, the low bit of PRGFLAGS
+    bne.s .zeroing_do                    ; asked for: the BSS and no more
+.zeroing_whole_heap:
+    move.l 4(a4), d5                     ; p_hitpa, the top of the TPA
+    sub.l a5, d5                         ; everything from the BSS up to it
+.zeroing_do:
     bsr .fill_zero                       ; Zero the memory
 
 .pexec_pexec_go:
@@ -1242,15 +1342,20 @@ _notlong:
 ; The code here is executed when the PE_GO is finished. It must release the memory of the current process
 ; and restore the basepage of the current process
 .pexec_mshrink_exit:
-; Release the memory of the current process, if necessary
-; Get the values from _sysbase
-    movem.l d1-d7/a0-a6, -(sp)           ; Save registers
-    reentry_gem_lock
+; PE_GO leaves the child's memory to whoever called Pexec, so release it here.
+;
+; This code gets control from the RTE of the Pexec trap, so it runs in the mode
+; the caller was in: supervisor when the desktop or the AES starts a program,
+; user mode when an ordinary program does. Nothing here may touch the first
+; 2 KB of memory, which is a bus error in user mode. That rules out sending a
+; command to the device, because send_sync reads _dskbufp at $4C6: the reentry
+; lock that used to be here bombed every user-mode program that started another
+; one on TOS 1.00 and 1.02. Nor is one needed, since Mfree is not a call this
+; driver takes.
+    movem.l d0-d7/a0-a6, -(sp)           ; d0 is the child's exit code: keep it
     move.l GEMDRVEMUL_EXEC_PD, -(sp)     ; Pointer to the BASEPAGE structure of the process
     gemdos Mfree, 6                      ; Call Mfree() and release the memory of the current process
-    reentry_gem_unlock    
-    ext.l d0                             ; Extend the sign of the value
-    movem.l (sp)+,d1-d7/a0-a6            ; Restore registers
+    movem.l (sp)+,d0-d7/a0-a6            ; Restore registers, Pexec's answer included
 
     move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_PEXEC_RESTORE * 4)), -(sp)
     rts
@@ -1295,6 +1400,64 @@ _notlong:
     subq.l #1, d5                       ; Decrement the counter
     bne.s .fill_zero_loop               ; Loop until the counter is 0
 .fill_zero_exit:
+    rts
+
+; Return in d4 the basepage of the running process (the one TOS closes files
+; for when it ends). TOS 1.02 and later publish its address in the OS header
+; (os_run); TOS 1.00 keeps it at a fixed address, different on the Spanish ROM.
+; Output registers:
+; d4.l: basepage of the running process
+; a5: modified
+get_run_basepage:
+    move.l _sysbase.w, a5
+    move.l 8(a5), a5                    ; os_beg: the ROM's own OS header
+    cmp.w #$0102, 2(a5)                 ; os_version
+    bcs.s .run_basepage_tos100
+    move.l $28(a5), a5                  ; os_run: where the basepage pointer lives
+    move.l (a5), d4
+    rts
+.run_basepage_tos100:
+    move.w $1C(a5), d4                  ; os_conf: country code in bits 1 and up
+    lsr.w #1, d4
+    cmp.w #4, d4                        ; Spain
+    beq.s .run_basepage_tos100_es
+    move.l $602C.w, d4
+    rts
+.run_basepage_tos100_es:
+    move.l $873C, d4
+    rts
+
+; If d3.w is a standard handle that the running process, or one of its
+; ancestors, forced onto a GEMDRIVE file with Fforce, replace it with that
+; file's handle. Uses d0-d2/a5.
+resolve_forced_handle:
+    cmp.w #GEMDRIVE_STD_HANDLES, d3
+    bhs.s .rf_done
+    moveq #0, d0
+    move.w d3, d0
+    lsl.w #3, d0
+    lea GEMDRVEMUL_FORCED, a5
+    move.l 0(a5,d0.w), d1                ; the GEMDRIVE handle, 0 = not forced
+    beq.s .rf_done
+    move.l 4(a5,d0.w), d2                ; the process that forced it
+    move.l d4, -(sp)
+    bsr get_run_basepage
+    moveq #11, d0                        ; the running process or up to 11 ancestors
+.rf_parent:
+    cmp.l d4, d2
+    beq.s .rf_match
+    tst.l d4
+    beq.s .rf_no_match
+    move.l d4, a5
+    move.l $24(a5), d4                   ; p_parent
+    dbf d0, .rf_parent
+.rf_no_match:
+    move.l (sp)+, d4
+.rf_done:
+    rts
+.rf_match:
+    move.l (sp)+, d4
+    move.w d1, d3
     rts
 
 ; Shared functions included at the end of the file
