@@ -13,6 +13,23 @@
 static int suiteArgc = 0;
 static char **suiteArgv = NULL;
 
+// Every suite and every test runs between a copy and a restore of what it may
+// borrow: the DTA, the current drive and the current path. A test that forgets
+// to put one back can then only spoil itself.
+static void run_suite(int (*suite)(int), const char *who) {
+  BorrowedState borrowed;
+  state_save(&borrowed);
+  suite(FALSE);
+  state_restore(&borrowed, who);
+}
+
+static void run_one(void (*test)(void), const char *who) {
+  BorrowedState borrowed;
+  state_save(&borrowed);
+  test();
+  state_restore(&borrowed, who);
+}
+
 static int suite_selected(const char *name) {
   if (suiteArgc < 2) return TRUE;
   for (int i = 1; i < suiteArgc; i++) {
@@ -86,15 +103,17 @@ static int run() {
        i++) {
     if (suiteArgc >= 2 && suite_selected(singleTests[i].name)) {
       print("=== %s ===\r\n", singleTests[i].name);
-      singleTests[i].fn();
+      run_one(singleTests[i].fn, singleTests[i].name);
     }
   }
 
-  if (suite_selected("files")) run_files_tests(FALSE);
-  if (suite_selected("folder")) run_folder_tests(FALSE);
-  if (suite_selected("listing")) run_folder_listing_tests(FALSE);
-  if (suite_selected("workdir")) run_workdir_tests(FALSE);
-  if (suite_selected("chksum")) run_chksum_tests(FALSE);
+  if (suite_selected("files")) run_suite(run_files_tests, "the files suite");
+  if (suite_selected("folder")) run_suite(run_folder_tests, "the folder suite");
+  if (suite_selected("listing"))
+    run_suite(run_folder_listing_tests, "the listing suite");
+  if (suite_selected("workdir"))
+    run_suite(run_workdir_tests, "the workdir suite");
+  if (suite_selected("chksum")) run_suite(run_chksum_tests, "the chksum suite");
 
 #ifdef _LOG
   close_log();
@@ -149,11 +168,11 @@ int main(int argc, char *argv[]) {
 
   // Starts child programs, so it runs here in user mode, not under Supexec.
   if (suite_selected("files") || suite_selected("pterm"))
-    test_handles_closed_on_pterm();
+    run_one(test_handles_closed_on_pterm, "the Pterm case");
   if (suite_selected("files") || suite_selected("fforce"))
-    test_fforce_onto_gemdrive_file();
+    run_one(test_fforce_onto_gemdrive_file, "the Fforce case");
   if (suite_selected("files") || suite_selected("pexec"))
-    test_pexec_from_another_current_drive();
+    run_one(test_pexec_from_another_current_drive, "the Pexec case");
 
   print("All tests completed.\r\n");
   if (running_from_auto()) {

@@ -37,6 +37,19 @@ int running_from_auto(void);
 // loaded from when it runs from the AUTO folder.
 int booted_from_drive(void);
 
+/* What a test may borrow from the machine and forget to give back. The runner
+   takes a copy before each suite and puts it back after, so a test cannot make
+   the tests that follow it fail: one that left the DTA pointing at a local of
+   its own took a whole run down with two bombs. */
+typedef struct {
+  void* dta;
+  int drive;
+  char path[66]; /* GEMDOS path buffer: 64 plus the drive and the NUL */
+} BorrowedState;
+
+void state_save(BorrowedState* state);
+void state_restore(const BorrowedState* state, const char* who);
+
 void press_key(char* message);
 
 #endif

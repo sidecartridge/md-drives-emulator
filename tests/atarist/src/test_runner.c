@@ -84,6 +84,31 @@ int running_from_auto(void) { return from_auto; }
 
 int booted_from_drive(void) { return boot_drive; }
 
+void state_save(BorrowedState* state) {
+  state->dta = (void*)Fgetdta();
+  state->drive = Dgetdrv();
+  state->path[0] = '\0';
+  Dgetpath(state->path, 0);
+}
+
+void state_restore(const BorrowedState* state, const char* who) {
+  /* Say who left something behind: the runner is a net, not a licence, and a
+     test that needs the net is a test worth fixing. */
+  char path[66] = {0};
+  Dgetpath(path, 0);
+  if ((Dgetdrv() != state->drive) || strcmp(path, state->path) != 0) {
+    print("[note] %s left drive %c: path %s, restoring %c: %s\r\n", who,
+          'A' + Dgetdrv(), path, 'A' + state->drive, state->path);
+  }
+  if ((void*)Fgetdta() != state->dta) {
+    print("[note] %s left the DTA at %lx, restoring %lx\r\n", who,
+          (long)Fgetdta(), (long)state->dta);
+  }
+  Dsetdrv(state->drive);
+  Dsetpath(state->path[0] ? state->path : "\\");
+  Fsetdta(state->dta);
+}
+
 void assert_result(const char* test, int result, int expected) {
   if (result == expected) {
     print("[ OK ] %s\r\n", test);
