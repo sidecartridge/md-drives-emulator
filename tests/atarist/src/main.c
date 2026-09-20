@@ -173,6 +173,8 @@ int main(int argc, char *argv[]) {
     run_one(test_fforce_onto_gemdrive_file, "the Fforce case");
   if (suite_selected("files") || suite_selected("pexec"))
     run_one(test_pexec_from_another_current_drive, "the Pexec case");
+  if (suite_selected("files") || suite_selected("prgflags"))
+    run_one(test_program_loaded_as_its_header_asks, "the program flags case");
 
   print("All tests completed.\r\n");
   if (running_from_auto()) {

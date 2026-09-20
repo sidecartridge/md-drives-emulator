@@ -804,6 +804,109 @@ void test_fdatime_other_current_drive() {
   Fdelete("A:\\FDTTOS.TXT");
 }
 
+// How much of a loaded program's heap to look at: the start, the middle and the
+// last bytes below the top of its TPA. Walking megabytes proves no more.
+static int heap_is_dirty(const long *pd) {
+  const unsigned char *heap = (const unsigned char *)(pd[6] + pd[7]); /* BSS end */
+  long span = pd[1] - (long)heap;                                     /* p_hitpa */
+  long starts[3];
+  int dirty = 0;
+
+  if (span <= 0) return 0;
+  starts[0] = 0;
+  starts[1] = span / 2;
+  starts[2] = (span > 256) ? span - 256 : 0;
+  for (int s = 0; s < 3; s++) {
+    for (long i = starts[s]; i < starts[s] + 256 && i < span; i++) {
+      if (heap[i]) dirty++;
+    }
+  }
+  return dirty;
+}
+
+// A copy of a program with the fastload bit cleared in its header, so the other
+// half of the rule can be tested with a real program: bit 0 of PRGFLAGS is the
+// low byte of the longword at offset 0x16.
+static int copy_without_fastload(const char *from, const char *to) {
+  char buffer[512];
+  long count;
+  int first = TRUE;
+  int in = Fopen(from, 0);
+  int out;
+
+  if (in < 0) return -1;
+  out = Fcreate(to, 0);
+  if (out < 0) {
+    Fclose(in);
+    return -1;
+  }
+  while ((count = Fread(in, sizeof(buffer), buffer)) > 0) {
+    if (first && count > 0x19) {
+      buffer[0x19] &= ~1;
+      first = FALSE;
+    }
+    if (Fwrite(out, count, buffer) != count) {
+      count = -1;
+      break;
+    }
+  }
+  Fclose(in);
+  Fclose(out);
+  return (count < 0) ? -1 : 0;
+}
+
+// A program gets the memory its header asks for: the loader copies the header's
+// PRGFLAGS into the basepage, where GEMDOS looks for them from TOS 1.04 on, and
+// clears the heap unless the program asked for fastload. TOS 1.00 and 1.02
+// ignore the flags and always clear the heap, so this expects that of them.
+void test_program_loaded_as_its_header_asks(void) {
+  print("=== The memory a program's header asks for ===\r\n");
+  const char *program = fstests_program();
+  unsigned char header[28] = {0};
+  long headerFlags = 0;
+  int oldGemdos = (int)(Sversion() & 0xFFFF) < 0x1500;
+  int handle = Fopen(program, 0);
+  long basepage;
+
+  assert_result("Open the program to read its header", A_VALID_HANDLE(handle),
+                TRUE);
+  if (handle < 0) return;
+  assert_result("Read the program header",
+                Fread(handle, sizeof(header), header), sizeof(header));
+  Fclose(handle);
+  memcpy(&headerFlags, header + 0x16, 4); /* PRGFLAGS */
+
+  basepage = Pexec(3, program, "", NULL); /* load it, do not run it */
+  assert_result("Load the program without running it", basepage > 0, TRUE);
+  if (basepage <= 0) return;
+  assert_result("The program's flags reach its basepage",
+                ((const long *)basepage)[10] /* $28 */, headerFlags);
+  if (!(headerFlags & 1L) || oldGemdos) {
+    assert_result("The heap this program is given is cleared",
+                  heap_is_dirty((const long *)basepage), 0);
+  }
+  Mfree((void *)basepage);
+
+  /* The same program asking for a cleared heap, whatever the build asked for.
+     On TOS 1.00 and 1.02 it changes nothing: they clear it either way. */
+  Fdelete("NOFAST.PRG");
+  if (copy_without_fastload(program, "NOFAST.PRG") != 0) {
+    print("[SKIP] Could not copy the program to clear its fastload bit\r\n");
+    return;
+  }
+  basepage = Pexec(3, "NOFAST.PRG", "", NULL);
+  assert_result("Load the copy that asks for a cleared heap", basepage > 0,
+                TRUE);
+  if (basepage > 0) {
+    assert_result("Fastload is clear in the copy's basepage",
+                  (int)(((const long *)basepage)[10] & 1L), 0);
+    assert_result("The heap the copy is given is cleared",
+                  heap_is_dirty((const long *)basepage), 0);
+    Mfree((void *)basepage);
+  }
+  Fdelete("NOFAST.PRG");
+}
+
 // TOS closes the files of a process when it ends; GEMDRIVE must do the same
 // with its handles. FSTESTS runs itself as a child that creates a file and
 // ends without closing it, more times than FatFs has lock entries (32).

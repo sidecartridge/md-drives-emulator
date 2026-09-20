@@ -1221,6 +1221,13 @@ _notlong:
     move.l d7, 24(a4)                     ; Save the address of the start of the bss segment
     move.l d5, 28(a4)                     ; Save the size of the bss segment
 
+; Pexec mode 5 hands back a basepage built without ever reading the program, so
+; the flags in its header are ours to copy: from TOS 1.04 Malloc reads them here
+; to decide which RAM a program's allocations come from, and MiNT its memory
+; protection. The field is unused on TOS 1.00 and 1.02, where writing it is
+; harmless (checked against the Compendium).
+    move.l 22(a5), 40(a4)                 ; PRGFLAGS of the program -> p_flags
+
     send_write_sync CMD_SAVE_BASEPAGE, 256 ; Send the command to the Sidecart. 256 bytes of buffer to send
 
 ; Now we need to load the file in the area where the memory is
@@ -1273,11 +1280,28 @@ _notlong:
 
 ; Do not reloc here
 .zeroing_bss_no_reloc:
-; Zeroing the BSS segment
+; Clearing the memory the program is about to be given
+;
+; Bit 0 of the program's flags is fastload: set, and only the declared BSS is
+; cleared; clear, and everything up to the top of the TPA is, which is the heap
+; the program then finds zeroed. TOS 1.00 and 1.02 ignore the flags and always
+; clear the whole heap, so below GEMDOS $1500 so do we: the point is to hand a
+; program the memory its TOS would have handed it.
 .zeroing_bss:
     move.l GEMDRVEMUL_EXEC_PD, a4        ; load the pointer to the basepage of the new process of the file
     move.l 24(a4), a5                    ; Get the address of the start of the bss segment
     move.l 28(a4), d5                    ; Get the size of the bss segment
+
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_SVERSION * 4)), d0
+    and.l #$FFFF, d0                     ; GEMDOS version
+    cmp.w #$1500, d0                     ; TOS 1.04 is where the flags start counting
+    bcs.s .zeroing_whole_heap            ; older: the whole heap, as that TOS does
+    btst #0, (GEMDRVEMUL_EXEC_HEADER + 25)  ; fastload, the low bit of PRGFLAGS
+    bne.s .zeroing_do                    ; asked for: the BSS and no more
+.zeroing_whole_heap:
+    move.l 4(a4), d5                     ; p_hitpa, the top of the TPA
+    sub.l a5, d5                         ; everything from the BSS up to it
+.zeroing_do:
     bsr .fill_zero                       ; Zero the memory
 
 .pexec_pexec_go:
