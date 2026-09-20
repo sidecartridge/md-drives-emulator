@@ -483,7 +483,8 @@ static inline FRESULT __not_in_flash_func(syncFileOffsetIfNeeded)(
 
 static void __not_in_flash_func(printFDs)(FileDescriptors *head) {
   for (const FileDescriptors *cur = head; cur; cur = cur->next) {
-    DPRINTF("File descriptor: %u - Path: %s\n", cur->fd, cur->fpath);
+    DPRINTF("File descriptor: %u - Path: %s (owner %x)\n", cur->fd, cur->fpath,
+            cur->owner);
   }
 }
 
@@ -742,6 +743,11 @@ static uint32_t memoryFirmwareCode = 0;
 // distinct chunks ever share one. Bumped only when a chunk is accepted.
 // Starts at 1: 0 means "no chunk accepted yet" in the per-fd memo.
 static uint32_t writeChunkSeq = 1;
+// Set by GEMDRVEMUL_RESTART_CALL; the main loop restarts the device once the
+// Atari has its answer.
+static volatile bool restartRequested = false;
+
+bool gemdrive_restartRequested(void) { return restartRequested; }
 
 // GEMDOS code for a FatFs failure, when the failure is about resources rather
 // than the file: running out of lock entries or of heap says nothing about
@@ -1048,6 +1054,14 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       // Get the drive letter
       uint16_t dgetdriveVal = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
       DPRINTF("Dgetdrive value: %x\n", dgetdriveVal);
+      break;
+    }
+    case GEMDRVEMUL_RESTART_CALL: {
+      // The Atari asks the device to restart, so it comes back in the setup
+      // menu with the card on USB. The restart itself happens in the main
+      // loop: the answer to this command has to reach the Atari first.
+      DPRINTF("Restart asked for from the Atari\n");
+      restartRequested = true;
       break;
     }
     case GEMDRVEMUL_REENTRY_LOCK: {

@@ -358,6 +358,8 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
   (APP_GEMDRVEMUL << 8 | 0x8A)  // Check if the DTA exists in the rp2040 memory
 #define GEMDRVEMUL_DTA_RELEASE_CALL \
   (APP_GEMDRVEMUL << 8 | 0x8B)  // Release the DTA from the rp2040 memory
+#define GEMDRVEMUL_RESTART_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x8C)  // Restart the device
 
 // Atari ST FATTRIB flag
 #define FATTRIB_INQUIRE 0x00
@@ -527,6 +529,13 @@ typedef struct ExecHeader {
 
 // Function Prototypes
 void __not_in_flash_func(gemdrive_init)();
+/**
+ * @brief Whether the Atari asked the device to restart, with
+ *        GEMDRVEMUL_RESTART_CALL. The Atari gets its answer first, so the
+ *        restart happens from the main loop and not from inside the command.
+ */
+bool gemdrive_restartRequested(void);
+
 void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *protocol,
                                         uint16_t *payloadPtr);
 #endif  // GEMDRIVE_H

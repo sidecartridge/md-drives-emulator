@@ -2533,6 +2533,12 @@ void __not_in_flash_func(emul_start)() {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
 
+        if (gemdrive_restartRequested()) {
+          DPRINTF("Restarting the device: the Atari asked for it\n");
+          sleep_ms(50);  // let the answer reach the Atari first
+          reset_device();
+        }
+
         if (pendingDriveACycle) {
           pendingDriveACycle = false;
           uint8_t newSlot = 0;

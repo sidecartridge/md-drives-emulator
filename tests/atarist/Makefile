@@ -58,14 +58,14 @@ release: dist prepare
 prepare: clean
 	mkdir -p $(BUILD_DIR)
 
-clean-compile : clean main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o
+clean-compile : clean main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o sidecart.o
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/$@ $<
 
 # Compilation Rules
 %.o: $(SOURCES_DIR)/%.c prepare
 	$(CC) $(CFLAGS) $< -o $(BUILD_DIR)/$@
 
-main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o
+main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o sidecart.o
 	$(CC) $(LIBCMINI)/lib/crt0.o \
 		  $(BUILD_DIR)/main.o \
 		  $(BUILD_DIR)/test_runner.o \
@@ -74,6 +74,7 @@ main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o
 		  $(BUILD_DIR)/workdir_tests.o \
 		  $(BUILD_DIR)/files_tests.o \
 		  $(BUILD_DIR)/chksum_tests.o \
+		  $(BUILD_DIR)/sidecart.o \
 		  -o $(BUILD_DIR)/$(EXE) $(LINKFLAGS)
 
 .PHONY: dist

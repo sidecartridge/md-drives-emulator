@@ -328,6 +328,13 @@ The program prints:
 
 The main program currently calls all suites with `FALSE`, so the test run is automatic and does not pause between cases.
 
+### Running the tests unattended
+
+The same binary, copied to `AUTO\FSTESTS.PRG` in the GEMDRIVE folder with GEMDRIVE as C:, runs at
+boot. Started from the AUTO folder it does not wait for a key at the end: it asks the device to
+restart, so the device comes back in the setup menu with the card available over USB and `LOG.TXT`
+can be read from a computer. Build with file logging on for there to be a log.
+
 ## Project docs
 
 - `CLAUDE.md` / `AGENTS.md`: build, architecture, and contributor playbook.
