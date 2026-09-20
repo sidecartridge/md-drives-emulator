@@ -994,6 +994,12 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       cleanDTAHashTable();
       cleanFileDescriptors(&fdescriptors);
       unforceHandles(memorySharedAddress, 0, 0);
+      // The current folder of the emulated drive is ours, and it outlives an
+      // Atari reset: without this a boot would resolve relative names against
+      // wherever the last session happened to be. TOS starts every drive at
+      // its root.
+      dpathStr[0] = '\\';
+      dpathStr[1] = '\0';
       // Set the continue to continue booting
       SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
       break;

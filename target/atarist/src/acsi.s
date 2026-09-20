@@ -249,14 +249,34 @@ install_hdv_hooks:
     rts
 
 .check_saved_vectors:
-    tst.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_HOOKS_INSTALLED * 4))
-    bne .patch_vectors
-
-    set_shared_var_long SVAR_OLD_HDV_INIT, _hdv_init.w
-    set_shared_var_long SVAR_OLD_HDV_BPB, _hdv_bpb.w
-    set_shared_var_long SVAR_OLD_HDV_RW, _hdv_rw.w
-    set_shared_var_long SVAR_OLD_HDV_BOOT, _hdv_boot.w
-    set_shared_var_long SVAR_OLD_HDV_MEDIACH, _hdv_mediach.w
+    ; Save what this machine has now, one vector at a time, unless it is
+    ; already ours. What an earlier session stored is not evidence about this
+    ; one: the RP keeps its memory across an Atari reset, and the flag that
+    ; said "already saved" made us keep those values without looking.
+    move.l _hdv_init.w, d0
+    cmp.l #acsi_hdv_init, d0
+    beq.s .saved_init
+    set_shared_var_long SVAR_OLD_HDV_INIT, d0
+.saved_init:
+    move.l _hdv_bpb.w, d0
+    cmp.l #acsi_hdv_bpb, d0
+    beq.s .saved_bpb
+    set_shared_var_long SVAR_OLD_HDV_BPB, d0
+.saved_bpb:
+    move.l _hdv_rw.w, d0
+    cmp.l #acsi_hdv_rw, d0
+    beq.s .saved_rw
+    set_shared_var_long SVAR_OLD_HDV_RW, d0
+.saved_rw:
+    move.l _hdv_boot.w, d0
+    cmp.l #acsi_hdv_boot, d0
+    beq.s .saved_boot
+    set_shared_var_long SVAR_OLD_HDV_BOOT, d0
+.saved_boot:
+    move.l _hdv_mediach.w, d0
+    cmp.l #acsi_hdv_mediach, d0
+    beq.s .patch_vectors
+    set_shared_var_long SVAR_OLD_HDV_MEDIACH, d0
 
 .patch_vectors:
     move.l #acsi_hdv_init, _hdv_init.w
