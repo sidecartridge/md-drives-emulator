@@ -794,8 +794,12 @@ void test_fdatime_other_current_drive() {
   }
   assert_result("A TOS handle is not one of the drive's", handle < emulated,
                 TRUE);
+  /* A handle that is not the drive's goes to TOS untouched, so the answer is
+     TOS's own: 1.04 and later return 0, TOS 1.00 returns the file's time. What
+     is being tested is that the call still works, so anything but an error
+     passes. */
   assert_result("Fdatime inquire on TOS handle with GEMDRIVE current",
-                Fdatime(&tos_query, handle, 0), 0);
+                Fdatime(&tos_query, handle, 0) >= 0, TRUE);
   Fclose(handle);
   Fdelete("A:\\FDTTOS.TXT");
 }
@@ -812,12 +816,8 @@ void test_handles_closed_on_pterm(void) {
   if (before < 0) return;
   Fclose(before);
 
-  const char *child = "FSTESTS.TTP";
+  const char *child = fstests_program();
   long rc = Pexec(0, child, "\011leakchild", NULL);
-  if (rc < 0) {
-    child = "FSTESTS.TOS";
-    rc = Pexec(0, child, "\011leakchild", NULL);
-  }
   int runs = (rc == 0) ? 1 : 0;
   while ((rc == 0) && (runs < PTERM_CHILD_RUNS)) {
     rc = Pexec(0, child, "\011leakchild", NULL);
@@ -847,8 +847,7 @@ void test_fforce_onto_gemdrive_file(void) {
   long saved = Fdup(1);
   long forced = Fforce(1, handle);
   long written = Fwrite(1, 6, "PARENT");
-  long child = Pexec(0, "FSTESTS.TTP", "\012forcechild", NULL);
-  if (child < 0) child = Pexec(0, "FSTESTS.TOS", "\012forcechild", NULL);
+  long child = Pexec(0, fstests_program(), "\012forcechild", NULL);
   long restored = Fforce(1, (int)saved);
   Fclose((int)saved);
   Fclose(handle);
@@ -873,8 +872,10 @@ void test_fforce_onto_gemdrive_file(void) {
 void test_pexec_from_another_current_drive(void) {
   print("=== Pexec routed by the program's name ===\r\n");
   int gem_drive = Dgetdrv();
-  char path[24];
-  sprintf(path, "%c:\\FSTESTS.TTP", 'A' + gem_drive);
+  char path[32];
+  const char *program = fstests_program();
+  sprintf(path, "%c:%s%s", 'A' + gem_drive, program[0] == '\\' ? "" : "\\",
+          program);
 
   Dsetdrv(0); /* A: */
   long rc = Pexec(0, path, "\012forcechild", NULL);
