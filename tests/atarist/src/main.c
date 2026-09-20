@@ -86,6 +86,10 @@ int main(int argc, char *argv[]) {
     print("leakchild: Fcreate LEAKCHLD.TMP = %d\r\n", handle);
     Pterm(0);
   }
+  // Child of test_fforce_onto_gemdrive_file(): write to the inherited stdout.
+  if (argc >= 2 && strcasecmp(argv[1], "forcechild") == 0) {
+    Pterm(Fwrite(1, 5, "CHILD") == 5 ? 0 : 1);
+  }
   suiteArgc = argc;
   suiteArgv = argv;
   // switching to supervisor mode and execute run()
@@ -95,6 +99,8 @@ int main(int argc, char *argv[]) {
   // Starts child programs, so it runs here in user mode, not under Supexec.
   if (suite_selected("files") || suite_selected("pterm"))
     test_handles_closed_on_pterm();
+  if (suite_selected("files") || suite_selected("fforce"))
+    test_fforce_onto_gemdrive_file();
 
   print("All tests completed.\r\n");
   press_key("Press a key.\r\n");

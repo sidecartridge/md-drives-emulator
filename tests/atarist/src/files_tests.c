@@ -800,6 +800,39 @@ void test_handles_closed_on_pterm(void) {
   Fdelete("LEAKCHLD.TMP");
 }
 
+// Output redirection into a GEMDRIVE file, as a shell does for "prog > file":
+// Fforce(1, handle) with a GEMDRIVE handle, which TOS alone refuses. Nothing is
+// printed while stdout is forced, print() would write into the file too.
+void test_fforce_onto_gemdrive_file(void) {
+  print("=== Standard output forced onto a GEMDRIVE file ===\r\n");
+  int handle = Fcreate("FORCE.TXT", 0);
+  assert_result("Create FORCE.TXT", handle >= 16384, TRUE);
+  if (handle < 0) return;
+
+  long saved = Fdup(1);
+  long forced = Fforce(1, handle);
+  long written = Fwrite(1, 6, "PARENT");
+  long child = Pexec(0, "FSTESTS.TTP", "\012forcechild", NULL);
+  if (child < 0) child = Pexec(0, "FSTESTS.TOS", "\012forcechild", NULL);
+  long restored = Fforce(1, (int)saved);
+  Fclose((int)saved);
+  Fclose(handle);
+
+  assert_result("Fdup(1) gives a handle", saved >= 0, TRUE);
+  assert_result("Fforce(1, GEMDRIVE handle)", forced, 0);
+  assert_result("Fwrite(1) while forced", written, 6);
+  assert_result("Child writes to the forced stdout", child, 0);
+  assert_result("Fforce(1) back to the console", restored, 0);
+
+  char buffer[16] = {0};
+  handle = Fopen("FORCE.TXT", 0);
+  long got = (handle >= 0) ? Fread(handle, sizeof(buffer) - 1, buffer) : -1;
+  if (handle >= 0) Fclose(handle);
+  assert_result("FORCE.TXT holds what parent and child wrote", got, 11);
+  assert_result("FORCE.TXT content", strcmp(buffer, "PARENTCHILD"), 0);
+  Fdelete("FORCE.TXT");
+}
+
 void test_eof_and_closed_handle_behavior() {
   int handle = Fcreate("EOFCLOSE.TXT", 0);
   Fwrite(handle, 5, "ABCDE");

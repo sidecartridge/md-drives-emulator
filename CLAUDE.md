@@ -60,7 +60,7 @@ The Atari and RP communicate through shared memory tokens. The `send_sync` / `se
 ```
 $FA0000  Cart header + main.s code (~32 KB)
 $FA1000  GEMDRIVE code (gemdrive.s)
-$FA2800  FLOPPY code (floppy.s)
+$FA2A00  FLOPPY code (floppy.s)
 $FA3400  RTC code (rtc.s)
 $FA4C00  GEMDOS pool fix (poolfix.s, TOS 1.04/1.06 only)
 $FA5400  ACSI code (acsi.s)
@@ -94,6 +94,8 @@ Key design points:
 - **COMMAND_TIMEOUT** in `gemdrive.s` must be `$6FFF` or higher — FatFS operations (Fopen with SD card directory scan) can exceed the old `$FFF` (~20 ms) timeout, causing `send_write_sync` retries that duplicate file descriptors (every Fopen executes twice, leaking fds).
 - **Fwrite chunk dedup**: the RP serves a chunk sequence number at `GEMDRIVE_WRITE_CHK`; `gemdrive.s` reads it once per chunk (before the retry loop) and echoes it in d4 of `CMD_WRITE_BUFF_CALL`. A repeated sequence means the ST never heard the answer, so the RP replays the stored byte count instead of writing again — a retransmit used to append the chunk twice and lose the file tail. Ordering is load-bearing: the per-fd memo and the served-sequence bump must both happen **before** the `WRITE_BYTES` answer.
 - **Handles are closed when their program ends**: Fopen/Fcreate send the running basepage (`os_run`; TOS 1.00 `$602C`/`$873C`) in d4 and the RP records it as the handle's owner; Pterm0/Ptermres/Pterm send `CMD_PTERM_CALL` with the ending basepage and the RP closes that owner's files, as TOS's `ixterm()` does. A crash ends through a real `trap #1` Pterm, so it is covered.
+- **Fforce onto a GEMDRIVE file**: TOS refuses a handle it did not allocate, so GEMDRIVE keeps the alias itself. The RP holds a table of the six standard handles (`GEMDRIVE_FORCED`: the GEMDRIVE handle and the basepage that forced it) and the ST reads it to route `Fread`/`Fwrite`/`Fseek` on a standard handle, so a plain `printf` costs no RP call. The alias applies to the forcing process and its descendants (`p_parent` walk), and is dropped when the file is closed, when that process ends, or when the standard handle is forced back to a TOS handle. `Fdup` stays with TOS, and `Cconws`/`Cconout` do not follow the alias (neither does Hatari).
+- **`GEMDRIVE_EXEC_PD` is a 256-byte basepage buffer**, not a pointer: `CMD_SAVE_BASEPAGE` fills it. `sizeof(PD)` on the RP is larger (its `p_curdir` is a word array), so copies into it must use `GEMDRIVE_EXEC_PD_SIZE`; `sizeof(PD)` wrote 32 bytes past the buffer, over the next variables in the window.
 - **Dfree cluster counts are clamped** so `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a >4 GB card wrap (a 32 GB card showed ~720 MB). Don't "fix" the clamp by reporting real counts.
 
 ### Floppy drive emulation

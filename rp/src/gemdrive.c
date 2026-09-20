@@ -544,6 +544,23 @@ static uint16_t __not_in_flash_func(getFirstAvailableFD)(
   }
 }
 
+// Forget every Fforce alias whose file handle is `fd` (0: all of them) or
+// whose forcing process is `owner` (0: any).
+static void __not_in_flash_func(unforceHandles)(uint32_t memory, uint16_t fd,
+                                                uint32_t owner) {
+  for (int std = 0; std < GEMDRIVE_FORCED_COUNT; std++) {
+    uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+    uint32_t forced = READ_AND_SWAP_LONGWORD(memory, offset);
+    uint32_t forcer = READ_AND_SWAP_LONGWORD(memory, offset + 4);
+    if (forced == 0) continue;
+    if ((fd == 0 || forced == fd) && (owner == 0 || forcer == owner)) {
+      WRITE_AND_SWAP_LONGWORD(memory, offset, 0);
+      WRITE_AND_SWAP_LONGWORD(memory, offset + 4, 0);
+      DPRINTF("Fforce: standard handle %d released\n", std);
+    }
+  }
+}
+
 // Clean all file descriptorsº
 static void __not_in_flash_func(cleanFileDescriptors)(FileDescriptors **head) {
   FileDescriptors *cur = *head;
@@ -870,6 +887,9 @@ void __not_in_flash_func(gemdrive_init)() {
 
   uint16_t buffType = 0;  // 0: Diskbuffer, 1: Stack
 
+  // Outside the firmware image the window is not initialized.
+  unforceHandles(memorySharedAddress, 0, 0);
+
   SET_SHARED_VAR(GEMDRIVE_SHARED_VARIABLE_FIRST_FILE_DESCRIPTOR,
                  FIRST_FILE_DESCRIPTOR, memorySharedAddress,
                  GEMDRIVE_SHARED_VARIABLES_OFFSET);
@@ -967,6 +987,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       // Reset the shared variables
       cleanDTAHashTable();
       cleanFileDescriptors(&fdescriptors);
+      unforceHandles(memorySharedAddress, 0, 0);
       // Set the continue to continue booting
       SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
       break;
@@ -1675,6 +1696,7 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
         } else {
           // Remove the file from the list of open files
           deleteFileByFD(&fdescriptors, fcloseFD);
+          unforceHandles(memorySharedAddress, fcloseFD, 0);
           DPRINTF("File closed\n");
         }
       }
@@ -1698,7 +1720,36 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
           link = &cur->next;
         }
       }
+      unforceHandles(memorySharedAddress, 0, ptermOwner);
       DPRINTF("Pterm of basepage %x: %d file(s) closed\n", ptermOwner, closed);
+      break;
+    }
+    case GEMDRVEMUL_FFORCE_CALL: {
+      // Fforce(std, handle): make a standard handle an alias of a GEMDRIVE
+      // file (handle 0: drop the alias). TOS cannot, it refuses any handle it
+      // did not allocate.
+      uint16_t std = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);
+      uint32_t handle = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr) & 0xFFFFu;
+      uint32_t forcer = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
+      int32_t status = GEMDOS_EOK;
+      if (std >= GEMDRIVE_FORCED_COUNT) {
+        status = GEMDOS_EIHNDL;
+      } else if (handle == 0) {
+        uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset, 0);
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset + 4, 0);
+        DPRINTF("Fforce: standard handle %u released\n", std);
+      } else if (getFileByFD(fdescriptors, (uint16_t)handle) == NULL) {
+        status = GEMDOS_EIHNDL;
+      } else {
+        uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset, handle);
+        WRITE_AND_SWAP_LONGWORD(memorySharedAddress, offset + 4, forcer);
+        DPRINTF("Fforce: standard handle %u -> %lu (basepage %lx)\n", std,
+                (unsigned long)handle, (unsigned long)forcer);
+      }
+      WRITE_AND_SWAP_LONGWORD(memorySharedAddress, GEMDRIVE_FFORCE_STATUS,
+                              (uint32_t)status);
       break;
     }
 
@@ -2378,7 +2429,10 @@ void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *lastProtocol,
       if (pexec_pd == NULL) {
         pexec_pd = (PD *)(memorySharedAddress + GEMDRIVE_EXEC_PD);
       }
-      memcpy(pexec_pd, origin, sizeof(PD));
+      // The ST sends the basepage, 256 bytes: sizeof(PD) is larger here (its
+      // p_curdir is a word array), and copying that much read past the payload
+      // and wrote past the buffer, over whatever the window holds next.
+      memcpy(pexec_pd, origin, GEMDRIVE_EXEC_PD_SIZE);
       DPRINTF("pexec_pd->p_lowtpa: %x\n", SWAP_LONGWORD(pexec_pd->p_lowtpa));
       DPRINTF("pexec_pd->p_hitpa: %x\n", SWAP_LONGWORD(pexec_pd->p_hitpa));
       DPRINTF("pexec_pd->p_tbase: %x\n", SWAP_LONGWORD(pexec_pd->p_tbase));

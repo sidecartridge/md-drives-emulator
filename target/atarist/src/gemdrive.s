@@ -86,6 +86,7 @@ CMD_FDATETIME_CALL      equ ($57 + APP_GEMDRVEMUL)           ; Command code to s
 
 CMD_MALLOC_CALL         equ ($48 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the malloc() command executed
 CMD_PEXEC_CALL          equ ($4B + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 the Pexec() command executed
+CMD_FFORCE_CALL         equ ($46 + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 an Fforce() onto a GEMDRIVE handle
 CMD_PTERM_CALL          equ ($4C + APP_GEMDRVEMUL)           ; Command code to send to the RP2040 that a process terminates (Pterm0, Ptermres, Pterm)
 
 ; This commands are not direct GEMDOS calls, but they are used to send data to the Sidecart
@@ -149,6 +150,10 @@ GEMDRVEMUL_PEXEC_FNAME      equ (GEMDRVEMUL_PEXEC_STACK_ADDR + 4)   ; pexec mode
 GEMDRVEMUL_PEXEC_CMDLINE    equ (GEMDRVEMUL_PEXEC_FNAME + 4)        ; pexec fname + 4 bytes
 GEMDRVEMUL_PEXEC_ENVSTR     equ (GEMDRVEMUL_PEXEC_CMDLINE + 4)      ; pexec cmd line + 4 bytes
 GEMDRVEMUL_EXEC_PD          equ (GEMDRVEMUL_PEXEC_ENVSTR + 4)       ; exec PD + 4 bytes
+GEMDRVEMUL_EXEC_PD_SIZE     equ 256                                 ; CMD_SAVE_BASEPAGE fills the whole basepage here
+GEMDRVEMUL_FFORCE_STATUS    equ (GEMDRVEMUL_EXEC_PD + GEMDRVEMUL_EXEC_PD_SIZE)
+GEMDRVEMUL_FORCED           equ (GEMDRVEMUL_FFORCE_STATUS + 4)      ; per standard handle: GEMDRIVE handle.l (0 = none), forcing basepage.l
+GEMDRIVE_STD_HANDLES        equ 6                                   ; standard handles 0-5
 
 GEMDRVEMUL_SHARED_VARIABLES equ (RANDOM_TOKEN_SEED_ADDR + 4)        ; RANDOM_TOKEN_SEED_ADDR + 4 bytes
 
@@ -529,7 +534,7 @@ _notlong:
 	dc.l .Fattrib          ; 0x43
 	dc.l .exec_old_handler ; 0x44
 	dc.l .exec_old_handler ; 0x45
-	dc.l .exec_old_handler ; 0x46
+	dc.l .Fforce           ; 0x46
 	dc.l .Dgetpath         ; 0x47
 	dc.l .exec_old_handler ; 0x48
 	dc.l .exec_old_handler ; 0x49
@@ -550,6 +555,28 @@ _notlong:
 
 
 ; Start of the GEMDOS calls
+
+; Fforce(std, handle): TOS refuses handles it did not allocate, so GEMDRIVE
+; keeps the alias of a standard handle onto one of its files (the RP stores it,
+; see resolve_forced_handle). Forcing a standard handle back to a TOS handle
+; drops the alias and lets TOS do the rest.
+.Fforce:
+    move.w 8(a0), d3                     ; standard handle
+    cmp.w #GEMDRIVE_STD_HANDLES, d3
+    bhs .exec_old_handler
+    and.l #$FFFF, d3
+    bsr get_run_basepage                 ; d4 = the forcing process
+    move.l d4, d5
+    moveq #0, d4
+    move.w 10(a0), d4                    ; handle to force onto it
+    cmp.w (GEMDRVEMUL_SHARED_VARIABLES + 2 + (SHARED_VARIABLE_FIRST_FILE_DESCRIPTOR * 4)), d4
+    blt.s .Fforce_tos
+    send_sync CMD_FFORCE_CALL, 12
+    return_interrupt_l GEMDRVEMUL_FFORCE_STATUS
+.Fforce_tos:
+    moveq #0, d4                         ; drop our alias, if any
+    send_sync CMD_FFORCE_CALL, 12
+    bra .exec_old_handler
 
 ; Pterm0, Ptermres and Pterm: TOS closes every file the ending process opened.
 ; Do the same for its GEMDRIVE files, then let TOS terminate the process.
@@ -679,6 +706,15 @@ _notlong:
 .Fclose:
     move.w 8(a0),d3                      ; get the file handle
     and.l #$FFFF, d3                     ; Mask the upper word of the file handle
+    move.w d3, d2
+    bsr resolve_forced_handle
+    cmp.w d3, d2
+    beq.s .Fclose_not_forced
+    move.w d2, d3                        ; closing a forced standard handle only drops the alias;
+    clr.l d4                             ; TOS then closes its own entry
+    send_sync CMD_FFORCE_CALL, 12
+    bra .exec_old_handler
+.Fclose_not_forced:
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -738,6 +774,7 @@ _notlong:
     move.l 8(a0),d4                      ; get the offset
     move.w 12(a0),d3                     ; get the handle
     move.w 14(a0),d5                     ; get the mode
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -792,6 +829,7 @@ _notlong:
     move.w 8(a0),d3                      ; get the file handle
     move.l 10(a0),d4                     ; get number of bytes to read
     move.l 14(a0),a4                     ; get address of buffer to read into
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -928,6 +966,7 @@ _notlong:
     move.w 8(a0),d3                      ; get the file handle
     move.l 10(a0),d4                     ; get number of bytes to write
     move.l 14(a0),a4                     ; get address of buffer to the data to write
+    bsr resolve_forced_handle            ; a standard handle forced onto a GEMDRIVE file
 
     detect_emulated_file_handler         ; If not emulated, exec_old_handler the code. Otherwise continue with the code
 
@@ -1345,6 +1384,39 @@ get_run_basepage:
     rts
 .run_basepage_tos100_es:
     move.l $873C, d4
+    rts
+
+; If d3.w is a standard handle that the running process, or one of its
+; ancestors, forced onto a GEMDRIVE file with Fforce, replace it with that
+; file's handle. Uses d0-d2/a5.
+resolve_forced_handle:
+    cmp.w #GEMDRIVE_STD_HANDLES, d3
+    bhs.s .rf_done
+    moveq #0, d0
+    move.w d3, d0
+    lsl.w #3, d0
+    lea GEMDRVEMUL_FORCED, a5
+    move.l 0(a5,d0.w), d1                ; the GEMDRIVE handle, 0 = not forced
+    beq.s .rf_done
+    move.l 4(a5,d0.w), d2                ; the process that forced it
+    move.l d4, -(sp)
+    bsr get_run_basepage
+    moveq #11, d0                        ; the running process or up to 11 ancestors
+.rf_parent:
+    cmp.l d4, d2
+    beq.s .rf_match
+    tst.l d4
+    beq.s .rf_no_match
+    move.l d4, a5
+    move.l $24(a5), d4                   ; p_parent
+    dbf d0, .rf_parent
+.rf_no_match:
+    move.l (sp)+, d4
+.rf_done:
+    rts
+.rf_match:
+    move.l (sp)+, d4
+    move.w d1, d3
     rts
 
 ; Shared functions included at the end of the file

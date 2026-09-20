@@ -11,8 +11,8 @@ SECTIONS
         gemdrive.o(.text)
     }
 
-    /* Place floppy.s .text at 0x002800 */
-    .text_floppy 0x002800 : { 
+    /* Place floppy.s .text at 0x002A00 */
+    .text_floppy 0x002A00 : { 
         floppy.o(.text)
     }
 

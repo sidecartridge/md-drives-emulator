@@ -201,7 +201,18 @@ void gemdrive_setWriteFail(uint16_t chunks);
 #define GEMDRIVE_PEXEC_ENVSTR \
   (GEMDRIVE_PEXEC_CMDLINE + 4)  // pexec cmd line + 4 bytes
 
+// The basepage of the program Pexec is starting: CMD_SAVE_BASEPAGE fills the
+// whole 256-byte structure here, not just a pointer.
 #define GEMDRIVE_EXEC_PD (GEMDRIVE_PEXEC_ENVSTR + 4)  // pexec envstr + 4 bytes
+#define GEMDRIVE_EXEC_PD_SIZE 256
+#define GEMDRIVE_FFORCE_STATUS \
+  (GEMDRIVE_EXEC_PD + GEMDRIVE_EXEC_PD_SIZE)  // exec pd + 256 bytes
+// Standard handles (0-5) forced onto GEMDRIVE files with Fforce: per standard
+// handle, the GEMDRIVE handle (0 = not forced) and the basepage of the process
+// that forced it. The ST reads it to route Fread/Fwrite/Fseek on a standard
+// handle without asking the RP.
+#define GEMDRIVE_FORCED (GEMDRIVE_FFORCE_STATUS + 4)  // fforce status + 4 bytes
+#define GEMDRIVE_FORCED_COUNT 6
 
 #define GEMDRIVE_ASSERT_ALIGNED_2(offset) \
   _Static_assert(((offset) & 0x1u) == 0u, #offset " must stay 2-byte aligned")
@@ -313,6 +324,8 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
 
 #define GEMDRVEMUL_PEXEC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
+#define GEMDRVEMUL_FFORCE_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x46)  // Fforce of a standard handle
 #define GEMDRVEMUL_PTERM_CALL \
   (APP_GEMDRVEMUL << 8 | 0x4C)  // A process ends: close the files it owns
 #define GEMDRVEMUL_MALLOC_CALL \

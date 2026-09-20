@@ -33,7 +33,7 @@ BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
 PRE_RESET_WAIT		equ $FFFFF
 TRANSTABLE			equ $FA0800	; Translation table for high resolution
 GEMDRIVE			equ $FA1000 ; GEMDRIVE address
-FLOPPYEMUL 			equ $FA2800 ; Floppy emulation address
+FLOPPYEMUL 			equ $FA2A00 ; Floppy emulation address
 RTCEMUL 			equ $FA3400 ; RTC emulation address
 ACSIEMUL 			equ $FA5400 ; ACSI emulation address
 POOLFIX 			equ $FA4C00 ; GEMDOS pool fix (TOS 1.04 and 1.06)
