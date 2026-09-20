@@ -1312,15 +1312,20 @@ _notlong:
 ; The code here is executed when the PE_GO is finished. It must release the memory of the current process
 ; and restore the basepage of the current process
 .pexec_mshrink_exit:
-; Release the memory of the current process, if necessary
-; Get the values from _sysbase
-    movem.l d1-d7/a0-a6, -(sp)           ; Save registers
-    reentry_gem_lock
+; PE_GO leaves the child's memory to whoever called Pexec, so release it here.
+;
+; This code gets control from the RTE of the Pexec trap, so it runs in the mode
+; the caller was in: supervisor when the desktop or the AES starts a program,
+; user mode when an ordinary program does. Nothing here may touch the first
+; 2 KB of memory, which is a bus error in user mode. That rules out sending a
+; command to the device, because send_sync reads _dskbufp at $4C6: the reentry
+; lock that used to be here bombed every user-mode program that started another
+; one on TOS 1.00 and 1.02. Nor is one needed, since Mfree is not a call this
+; driver takes.
+    movem.l d0-d7/a0-a6, -(sp)           ; d0 is the child's exit code: keep it
     move.l GEMDRVEMUL_EXEC_PD, -(sp)     ; Pointer to the BASEPAGE structure of the process
     gemdos Mfree, 6                      ; Call Mfree() and release the memory of the current process
-    reentry_gem_unlock    
-    ext.l d0                             ; Extend the sign of the value
-    movem.l (sp)+,d1-d7/a0-a6            ; Restore registers
+    movem.l (sp)+,d0-d7/a0-a6            ; Restore registers, Pexec's answer included
 
     move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_PEXEC_RESTORE * 4)), -(sp)
     rts
