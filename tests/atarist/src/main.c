@@ -54,6 +54,7 @@ static int run() {
       {"wd-dfree", test_query_free_space_on_default_drive},
       {"wd-drive", test_get_and_set_drive},
       {"wd-relative", test_relative_file_operations_in_current_directory},
+      {"wd-search", test_search_keeps_the_current_drive},
   };
   for (unsigned i = 0; i < sizeof(singleTests) / sizeof(singleTests[0]);
        i++) {

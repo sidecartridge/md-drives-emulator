@@ -18,5 +18,6 @@ void test_query_free_space_on_drive_C();
 void test_query_free_space_on_default_drive();
 void test_get_and_set_drive();
 void test_relative_file_operations_in_current_directory();
+void test_search_keeps_the_current_drive();
 
 #endif  // WORKDIR_TESTS_H

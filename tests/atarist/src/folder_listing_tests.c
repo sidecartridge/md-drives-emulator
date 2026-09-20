@@ -308,6 +308,9 @@ void test_multiple_dtas_independent_listing() {
 #define GEMDRIVE_DTA_MARK 0xAA555344L
 void test_dta_end_of_search_and_marker(void) {
   print("=== DTA at the end of a search ===\r\n");
+  static DTA own_dta;
+  void *old_dta = (void *)Fgetdta();
+  Fsetdta(&own_dta);
   int result = Fsfirst("*.*", 0x10);
   assert_result("Fsfirst on the GEMDRIVE drive", result, 0);
   while (result == 0) result = Fsnext();
@@ -327,29 +330,44 @@ void test_dta_end_of_search_and_marker(void) {
   } else {
     print("[SKIP] No disk in A:, the TOS-search case did not run\r\n");
   }
+  Fsetdta(old_dta);
 }
 
 int run_folder_listing_tests(int presskey) {
+  // The tests point the DTA at their own locals. Put it back after each one:
+  // a DTA left pointing into a dead stack frame is overwritten by whatever
+  // runs next, and the search state in it with it.
+  void *suite_dta = (void *)Fgetdta();
   print("=== GEMDOS Folder Listing Test Suite ===\n\r");
   test_directory_listing_wildcards();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_all_files();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_empty_folder();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_nonexistent_folder();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_by_extension();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_listing_with_attributes();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_dta_end_of_search_and_marker();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_fsnext_after_end();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_directory_listing_includes_subdirs();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   test_multiple_dtas_independent_listing();
+  Fsetdta(suite_dta);
   if (presskey) press_key("");
   print("=== End of GEMDOS Folder Listing Test Suite ===\n\r");
 }

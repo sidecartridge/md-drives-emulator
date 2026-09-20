@@ -1086,13 +1086,6 @@ _notlong:
     move.b (a4)+, (a5)+                         ; Copy the DTA
     dbf d2, .populate_fsdta_struct_loop         ; Loop until we copy all the bytes
 
-    ; We need to exit with the emulated drive as current drive
-    reentry_gem_lock
-    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
-    move.w d0, -(sp)                            ; Save the drive number in the stack
-    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
-    reentry_gem_unlock
-
     moveq.l #0, d0                               ; Error code. 0 is E_OK
     return_rte
 
@@ -1106,13 +1099,6 @@ _notlong:
     move.l #DTA_MAGIC, DTA_MAGIC_OFFSET(a5)
 
     send_sync CMD_DTA_RELEASE_CALL, 4           ; Send the command to the Sidecart. 4 bytes of payload
-
-    ; We need to exit with the emulated drive as current drive
-    reentry_gem_lock
-    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_DRIVE_NUMBER * 4)), d0 ; Get the emulated drive number
-    move.w d0, -(sp)                            ; Save the drive number in the stack
-    gemdos Dsetdrv, 4                           ; Call Dsetdrv() to set the current drive to the emulated one
-    reentry_gem_unlock
 
     move.l (sp)+, d0                            ; Restore the error code
     ext.l d0                                    ; Sign-extend GEMDOS 16-bit errors
