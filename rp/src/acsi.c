@@ -503,6 +503,8 @@ static const char *acsiRebindDecisionName(uint32_t decision) {
       return "skipped-need-exceeds-reserve";
     case ACSIEMUL_REBIND_SKIP_MEMTOP_ZERO:
       return "skipped-memtop-zero";
+    case ACSIEMUL_REBIND_SKIP_NO_MAGIC:
+      return "skipped-reservation-not-ours";
     default:
       return "unknown";
   }
@@ -3650,7 +3652,7 @@ void __not_in_flash_func(acsi_loop)(TransmissionProtocol *lastProtocol,
         uint32_t decision = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
         uint32_t need = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
         uint32_t reserve = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
-        DPRINTF("ACSI rebind decision=%s need=%lu reserve=%lu\n",
+        DPRINTF("ACSI rebind decision=%s need=%lu base=%08lX\n",
                 acsiRebindDecisionName(decision), (unsigned long)need,
                 (unsigned long)reserve);
         break;

@@ -68,6 +68,8 @@ REBIND_SKIP_MAX_SECTOR      equ 3
 REBIND_SKIP_NO_BCBS         equ 4
 REBIND_SKIP_NEED_EXCEEDS    equ 5
 REBIND_SKIP_MEMTOP_ZERO     equ 6
+REBIND_SKIP_NO_MAGIC        equ 7                   ; the reservation below _membot is not ours
+ACSIEMUL_BCB_MAGIC          equ $AC514BCB           ; stamped by the bit-26 hook in main.s
 
 _membot                 equ $432
 _v_bas_ad               equ $44E
@@ -376,12 +378,25 @@ acsi_rebind_bcb_buffers:
     trace_rebind_decision #REBIND_SKIP_MEMTOP_ZERO, d1, #ACSIEMUL_BCB_POOL_BYTES
     bra .acsi_rebind_bcb_buffers_done
 .acsi_rebind_base_ok:
+    ; Only the region the bit-26 hook reserved is ours: it stamped its magic at
+    ; the base before raising _membot. Without that stamp the buffers would land
+    ; in memory the system is using, and the first access through them (a floppy
+    ; read is enough) takes the machine down.
+    movea.l d0, a3
+    cmp.l #ACSIEMUL_BCB_MAGIC, (a3)
+    bne.s .acsi_rebind_no_magic
+    cmp.l 4(a3), d0                 ; the stamp names its own base
+    beq.s .acsi_rebind_magic_ok
+.acsi_rebind_no_magic:
+    trace_rebind_decision #REBIND_SKIP_NO_MAGIC, d1, d0
+    bra .acsi_rebind_bcb_buffers_done
+.acsi_rebind_magic_ok:
     movea.l d0, a4
     movea.l bufl.w, a5
     bsr acsi_assign_bcb_list_buffers
     movea.l (bufl+4).w, a5
     bsr acsi_assign_bcb_list_buffers
-    trace_rebind_decision #REBIND_PLACED, d1, #ACSIEMUL_BCB_POOL_BYTES
+    trace_rebind_decision #REBIND_PLACED, d1, a3     ; a3 = the base: d0 was reused by the loops above
 
 .acsi_rebind_bcb_buffers_done:
     movem.l (sp)+, d0-d7/a0-a6
