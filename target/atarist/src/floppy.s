@@ -185,6 +185,12 @@ _boot_disk_no_floppy:
 ;    movem.l (sp)+,d0-d7/a0-a6
 
     clr.w _bootdev.w                ; Set emulated A as bootdevice
+    ; And the current drive, which GEMDOS took from _bootdev when it started -
+    ; before this runs, and _bootdev survives a reset: it would still be the
+    ; drive of the session before, and TOS looks for \AUTO\ on the current
+    ; drive. A driver that sets _bootdev after this one sets both too.
+    clr.w -(sp)
+    gemdos Dsetdrv, 4
     move.w #2, _nflops.w            ; Set the number of drives to 2. Always
     ; Configure drive A
     btst   #0, (_drvbits + 3).w     ; Check if drive A exists

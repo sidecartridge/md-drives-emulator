@@ -225,6 +225,11 @@ acsi_start:
     cmp.l #2, (ACSIEMUL_SHARED_VARIABLES + (SVAR_FIRST_VOLUME_DRIVE * 4))
     bne.s acsi_exit_graciously
     move.w #2, _bootdev.w
+    ; And the current drive: GEMDOS took it from _bootdev before any of this
+    ; ran, and TOS looks for \AUTO\ there. The floppy driver, which runs
+    ; first, has made it A:.
+    move.w #2, -(sp)
+    gemdos Dsetdrv, 4
 
 acsi_exit_graciously:
     rts

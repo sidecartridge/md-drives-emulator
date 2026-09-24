@@ -112,7 +112,7 @@ Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` config
 
 ### Start order and boot drive
 
-`main.s` starts the modules in this order: pool fix, floppy, GEMDRIVE, ACSI, RTC. The pool fix must be first (it has to see the ROM's GEMDOS entry). Floppy sets `_bootdev` to A: and may run the image's boot sector; GEMDRIVE (when it is C:) and ACSI (when its first partition is C:) then set C:, like a real hard-disk driver booting after the floppy, so `C:\AUTO\` and `C:\DESKTOP.INF` are used.
+`main.s` starts the modules in this order: pool fix, floppy, GEMDRIVE, ACSI, RTC. The pool fix must be first (it has to see the ROM's GEMDOS entry). Floppy sets `_bootdev` to A: and may run the image's boot sector; GEMDRIVE (when it is C:) and ACSI (when its first partition is C:) then set C:, like a real hard-disk driver booting after the floppy, so `C:\AUTO\` and `C:\DESKTOP.INF` are used. Each of them also makes its drive GEMDOS's current drive (`Dsetdrv`): GEMDOS took the current drive from `_bootdev` when it started, before the cartridge runs, `_bootdev` survives a reset, and TOS looks for `\AUTO\*.PRG` on the current drive - without it the first boot after a change of boot drive searched the old one.
 
 ### GEMDOS pool fix (TOS 1.04/1.06)
 
