@@ -356,7 +356,9 @@ the GEMDRIVE folder (on its own there: whichever harness is in the AUTO folder e
 restarting the device). It checks the BIOS, XBIOS and GEMDOS calls against the disk, writes only
 on the writable one, and logs to `FLOPTEST.TXT` on the boot drive. After a run on the writable
 disk, `make_floppy_image.py check-rw FLOPTEST.ST.RW` says whether the sector it leaves written
-reached the card.
+reached the card. One case needs the host: on a debug build, `tools/dev/swd.py app
+floppy_fail_read 1320` before the run makes a read fail, and FLOPTEST checks that it is reported
+as a failure; without it that case is skipped.
 
 Its reference is TOS's own floppy driver: `tools/dev/hatari_tests.py --harness floptest` runs it
 under Hatari on both disks and every TOS Hatari can, and puts hardware logs beside those results.

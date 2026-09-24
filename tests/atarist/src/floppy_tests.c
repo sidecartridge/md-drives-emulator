@@ -19,6 +19,9 @@
 #define WRITTEN_SECTOR 1300     /* left written for the host to check */
 #define SCRATCH_SECTOR 1301     /* written and put back */
 #define XBIOS_SECTOR 1310       /* track 72, side 1, sector 6 */
+#define FAILING_SECTOR 1320     /* the host makes its next read fail */
+#define EREADF -11              /* read fault */
+#define EWRPRO -13              /* write protected */
 
 static const char README[] = "SidecarTridge floppy test image.\r\n";
 #define PROGRAM_SIZE 36L  /* PROG.TOS: a header, Pterm0 and no fixups */
@@ -37,13 +40,24 @@ static int disk_is_rw = FALSE;
    until this is known to be TRUE. */
 static int xbios_side1_reaches_a = FALSE;
 
-/* etv_critic: TOS hands it the error code as a word at 4(sp). Handing that
-   straight back makes the call fail with it, where the default handler shows
-   the desktop's alert and waits for somebody to press a button. Machine code
-   so it needs no knowledge of the C calling convention:
-     move.w 4(sp),d0 ; ext.l d0 ; rts */
-static const unsigned short critic_returns_error[] = {0x302F, 0x0004, 0x48C0,
-                                                      0x4E75};
+/* etv_critic: TOS hands it the error code and the drive as two words at 4(sp)
+   and 6(sp), which a C function taking one long sees as one argument, the
+   error in its high word. Handing the error straight back makes the call fail
+   with it, where the default handler shows the desktop's alert and waits for
+   somebody to press a button. Each call is noted: TOS's floppy driver sends
+   a failed Rwabs through here, and a failed Floprd or Flopwr not. */
+static volatile int critic_calls = 0;
+static volatile long critic_last = 0;
+
+static long critic_returns_error(long error_and_drive) {
+  critic_calls++;
+  critic_last = error_and_drive;
+  return (short)(error_and_drive >> 16);
+}
+
+static int critic_was_told(int error, int drive) {
+  return (short)(critic_last >> 16) == error && (short)critic_last == drive;
+}
 
 static void make_signature(int lba, unsigned char* out) {
   out[0] = 0x46;
@@ -160,10 +174,15 @@ static void test_rwabs_write(void) {
   long result;
   if (!disk_is_rw) {
     /* Nothing may change on a read-only disk, and the caller must hear it. */
+    int calls = critic_calls;
     make_written(SCRATCH_SECTOR, buffer);
     result = Rwabs(1, buffer, 1, SCRATCH_SECTOR, DRIVE_A);
     print("Rwabs write on the read-only disk = %ld\r\n", result);
-    assert_result("A write to the read-only disk is refused", result < 0, TRUE);
+    assert_result("A write to the read-only disk is refused, write protected",
+                  (int)result, EWRPRO);
+    assert_result("Through etv_critic, told the error and the drive",
+                  critic_calls - calls == 1 && critic_was_told(EWRPRO, DRIVE_A),
+                  TRUE);
     Rwabs(0, buffer, 1, SCRATCH_SECTOR, DRIVE_A);
     assert_result("And the sector is unchanged",
                   holds_signature(SCRATCH_SECTOR, buffer), TRUE);
@@ -213,16 +232,20 @@ static void test_floprd_track(void) {
 
 static void test_flopwr(void) {
   short result;
+  int calls;
   if (!xbios_side1_reaches_a) {
     print("[SKIP] Flopwr: XBIOS side 1 does not reach drive A, so a write "
           "would land on another disk\r\n");
     return;
   }
   make_written(XBIOS_SECTOR, buffer);
+  calls = critic_calls;
   result = Flopwr(buffer, 0L, DRIVE_A, 6, 72, 1, 1);
   if (!disk_is_rw) {
     print("Flopwr on the read-only disk = %d\r\n", result);
-    assert_result("Flopwr to the read-only disk is refused", result < 0, TRUE);
+    assert_result("Flopwr to the read-only disk is refused, write protected",
+                  result, EWRPRO);
+    assert_result("Without etv_critic", critic_calls - calls, 0);
     return;
   }
   assert_result("Flopwr track 72 side 1 sector 6", result, 0);
@@ -297,6 +320,35 @@ static void test_count_of_zero(void) {
   print("Floprd of no sectors = %d\r\n", xresult);
   assert_result("Floprd of no sectors answers as TOS does, 0 or -8",
                 xresult == 0 || xresult == -8, TRUE);
+}
+
+/* A read that cannot be served fails, and leaves the caller's buffer alone
+   instead of handing it whatever was read before. The failure is made from
+   the host before the run - swd.py app floppy_fail_read 1320 - and without
+   that the read succeeds and there is nothing to see here: under Hatari, or
+   on a run nobody armed. */
+static void test_read_failure(void) {
+  long result;
+  int calls;
+  Rwabs(0, buffer, 1, 1093, DRIVE_A); /* something else read just before */
+  memset(buffer, 0x5A, SECTOR * 2);
+  calls = critic_calls;
+  result = Rwabs(0, buffer, 1, FAILING_SECTOR, DRIVE_A);
+  if (result == 0) {
+    print("[SKIP] No read failure made (swd.py app floppy_fail_read %d)\r\n",
+          FAILING_SECTOR);
+    return;
+  }
+  print("Rwabs of a sector that fails = %ld\r\n", result);
+  assert_result("A read that fails is a read fault", (int)result, EREADF);
+  assert_result("Through etv_critic, told the error and the drive",
+                critic_calls - calls == 1 && critic_was_told(EREADF, DRIVE_A),
+                TRUE);
+  assert_result("And the buffer is left as it was", buffer_untouched(), TRUE);
+  result = Rwabs(0, buffer, 1, FAILING_SECTOR, DRIVE_A);
+  assert_result("Read again, it reads", (int)result, 0);
+  assert_result("And it is that sector",
+                holds_signature(FAILING_SECTOR, buffer), TRUE);
 }
 
 /* -------------------------------------------------------------- GEMDOS */
@@ -418,8 +470,8 @@ static void test_create_file(void) {
   long written;
   if (!disk_is_rw) {
     print("Fcreate on the read-only disk = %d\r\n", handle);
-    assert_result("A file cannot be created on the read-only disk",
-                  handle < 0, TRUE);
+    assert_result("A file cannot be created on the read-only disk", handle,
+                  EWRPRO);
     if (handle >= 0) {
       Fclose(handle);
       Fdelete("A:\\NEWFILE.TMP");
@@ -477,6 +529,7 @@ int run_floppy_tests(void) {
     test_floprd_track();
     test_flopver();
     test_count_of_zero();
+    test_read_failure();
 
     print("=== Floppy: GEMDOS ===\r\n");
     test_listing();
