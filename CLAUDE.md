@@ -35,6 +35,8 @@ Atari GEMDRIVE test binary (produces `tests/atarist/dist/FSTESTS.TOS`):
 ```
 Pass any non-empty third argument to enable file logging. Tests run from the Atari desktop while GEMDRIVE points at a writable folder.
 
+The same build produces `FLOPTEST.TOS`, the floppy-only harness: it tests the disk in A: that `tools/dev/make_floppy_image.py` makes, and `tools/dev/hatari_tests.py --harness floptest` runs it against TOS's own floppy driver under Hatari (see `tools/dev/README.md`).
+
 To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
 
 Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` wants a terminal; when run through an agent wrapper set `STCMD_NO_TTY=1`, as CI does. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.

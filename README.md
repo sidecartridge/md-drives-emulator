@@ -341,6 +341,26 @@ boot. Started from the AUTO folder it does not wait for a key at the end: it ask
 restart, so the device comes back in the setup menu with the card available over USB and `LOG.TXT`
 can be read from a computer. Build with file logging on for there to be a log.
 
+### Floppy tests
+
+`FLOPTEST.TOS` is built by the same command, and tests the floppy drive only. It reads a disk made
+for it, where every byte is predictable:
+
+```bash
+python3 tools/dev/make_floppy_image.py rw FLOPTEST.ST.RW   # writable
+python3 tools/dev/make_floppy_image.py ro FLOPTEST.ST      # read-only
+```
+
+Put one of them in drive A and run `FLOPTEST.TOS`, from the desktop or as `AUTO\FLOPTEST.PRG` in
+the GEMDRIVE folder (on its own there: whichever harness is in the AUTO folder ends the run by
+restarting the device). It checks the BIOS, XBIOS and GEMDOS calls against the disk, writes only
+on the writable one, and logs to `FLOPTEST.TXT` on the boot drive. After a run on the writable
+disk, `make_floppy_image.py check-rw FLOPTEST.ST.RW` says whether the sector it leaves written
+reached the card.
+
+Its reference is TOS's own floppy driver: `tools/dev/hatari_tests.py --harness floptest` runs it
+under Hatari on both disks and every TOS Hatari can, and puts hardware logs beside those results.
+
 ## Project docs
 
 - `CLAUDE.md` / `AGENTS.md`: build, architecture, and contributor playbook.

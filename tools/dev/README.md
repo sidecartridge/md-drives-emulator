@@ -162,6 +162,29 @@ from `$PICO_OPENOCD_PATH`, the variable `.vscode/launch.json` uses. A command th
 momentary debug-port drop (common while the firmware changes its clock early in boot) is retried.
 Close a VS Code debug session first: only one program can use the probe.
 
+## Test harnesses under Hatari: `hatari_tests.py`
+
+Runs a harness from `tests/atarist/dist/` under Hatari on TOS 1.04, 1.06, 1.62, 2.06 and EmuTOS,
+headless, and writes a Markdown matrix to `tools/dev/logs/<harness>-matrix.md`: one row per test,
+one column per platform and TOS. Hardware logs from the card go in as extra columns.
+
+```bash
+tools/dev/hatari_tests.py                                   # FSTESTS, Hatari's GEMDOS drive
+tools/dev/hatari_tests.py --harness floptest                # FLOPTEST, both disks
+tools/dev/hatari_tests.py --harness floptest --hardware "2.06 rw=FLOPTEST.TXT"
+```
+
+Hatari is the reference for what correct means. For FSTESTS that is its GEMDOS drive standing in
+for GEMDRIVE; for FLOPTEST it is its emulated WD1772 read by TOS's own floppy driver, which is what
+our floppy emulation replaces. FLOPTEST runs twice per TOS, on a writable and a write-protected
+disk made fresh by `make_floppy_image.py`, and after the writable run the image is checked for the
+sector the test leaves written. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
+hardware-only for both harnesses. `--keep DIR` keeps each run's drive and log.
+
+`make_floppy_image.py ro|rw FILE` builds FLOPTEST's disk and `check-rw FILE` checks one after a
+run; the rules for what every sector holds are in its docstring and in `floppy_tests.c`, and the
+two must agree.
+
 ## SELECT regression checks: `select_harness.py`
 
 Presses SELECT through `swd.py select` and reads the firmware's own state over SWD (app state,

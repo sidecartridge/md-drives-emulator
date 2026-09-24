@@ -7,6 +7,7 @@ SOURCES_DIR = ./src
 BUILD_DIR = ./build
 DIST_DIR = ./dist
 EXE = FSTESTS.TOS
+FLOPTEST_EXE = FLOPTEST.TOS
 
 # VASM PARAMETERS
 VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac
@@ -77,10 +78,21 @@ main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o
 		  $(BUILD_DIR)/sidecart.o \
 		  -o $(BUILD_DIR)/$(EXE) $(LINKFLAGS)
 
+# The floppy harness: a program of its own, sharing the runner and the device
+# command with FSTESTS.
+floptest: floptest_main.o floppy_tests.o test_runner.o sidecart.o
+	$(CC) $(LIBCMINI)/lib/crt0.o \
+		  $(BUILD_DIR)/floptest_main.o \
+		  $(BUILD_DIR)/floppy_tests.o \
+		  $(BUILD_DIR)/test_runner.o \
+		  $(BUILD_DIR)/sidecart.o \
+		  -o $(BUILD_DIR)/$(FLOPTEST_EXE) $(LINKFLAGS)
+
 .PHONY: dist
-dist: main
+dist: main floptest
 	mkdir -p $(DIST_DIR)
-	cp $(BUILD_DIR)/$(EXE) $(DIST_DIR)    
+	cp $(BUILD_DIR)/$(EXE) $(DIST_DIR)
+	cp $(BUILD_DIR)/$(FLOPTEST_EXE) $(DIST_DIR)    
 
 .PHONY: clean
 clean:

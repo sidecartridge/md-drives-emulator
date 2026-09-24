@@ -40,6 +40,8 @@ cd target/atarist
 - Use `44444444-4444-4444-8444-444444444444` as the local validation UUID unless the user asks for a different one.
 
 ## 3. Build Notes & Gotchas
+
+- Hatari's GEMDOS drive (`--harddrive`) is the reference for GEMDRIVE's file calls, but not for how a program is loaded: for `Pexec` 0 and 3 on its drive it asks TOS for a bare basepage (mode 5 below TOS 2.00, mode 7 from 2.00) and loads and relocates the program itself (`src/gemdos.c`, `GemDOS_Pexec`), just as GEMDRIVE does. For what TOS's own loader does, load a program from a floppy under Hatari: FLOPTEST's `PROG.TOS` is there for that. Measured that way, TOS 1.04 and 1.06 leave the basepage's `p_flags` at 0 and TOS 1.62 and later copy the header's flags into it - which the Compendium had put at 1.04.
 - `rp/build.sh` is not a lightweight incremental build. It:
   - reinitializes submodules
   - checks out pinned SDK tags
