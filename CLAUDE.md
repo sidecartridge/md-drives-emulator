@@ -106,6 +106,8 @@ Media change follows TOS's own floppy driver: the RP raises `MED_CHANGED` on a d
 
 Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive B's BPB: the SVAR block is full), written before the token: 0, or the BIOS error TOS's own floppy driver gives for that failure (-13 for a read-only image, -11 for a read fault). `Rwabs` sends a failure through `etv_critic` and tries again on `$10000`, as TOS's driver does, so the desktop shows its usual alert; `Floprd` and `Flopwr` only return it, as TOS's do.
 
+The BPB handed to GEMDOS is built from the boot sector as TOS's own floppy `Getbpb` builds it, on 1.04 and 2.06 alike (measured under Hatari): one reserved sector and two FATs whatever the boot sector says, the root directory truncated to whole sectors. A disk that works on a real ST is laid out that way.
+
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
 ### Start order and boot drive

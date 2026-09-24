@@ -406,12 +406,6 @@ static inline uint16_t floppyReadLe16(const BYTE *buffer, size_t offset) {
   return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
 }
 
-static inline uint32_t floppyReadLe32(const BYTE *buffer, size_t offset) {
-  return (uint32_t)buffer[offset] | ((uint32_t)buffer[offset + 1] << 8) |
-         ((uint32_t)buffer[offset + 2] << 16) |
-         ((uint32_t)buffer[offset + 3] << 24);
-}
-
 static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   BYTE buffer[FLOPPY_SECTOR_SIZE] = {0}; /* File copy buffer */
   unsigned int br = 0;                   /* File read/write count */
@@ -437,32 +431,31 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
 
   BPBData bpb_tmp = {0};  // Temporary BPBData structure
 
-  uint16_t reservedSectors = floppyReadLe16(buffer, 14);
-  uint16_t rootEntryCount = floppyReadLe16(buffer, 17);
-  uint32_t totalSectors = floppyReadLe16(buffer, 19);
-  uint8_t fatCount = buffer[16];
-
-  bpb_tmp.recsize = floppyReadLe16(buffer, 11);  // Sector size in bytes
-  bpb_tmp.clsiz = (uint16_t)buffer[13];          // Cluster size
-  bpb_tmp.clsizb = bpb_tmp.clsiz * bpb_tmp.recsize;
-
-  if (totalSectors == 0) {
-    totalSectors = floppyReadLe32(buffer, 32);
-  }
-
-  if (bpb_tmp.recsize != 0) {
-    bpb_tmp.rdlen =
-        (uint16_t)(((uint32_t)rootEntryCount * 32U + bpb_tmp.recsize - 1U) /
-                   bpb_tmp.recsize);
-  }
-
+  // Built as TOS's own floppy Getbpb builds it (th-otto/tos1x bios/blkdev.c,
+  // bhdv_getbpb), and TOS 2.06 does the same - measured under Hatari: one
+  // reserved sector and two FATs whatever the boot sector says, the root
+  // directory truncated to whole sectors, the 16-bit sector count, and TOS's
+  // 16-bit signed arithmetic. A disk that works on a real ST is laid out the
+  // way TOS reads it; honouring the reserved and FAT counts instead read three
+  // of 1456 real images a sector off. Getbpb on the ST answers no BPB when the
+  // sector size is not positive or the cluster size is 0, as TOS does, so
+  // those values only need to keep the divisions here safe.
+  int16_t recsize = (int16_t)floppyReadLe16(buffer, 11);
+  int16_t clsiz = (int16_t)buffer[13];
+  bpb_tmp.recsize = (uint16_t)recsize;
+  bpb_tmp.clsiz = (uint16_t)clsiz;
+  bpb_tmp.clsizb = (uint16_t)(recsize * clsiz);
   bpb_tmp.fsiz = floppyReadLe16(buffer, 22);  // FAT size in sectors
-  bpb_tmp.fatrec = reservedSectors + bpb_tmp.fsiz;
-  bpb_tmp.datrec =
-      reservedSectors + ((uint16_t)fatCount * bpb_tmp.fsiz) + bpb_tmp.rdlen;
-
-  if (bpb_tmp.clsiz != 0 && totalSectors >= bpb_tmp.datrec) {
-    bpb_tmp.numcl = (uint16_t)((totalSectors - bpb_tmp.datrec) / bpb_tmp.clsiz);
+  bpb_tmp.fatrec = (uint16_t)(bpb_tmp.fsiz + 1);
+  if (recsize > 0) {
+    bpb_tmp.rdlen =
+        (uint16_t)((int16_t)(floppyReadLe16(buffer, 17) << 5) / recsize);
+  }
+  bpb_tmp.datrec = (uint16_t)(bpb_tmp.fatrec + bpb_tmp.rdlen + bpb_tmp.fsiz);
+  if (clsiz > 0) {
+    bpb_tmp.numcl = (uint16_t)((int16_t)(floppyReadLe16(buffer, 19) -
+                                         bpb_tmp.datrec) /
+                               clsiz);
   }
 
   bpb_tmp.bflags = 0;  // Magic flags
