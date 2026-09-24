@@ -104,6 +104,8 @@ Key design points:
 
 Media-change state is RP-owned. Atari-side `floppy.s` must only *read* the shared media-change flags. Working behavior: RP raises `MED_CHANGED` on drive-A slot swap and clears it after the first successful read of the new disk's root-directory start sector.
 
+Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive B's BPB: the SVAR block is full), written before the token: 0, or the BIOS error TOS's own floppy driver gives for that failure (-13 for a read-only image, -11 for a read fault). `Rwabs` sends a failure through `etv_critic` and tries again on `$10000`, as TOS's driver does, so the desktop shows its usual alert; `Floprd` and `Flopwr` only return it, as TOS's do.
+
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
 ### Start order and boot drive

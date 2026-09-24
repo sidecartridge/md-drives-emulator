@@ -81,6 +81,7 @@ python3 tools/dev/swd.py app countdown_stop                      # stop the setu
 python3 tools/dev/swd.py app gemdrive_stall 2 100                # stall 2 write answers 10 s each
 python3 tools/dev/swd.py app gemdrive_fail_write 1               # the next write chunk fails
 python3 tools/dev/swd.py app heap_hold 16                        # hold 16 KB more heap (0 releases)
+python3 tools/dev/swd.py app floppy_fail_read 1320               # the next read of that sector fails
 python3 tools/dev/swd.py inject 0x0001 0x0067 0                  # any protocol command
 python3 tools/dev/swd.py crash                                   # why did it last reboot?
 python3 tools/dev/swd.py postmortem                              # halt, backtraces, resume
@@ -137,6 +138,10 @@ GEMDRIVE/floppy/RTC/ACSI handlers during emulation. `app NAME` runs the app comm
   through the real error path. The ST's `Fwrite` must then return promptly (a short count, or
   the error when nothing was written) instead of looping; the console shows `failing this chunk
   on purpose`.
+- `floppy_fail_read SECTOR` — make the next floppy read of logical sector SECTOR, on either drive,
+  fail as an SD error, through the real error path: the image is closed and opened again on the
+  next access. FLOPTEST reads sector 1320 for this: armed before the run, the read must fail with
+  -11 through `etv_critic` and leave the caller's buffer alone; not armed, that case is skipped.
 
 `crash` prints the watchdog reason and scratch registers of the last reboot without stopping the
 RP, with code addresses resolved to source lines by `addr2line`.

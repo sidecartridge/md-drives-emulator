@@ -66,6 +66,10 @@ secpcyl_B:             equ sidecnt_B + 2 ; sidecnt + 2 bytes
 secptrack_B:           equ secpcyl_B + 2 ; secpcyl + 2 bytes
 disk_number_B:         equ secptrack_B + 8 ; secptrack + 8 bytes
 
+; What the last read or write answered: 0, or the BIOS error TOS's own floppy
+; driver gives for that failure. The RP writes it before the token.
+transfer_status:       equ (disk_number_B + 2) ; disk_number_B + 2 bytes
+
 ; After the variables, allocate the buffer to read/write sectors
 sidecart_read_buf:     equ (FLOPPYEMUL_VARIABLES_OFFSET + 256)
 
@@ -78,6 +82,7 @@ _bootdev        equ $446    ; This value represents the device from which the sy
 _nflops         equ $4a6    ; This value indicates the number of floppy drives currently connected to the system
 _drvbits        equ $4c2    ; Each of 32 bits in this longword represents a drive connected to the system. Bit #0 is A, Bit #1 is B and so on.
 _dskbufp        equ $4c6    ; Address of the disk buffer pointer    
+etv_critic      equ $404    ; The critical error handler
 _longframe      equ $59e    ; Address of the long frame flag. If this value is 0 then the processor uses short stack frames, otherwise it uses long stack frames.
 
 
@@ -113,18 +118,29 @@ floppy_start:
     rts
 
 
-; Save the old BIOS vectors and install
+; Save the old BIOS vector and install ours. The old one goes to the RP first,
+; and ours is installed only once it is in place: old_bios_handler is in the
+; read-only window, and until the RP has written it every BIOS call this
+; driver does not take would jump to 0.
 set_vector_bios:
-    move.l #bios_trap,-(sp)             ; Otherwise, use the standard entry point
+    move.l #-1,-(sp)                    ; -1 only reads the vector
     move.w #VEC_BIOS,-(sp)
-    move.w #Setexc,-(sp)                     ; Setexc() modify BIOS vector and add our trap
+    move.w #Setexc,-(sp)
     trap #13
     addq.l #8,sp
     move.l d0, d3                       ; Address of the old BIOS vector
     move.l #old_bios_handler, d4        ; Address of the old handler
     move.l #bios_trap, d5               ; Address of the new handler
     send_sync CMD_SAVE_BIOS_VECTOR, 12   ; Send the command to the Sidecart. 12 bytes of payload
-    tst.w d0                            ; 0 if no error
+    bne.s _dont_set_bios_trap           ; no answer
+    cmp.l old_bios_handler, d3          ; send_sync keeps d3
+    bne.s _dont_set_bios_trap           ; answered, but it is not there
+    move.l #bios_trap,-(sp)
+    move.w #VEC_BIOS,-(sp)
+    move.w #Setexc,-(sp)                ; Setexc() modify BIOS vector and add our trap
+    trap #13
+    addq.l #8,sp
+_dont_set_bios_trap:
     rts
 
     ds.b ((4 - (* & 3)) & 3)                ; bump to the next 4-byte boundary 
@@ -139,6 +155,9 @@ old_bios_handler:
 set_vector_xbios:
     move.l XBIOS_trap.w,d3              ; Payload is the old XBIOS_trap
     send_sync CMD_SAVE_VECTORS, 4
+    bne.s _dont_set_xbios_trap          ; no answer
+    cmp.l old_XBIOS_trap, d3            ; answered, and the old vector is there?
+    bne.s _dont_set_xbios_trap
     tst.l   (FLOPPY_SHARED_VARIABLES + (SVAR_XBIOS_TRAP_ENABLED * 4))  ; 0: XBIOS trap disabled, Not 0: XBIOS trap enabled
     beq.s _dont_set_xbios_trap 
     move.l  #new_XBIOS_trap_routine,XBIOS_trap.w
@@ -201,11 +220,13 @@ _start_boot:
     beq.s _dont_boot
 
     moveq #0, d6            ; Start reading at sector 0
-    move.l d0, d4           ; Read from drive A
-    move.l d0, d2           ; clear d2.l 
+    moveq #0, d4            ; Read from drive A
+    moveq #0, d2            ; clear d2.l
     move.w BPB_data_A, d2   ; Sector size of the emulated drive A
     move.l _membot.w,a4        ; Start reading at $2000
     bsr read_sector_from_sidecart
+    tst.w d0
+    bne.s _dont_boot        ; nothing was read: _membot holds no boot sector
 
     ; Test checksum
 
@@ -349,10 +370,9 @@ _floppy_xbios_emulated:
     bne.s _floppy_xbios_transfer
     moveq #1, d5               ; Flopwr writes
 _floppy_xbios_transfer:
-    bsr do_transfer_sidecart
-
+    bsr do_transfer_sidecart   ; d0: 0, or the error, which Floprd and Flopwr
+                               ; return as TOS's do, without etv_critic
     movem.l (sp)+,d3-d7/a3-a6
-    clr.l d0
     rte
 
 ; Flopver reads each sector into the start of the caller's buffer and then
@@ -498,14 +518,7 @@ _bios_rwabs_a_continue:
     movem.l d3-d7/a3-a6, -(sp)
     moveq #0, d4               ; Use A:
     move.w BPB_data_A, d2      ; Sector size of the emulated drive A
-    move.w 16(a0),d6           ; start sect no
-    move.w 14(a0),d1           ; number of sectors to read/write
-    move.l 10(a0),a4           ; buffer address
-    move.w 8(a0), d5           ; rwflag
-    and.l #%1, d5              ; only rw bit
-    bsr.s do_transfer_sidecart
-    movem.l (sp)+,d3-d7/a3-a6
-    rte
+    bra.s _bios_rwabs_emulated
 _bios_rwabs_b:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
@@ -519,14 +532,42 @@ _bios_rwabs_b_continue:
     movem.l d3-d7/a3-a6, -(sp)
     moveq #1, d4               ; Use B:
     move.w BPB_data_B, d2      ; Sector size of the emulated drive B
-    move.w 16(a0),d6           ; start sect no
-    move.w 14(a0),d1           ; number of sectors to read/write
-    move.l 10(a0),a4           ; buffer address
-    move.w 8(a0), d5           ; rwflag
+_bios_rwabs_emulated:
+    move.l a0, a5              ; the arguments: a send does not keep a0
+_bios_rwabs_transfer:
+    move.w 16(a5),d6           ; start sect no
+    move.w 14(a5),d1           ; number of sectors to read/write
+    move.l 10(a5),a4           ; buffer address
+    move.w 8(a5), d5           ; rwflag
     and.l #%1, d5              ; only rw bit
-    bsr.s do_transfer_sidecart
+    bsr do_transfer_sidecart
+    tst.l d0
+    beq.s _bios_rwabs_done
+    ; A failure goes to the critical error handler, as TOS's floppy driver
+    ; sends it: that is the desktop's alert. Its answer is what Rwabs returns,
+    ; unless it is $10000, Retry, and the transfer is made again.
+    move.l d2, -(sp)           ; the handler may use d0-d2 and a0-a2
+    move.w d4, -(sp)           ; 6(sp) for the handler: the drive
+    move.w d0, -(sp)           ; 4(sp): the error
+    move.l etv_critic.w, a0
+    jsr (a0)
+    addq.l #4, sp
+    move.l (sp)+, d2
+    cmp.l #$10000, d0
+    bne.s _bios_rwabs_done
+    ; Retry on a disk that was changed meanwhile - a slot cycled - is E_CHNG,
+    ; as in TOS, so GEMDOS rereads the new disk instead of having the old one's
+    ; sectors written on it. TOS asks only in modes 0 and 1.
+    cmp.w #2, 8(a5)
+    bge.s _bios_rwabs_transfer
+    move.w d4, d0
+    lsl.w #2, d0               ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a0
+    cmp.l #MED_CHANGED, 0(a0, d0.w)
+    bne.s _bios_rwabs_transfer
+    moveq #E_CHNG, d0
+_bios_rwabs_done:
     movem.l (sp)+,d3-d7/a3-a6
-    clr.l d0
     rte
 
 
@@ -642,7 +683,8 @@ read_sector_from_sidecart:
 .read_sector_from_sidecart_ok:
     tst.w d0
     bne.s _error_reading_sector
-    clr.l d0                            ; Clear the error code
+    move.l transfer_status, d0          ; the RP's answer: 0, or the error
+    bne.s _read_sector_failed           ; and the buffer is not this sector
     move.w d2, d5                       ; Save in d5 the number of bytes to copy
     move.l #sidecart_read_buf, a1
     lsr.w #2, d5
@@ -657,6 +699,7 @@ _copy_sector_byte_even:
     rts
 _error_reading_sector:
     moveq #-1, d0
+_read_sector_failed:
     rts
 _copy_sector_byte_odd:
     move.b (a1)+, (a4)+
@@ -698,7 +741,8 @@ _write_sector_to_sidecart_retry:
 _error_writing_sector:
     rts
 _write_sector_to_sidecart_once_ok:
-    clr.l d0                                ; Clear the error code
+    move.l transfer_status, d0              ; the RP's answer: 0, or the error
+    bne.s _error_writing_sector
     and.l #$0000FFFF,d2                     ; limit the size of the sectors to 65535
     add.l d2, a4                            ; Move the address to the next sector
     rts

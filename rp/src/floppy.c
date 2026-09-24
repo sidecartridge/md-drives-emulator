@@ -243,6 +243,30 @@ static inline bool floppyTransferSizeIsValid(uint16_t sSize) {
   return true;
 }
 
+static inline void __not_in_flash_func(floppySetTransferStatus)(
+    int32_t status) {
+  WRITE_AND_SWAP_LONGWORD(memorySharedAddress, FLOPPYEMUL_TRANSFER_STATUS,
+                          (uint32_t)status);
+}
+
+// Debug-only fault injection (`swd.py app floppy_fail_read SECTOR`): the next
+// read of that logical sector, on either drive, fails as if the SD card had
+// returned an error, through the same path a real failure takes. FLOPTEST
+// reads it to see a failed read reported as one.
+static volatile int32_t floppyReadFailSector = -1;
+
+void floppy_setReadFail(uint16_t sector) { floppyReadFailSector = sector; }
+
+static inline bool __not_in_flash_func(floppyFailReadIfRequested)(
+    uint16_t lSector) {
+  if (floppyReadFailSector != (int32_t)lSector) {
+    return false;
+  }
+  floppyReadFailSector = -1;
+  DPRINTF("Floppy read: failing sector %u on purpose\n", lSector);
+  return true;
+}
+
 static inline const char *floppyGetDriveASettingKey(uint8_t slotIndex) {
   if (slotIndex < FLOPPY_DRIVE_A_SLOT_MIN ||
       slotIndex > FLOPPY_DRIVE_A_SLOT_MAX) {
@@ -535,11 +559,13 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
  *
  * @param filename The name of the file to check.
  * @return True if the filename ends with ".rw", indicating a read-write floppy
- * disk image file. False otherwise.
+ * disk image file. False otherwise. Case does not matter, as it does not for
+ * the setup menu's filter: GAME.ST.RW was offered as writable and then opened
+ * read-only.
  */
 static inline bool isFloppyRW(const char *filename) {
   return (strlen(filename) >= 3 &&
-          strcmp(filename + strlen(filename) - 3, ".rw") == 0);
+          strcasecmp(filename + strlen(filename) - 3, ".rw") == 0);
 }
 
 static bool isTrue(const char *value) {
@@ -1147,6 +1173,9 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
       DPRINTF("DISK READ %s (%d) - LSECTOR: %i / SSIZE: %i\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize);
+      // A failure until the read has succeeded, so that no way out of here
+      // leaves the answer of the command before it.
+      floppySetTransferStatus(FLOPPY_ERROR);
       if (!floppyTransferSizeIsValid(sSize)) {
         return;
       }
@@ -1161,6 +1190,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive A (%d)\r\n", ferr);
             floppyDiskStatus.stateA =
                 FLOPPY_DISK_ERROR;  // Set error state for A
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive A mounted successfully.\n");
@@ -1175,6 +1205,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive B (%d)\r\n", ferr);
             floppyDiskStatus.stateB =
                 FLOPPY_DISK_ERROR;  // Set error state for B
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive B mounted successfully.\n");
@@ -1204,11 +1235,15 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_E_SEEK);
         return;  // Return if the seek operation failed
       }
       ferr = f_read(fobjTmp, (void *)(memorySharedAddress + FLOPPYEMUL_IMAGE),
                     sSize,
                     &bytesRead); /* Read a chunk of data from the source file */
+      if (floppyFailReadIfRequested(lSector)) {
+        ferr = FR_DISK_ERR;
+      }
       if (ferr) {
         DPRINTF("ERROR: Could not read file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
@@ -1218,6 +1253,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_EREADF);
         return;  // Return if the read operation failed
       }
       if (bytesRead != sSize) {
@@ -1229,6 +1265,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
         }
+        floppySetTransferStatus(FLOPPY_ESECNF);
         return;
       }
       DPRINTF("Read sector %i of size %i bytes to memory address %08X\n",
@@ -1236,6 +1273,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       CHANGE_ENDIANESS_BLOCK16(memorySharedAddress + FLOPPYEMUL_IMAGE, sSize);
       floppyMaybeClearMediaChangeAfterRead(
           (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B, lSector);
+      floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
     case FLOPPYEMUL_WRITE_SECTORS: {
@@ -1249,6 +1287,8 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // skip d5 register
       DPRINTF("DISK WRITE %s (%d) - LSECTOR: %i / SSIZE: %i at addr: %08X\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize, addrRemote);
+      // A failure until the write has succeeded, as for a read.
+      floppySetTransferStatus(FLOPPY_ERROR);
       if (!floppyTransferSizeIsValid(sSize)) {
         return;
       }
@@ -1263,6 +1303,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive A (%d)\r\n", ferr);
             floppyDiskStatus.stateA =
                 FLOPPY_DISK_ERROR;  // Set error state for A
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive A mounted successfully.\n");
@@ -1277,6 +1318,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive B (%d)\r\n", ferr);
             floppyDiskStatus.stateB =
                 FLOPPY_DISK_ERROR;  // Set error state for B
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive B mounted successfully.\n");
@@ -1286,12 +1328,14 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         // Drive A. Use fobjA
         if (floppyDiskStatus.stateA != FLOPPY_DISK_MOUNTED_RW) {
           DPRINTF("ERROR: Drive A is not mounted for writing.\n");
+          floppySetTransferStatus(FLOPPY_EWRPRO);
           return;  // Return if the drive is not mounted for writing
         }
       } else {
         // Drive B. Use fobjB
         if (floppyDiskStatus.stateB != FLOPPY_DISK_MOUNTED_RW) {
           DPRINTF("ERROR: Drive B is not mounted for writing.\n");
+          floppySetTransferStatus(FLOPPY_EWRPRO);
           return;  // Return if the drive is not mounted for writing
         }
       }
@@ -1326,6 +1370,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_E_SEEK);
         return;  // Return if the read operation failed
       }
       ferr =
@@ -1340,6 +1385,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_EWRITF);
         return;  // Return if the read operation failed
       }
       if (bytesRead != sSize) {
@@ -1351,11 +1397,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
         }
+        floppySetTransferStatus(FLOPPY_EWRITF);
         return;
       }
       floppyMarkWriteDirty((uint8_t)diskNum);
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);
+      floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
   }

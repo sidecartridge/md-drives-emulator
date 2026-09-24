@@ -165,6 +165,15 @@ static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
               (unsigned int)chunks);
       return 1;
     }
+    case DEVHOOKS_APP_FLOPPY_FAIL_READ: {
+      if (payloadSize < 2u) {
+        return 0;
+      }
+      floppy_setReadFail(payload[0]);
+      DPRINTF("devhooks: failing the next floppy read of sector %u\n",
+              (unsigned int)payload[0]);
+      return 1;
+    }
     default:
       return 0;
   }

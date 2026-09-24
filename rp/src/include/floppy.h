@@ -123,6 +123,14 @@
 #define FLOPPYEMUL_SECPTRACK_B (FLOPPYEMUL_SECPCYL_B + 2)  // secpcyl + 2 bytes
 #define FLOPPYEMUL_DISK_NUMBER_B (FLOPPYEMUL_SECPTRACK_B + 8)  // BTB + 2 bytes
 
+// What the last read or write answered: 0, or one of the FLOPPY_E* errors
+// below. The handler writes it and the command handler writes the token after
+// the handler returns, so the ST finds it when it sees the token. It lives
+// here, after drive B's BPB, because the shared-variable block before
+// FLOPPYEMUL_VARIABLES_OFFSET is full.
+#define FLOPPYEMUL_TRANSFER_STATUS \
+  (FLOPPYEMUL_DISK_NUMBER_B + 2)  // disk_number_B + 2 bytes
+
 // The buffer for the read of the images
 #define FLOPPYEMUL_IMAGE (FLOPPYEMUL_VARIABLES_OFFSET + 256)
 #define FLOPPYEMUL_IMAGE_BUFFER_SIZE (ROM_SIZE_BYTES - FLOPPYEMUL_IMAGE)
@@ -149,6 +157,9 @@ FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_BPB_SIDECNT_B);
 FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_SECPCYL_B);
 FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_SECPTRACK_B);
 FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_DISK_NUMBER_B);
+FLOPPY_ASSERT_ALIGNED_4(FLOPPYEMUL_TRANSFER_STATUS);
+_Static_assert(FLOPPYEMUL_TRANSFER_STATUS + 4 <= FLOPPYEMUL_IMAGE,
+               "FLOPPYEMUL_TRANSFER_STATUS must end before FLOPPYEMUL_IMAGE");
 FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_IMAGE);
 
 // BPB fields
@@ -194,6 +205,17 @@ FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_IMAGE);
 
 #define FLOPPY_SECTOR_SIZE 512  // Default sector size for floppy disks
 
+// The answers of a read or write, in FLOPPYEMUL_TRANSFER_STATUS: the BIOS
+// errors TOS's own floppy driver gives for the same failure.
+#define FLOPPY_E_OK 0
+#define FLOPPY_ERROR -1    // general error
+#define FLOPPY_EDRVNR -2   // drive not ready: no image could be opened
+#define FLOPPY_E_SEEK -6   // seek error
+#define FLOPPY_ESECNF -8   // sector not found: past the end of the image
+#define FLOPPY_EWRITF -10  // write fault
+#define FLOPPY_EREADF -11  // read fault
+#define FLOPPY_EWRPRO -13  // write protected: a read-only image
+
 typedef struct {
   uint16_t recsize;     /* 0: Sector size in bytes                */
   uint16_t clsiz;       /* 1: Cluster size in sectors             */
@@ -211,6 +233,11 @@ typedef struct {
   uint16_t reserved[3]; /* 13-15: Reserved                        */
   uint16_t disk_number; /* 16: Disk number                        */
 } BPBData;
+
+// The BPB is copied into the window whole, disk_number included.
+_Static_assert(FLOPPYEMUL_BPB_DATA_B + sizeof(BPBData) <=
+                   FLOPPYEMUL_TRANSFER_STATUS,
+               "drive B's BPB must end before FLOPPYEMUL_TRANSFER_STATUS");
 
 typedef struct {
   uint32_t BIOSTrapPayload;
@@ -236,6 +263,7 @@ void __not_in_flash_func(floppy_init)();
 void __not_in_flash_func(floppy_loop)();
 void __not_in_flash_func(floppy_tick)(void);
 bool floppy_canCycleDriveA(void);
+void floppy_setReadFail(uint16_t sector);
 FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex);
 
 #endif  // FLOPPY_H
