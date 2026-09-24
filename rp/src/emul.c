@@ -26,7 +26,6 @@ static void cmdGemdriveFolder(const char *arg);
 static void cmdGemdriveDrive(const char *arg);
 static void cmdAcsiEnabled(const char *arg);
 static void cmdAcsiImage(const char *arg);
-static void cmdAcsiId(const char *arg);
 static void cmdAcsiDrive(const char *arg);
 static void cmdToggleSdHealth(const char *arg);
 static void cmdFloppyEnabled(const char *arg);
@@ -56,7 +55,6 @@ static const Command commands[] = {
     {"d", cmdGemdriveDrive},
     {"c", cmdAcsiEnabled},
     {"i", cmdAcsiImage},
-    {"n", cmdAcsiId},
     {"v", cmdAcsiDrive},
     {"f", cmdFloppyEnabled},
     {"l", cmdFloppiesFolder},
@@ -449,31 +447,6 @@ static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   return (c >= 'C' && c <= 'Z');
 }
 
-static bool parseAcsiId(const char *value, uint8_t *idOut) {
-  char *endptr = NULL;
-  long id = strtol((value != NULL) ? value : "", &endptr, 10);
-  if ((value == NULL) || (value == endptr) || (*endptr != '\0') || (id < 0) ||
-      (id > 7)) {
-    return false;
-  }
-
-  if (idOut != NULL) {
-    *idOut = (uint8_t)id;
-  }
-
-  return true;
-}
-
-static uint8_t getConfiguredAcsiId(void) {
-  SettingsConfigEntry *acsiId = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID);
-  uint8_t id = 7;
-  if ((acsiId != NULL) && parseAcsiId(acsiId->value, &id)) {
-    return id;
-  }
-  return 7;
-}
-
 static bool isGemdriveEnabledConfigured(void) {
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -510,10 +483,8 @@ static char getConfiguredAcsiDriveLetter(void) {
   return 'C';
 }
 
-// Conflict detection is now between the two configured drive letters
-// (GEMDRIVE's single slot vs ACSI's starting slot). ACSI_ID is the
-// physical ACSI ID and is independent of drive letters, so it does not
-// factor into overlap checking.
+// Conflict detection is between the two configured drive letters
+// (GEMDRIVE's single slot vs ACSI's starting slot).
 static bool wouldGemdriveAcsiConflict(bool gemdriveEnabled,
                                       char gemdriveDriveLetter,
                                       bool acsiEnabled,
@@ -822,7 +793,7 @@ static void __not_in_flash_func(menu)(void) {
   // Configurable options
   vt52Cursor(2, 0);
   // Display the ACSI options
-  term_printString("A[C]SI Enabled (EXPERIMENTAL)? ");
+  term_printString("A[C]SI Enabled? ");
   SettingsConfigEntry *acsiEnabled = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
   bool acsiIsEnabled = (acsiEnabled != NULL) && isTrue(acsiEnabled->value);
@@ -843,13 +814,11 @@ static void __not_in_flash_func(menu)(void) {
       free(acsiImageTail);
     }
 
-    uint8_t acsiId = getConfiguredAcsiId();
     char acsiDriveLetter = getConfiguredAcsiDriveLetter();
-    char acsiIdDriveLine[64];
-    snprintf(acsiIdDriveLine, sizeof(acsiIdDriveLine),
-             "\n  U[n]it (ACSI ID): %u  Dri[v]e: %c:\n\n", acsiId,
+    char acsiDriveLine[64];
+    snprintf(acsiDriveLine, sizeof(acsiDriveLine), "\n  Dri[v]e: %c:\n\n",
              acsiDriveLetter);
-    term_printString(acsiIdDriveLine);
+    term_printString(acsiDriveLine);
   } else {
     term_printString("No\n\n\n\n");
   }
@@ -1623,39 +1592,6 @@ void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
     default:
       break;
   }
-}
-
-void cmdAcsiId(const char *arg) {
-  (void)arg;
-  if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
-    showTitle();
-    term_printString("\n\n");
-    term_printString("Enter the ACSI ID (0 to 7):\n");
-    term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
-    haltCountdown = true;
-    display_refresh();
-    return;
-  }
-
-  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
-
-  uint8_t acsiId = 0;
-  if (!parseAcsiId(term_getInputBuffer(), &acsiId)) {
-    showSetupMessageScreen("Invalid ACSI ID. Use a value from 0 to 7.");
-    return;
-  }
-
-  // ACSI ID is the physical-unit tag stored in pun_info; it is independent
-  // of the ACSI drive-letter slot, so no conflict check against GEMDRIVE
-  // is needed here — that check lives in cmdAcsiDrive.
-
-  char idBuffer[4];
-  snprintf(idBuffer, sizeof(idBuffer), "%u", acsiId);
-  settings_put_string(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID,
-                      idBuffer);
-  settings_save(aconfig_getContext(), true);
-  menu();
-  display_refresh();
 }
 
 void cmdToggleSdHealth(const char *arg) {

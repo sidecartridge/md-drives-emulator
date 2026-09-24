@@ -32,10 +32,11 @@
 
 // ACSI configuration
 #define ACONFIG_PARAM_DRIVES_ACSI_ENABLED "ACSI_ENABLED"
+// No longer a setting: the emulated drives are not on the ACSI bus and have
+// no ID. Kept as a key only, in aconfig.c's defaults: see there.
 #define ACONFIG_PARAM_DRIVES_ACSI_ID "ACSI_ID"
-// Starting drive letter ('C'..'P'). Decoupled from ACSI ID so the user can
-// e.g. declare ACSI ID 0 but map partitions at K:, L:, M: to avoid clashes
-// with a real ACSI driver that already owns C:/D:/...
+// Starting drive letter ('C'..'P'), so the partitions can sit after those of
+// a real ACSI driver that already owns C:/D:/...
 #define ACONFIG_PARAM_DRIVES_ACSI_DRIVE "ACSI_DRIVE"
 #define ACONFIG_PARAM_DRIVES_ACSI_IMAGE "ACSI_IMAGE"
 

@@ -38,7 +38,6 @@ static uint32_t acsiLastLoggedOldHdvBoot = 0;
 static uint32_t acsiLastLoggedOldHdvMediach = 0;
 static bool acsiPunInfoValid = false;
 static uint16_t acsiPunInfoPuns = 0;
-static uint8_t acsiPunInfoUnits[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint32_t acsiPunInfoStartSectors[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint32_t acsiPartitionSectorCounts[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint16_t acsiLogicalSectorSizes[ACSI_PUN_INFO_MAXUNITS] = {0};
@@ -122,7 +121,6 @@ static AcsiBPBData acsiBpbData[ACSI_PUN_INFO_MAXUNITS] = {0};
 static uint32_t acsiBpbPointers[ACSI_PUN_INFO_MAXUNITS] = {0};
 
 static bool acsiIsEnabledSetting(void);
-static uint8_t acsiGetIdSetting(void);
 static uint8_t acsiGetStartDriveSetting(void);
 static char acsiDriveNumberToLetter(uint32_t driveNumber);
 static inline uint16_t acsiReadLe16(const BYTE *buffer, size_t offset);
@@ -378,7 +376,6 @@ static void acsiTestLogBpbData(const char *label, const AcsiBPBData *bpb) {
 static void acsiResetPunInfoCache(void) {
   acsiPunInfoValid = false;
   acsiPunInfoPuns = 0;
-  memset(acsiPunInfoUnits, 0x80, sizeof(acsiPunInfoUnits));
   memset(acsiPunInfoStartSectors, 0, sizeof(acsiPunInfoStartSectors));
   acsiResetPartitionSectorCounts();
 }
@@ -399,9 +396,18 @@ static void acsiWritePunInfoToSharedMemory(void) {
   WRITE_WORD(memorySharedAddress, ACSIEMUL_PUN_INFO_PUNS_OFFSET,
              acsiPunInfoPuns);
 
+  // Every drive's unit is $FF, "no physical unit": the emulated drives are
+  // not on the ACSI bus, and a tool that sends commands to the DMA port by
+  // unit must not be sent to a real device, nor time out waiting for one.
+  // It is what a real driver writes for the drives it does not own. Nothing
+  // in TOS or EmuTOS reads the unit, and a real driver loaded from a real
+  // disk replaces this table with its own anyway. One value for every entry
+  // also keeps clear of WRITE_BYTE's byte order: the window holds each word
+  // byte-swapped for the 68000, so a byte written at n is read by the ST at
+  // n ^ 1.
   for (uint32_t index = 0; index < ACSI_PUN_INFO_MAXUNITS; ++index) {
     WRITE_BYTE(memorySharedAddress, ACSIEMUL_PUN_INFO_PUN_OFFSET + index,
-               acsiPunInfoUnits[index]);
+               0xFFu);
     WRITE_AND_SWAP_LONGWORD(memorySharedAddress,
                             ACSIEMUL_PUN_INFO_PRT_START_OFFSET + (index * 4u),
                             acsiPunInfoStartSectors[index]);
@@ -585,7 +591,7 @@ static void acsiSetVolumeDriveRange(uint32_t firstDrive, uint32_t lastDrive) {
 }
 
 static void acsiBuildAnnouncedVolumeData(
-    AcsiImageContext *context, uint8_t acsiId, uint8_t firstDrive,
+    AcsiImageContext *context, uint8_t firstDrive,
     const AcsiPartitionEntry *usablePartitions, uint8_t usablePartitionCount) {
   acsiResetVolumeDriveRange();
   acsiResetPunInfoCache();
@@ -599,8 +605,7 @@ static void acsiBuildAnnouncedVolumeData(
 
   // firstDrive is the drive-letter slot (2='C' .. 15='P') for the FIRST
   // announced partition. Subsequent partitions take the next consecutive
-  // letter. acsiId is the physical ACSI ID tag stored in pun_info for
-  // every owned slot — independent of the letter range.
+  // letter.
   uint32_t driveNumber = (uint32_t)firstDrive;
   if (driveNumber < 2u || driveNumber >= ACSI_PUN_INFO_MAXUNITS) {
     DPRINTF("ACSI cannot announce logical drive %lu (out of C..P range)\n",
@@ -706,7 +711,6 @@ static void acsiBuildAnnouncedVolumeData(
     acsiBpbData[driveNumber] = bpb;
     acsiBpbPointers[driveNumber] =
         ACSIEMUL_ST_BPB_DATA_BASE + (driveNumber * ACSI_BPB_SLOT_SIZE);
-    acsiPunInfoUnits[driveNumber] = acsiId & 0x07u;
     acsiPunInfoStartSectors[driveNumber] = physicalStartSector;
     acsiPartitionSectorCounts[driveNumber] = logicalSectorCount;
     acsiLogicalSectorSizes[driveNumber] = logicalSectorSize;
@@ -734,11 +738,13 @@ static void acsiBuildAnnouncedVolumeData(
   }
 
   acsiSetVolumeDriveRange(acsiFirstVolumeDrive, lastDrive);
-  acsiPunInfoPuns = (uint16_t)(lastDrive + 1u);
+  // puns is the number of physical devices, as a real driver writes it: the
+  // one image.
+  acsiPunInfoPuns = 1u;
   acsiPunInfoValid = true;
 }
 
-static void acsiRefreshVolumeDriveRange(uint8_t acsiId, uint8_t firstDrive) {
+static void acsiRefreshVolumeDriveRange(uint8_t firstDrive) {
   AcsiImageContext context = {0};
   AcsiPartitionEntry usablePartitions[ACSI_MAX_PARTITIONS] = {0};
   uint8_t usablePartitionCount = 0;
@@ -765,7 +771,7 @@ static void acsiRefreshVolumeDriveRange(uint8_t acsiId, uint8_t firstDrive) {
     return;
   }
 
-  acsiBuildAnnouncedVolumeData(&context, acsiId, firstDrive,
+  acsiBuildAnnouncedVolumeData(&context, firstDrive,
                                usablePartitions, usablePartitionCount);
   acsi_image_close(&context);
   if (!acsiVolumeDriveRangeValid) {
@@ -935,8 +941,7 @@ static void acsiTraceBpbData(uint32_t driveAndPhase, uint32_t value1,
   }
 }
 
-static void acsiLoadConfiguredState(bool *enabledOut, uint8_t *acsiIdOut,
-                                    uint8_t *firstDriveOut) {
+static void acsiLoadConfiguredState(bool *enabledOut, uint8_t *firstDriveOut) {
   acsiImagePath[0] = '\0';
   acsiImagePathDirty = true;
 
@@ -949,9 +954,6 @@ static void acsiLoadConfiguredState(bool *enabledOut, uint8_t *acsiIdOut,
 
   if (enabledOut != NULL) {
     *enabledOut = acsiIsEnabledSetting();
-  }
-  if (acsiIdOut != NULL) {
-    *acsiIdOut = acsiGetIdSetting();
   }
   if (firstDriveOut != NULL) {
     *firstDriveOut = acsiGetStartDriveSetting();
@@ -968,23 +970,6 @@ static bool acsiIsEnabledSetting(void) {
   return (enabled->value[0] == 't') || (enabled->value[0] == 'T') ||
          (enabled->value[0] == 'y') || (enabled->value[0] == 'Y') ||
          (enabled->value[0] == '1');
-}
-
-static uint8_t acsiGetIdSetting(void) {
-  SettingsConfigEntry *acsiId = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID);
-  if ((acsiId == NULL) || (acsiId->value[0] == '\0')) {
-    return 7;
-  }
-
-  char *endptr = NULL;
-  long value = strtol(acsiId->value, &endptr, 10);
-  if ((acsiId->value == endptr) || (*endptr != '\0') || (value < 0) ||
-      (value > 7)) {
-    return 7;
-  }
-
-  return (uint8_t)value;
 }
 
 // Return the starting drive-letter slot (2='C' .. 15='P') for the first
@@ -3006,11 +2991,10 @@ static void acsiRunImageTests(void) {
 
 void acsi_preInit(void) {
   bool enabled = false;
-  uint8_t acsiId = 0;
   uint8_t firstDrive = 2u;  // 'C'
 
   DPRINTF("ACSI pre-init\n");
-  acsiLoadConfiguredState(&enabled, &acsiId, &firstDrive);
+  acsiLoadConfiguredState(&enabled, &firstDrive);
   acsiResetVolumeDriveRange();
   acsiResetPunInfoCache();
 
@@ -3030,7 +3014,7 @@ void acsi_preInit(void) {
     return;
   }
 
-  acsiRefreshVolumeDriveRange(acsiId, firstDrive);
+  acsiRefreshVolumeDriveRange(firstDrive);
   DPRINTF("Running ACSI tests before driver initialization.\n");
   acsiRunImageTests();
 
@@ -3064,10 +3048,6 @@ void acsi_printBootInfo(AcsiBootInfoPrint print) {
   } else {
     snprintf(line, sizeof(line), "Image: %s\n", shortPath);
   }
-  print(line);
-
-  uint8_t acsiId = acsiGetIdSetting();
-  snprintf(line, sizeof(line), "ACSI ID: %u\n", (unsigned int)acsiId);
   print(line);
 
   if (!acsiVolumeDriveRangeValid) {
@@ -3142,14 +3122,11 @@ void __not_in_flash_func(acsi_init)() {
   acsiResetHookTraceState();
 
   bool enabled = false;
-  uint8_t acsiId = 0;
   uint8_t firstDrive = 2u;  // 'C' — unused here but acsiLoadConfiguredState expects it
-  acsiLoadConfiguredState(&enabled, &acsiId, &firstDrive);
+  acsiLoadConfiguredState(&enabled, &firstDrive);
 
   SET_SHARED_PRIVATE_VAR(ACSIEMUL_SVAR_ENABLED,
                          enabled ? 0xFFFFFFFFu : 0xDEAD0000u,
-                         memorySharedAddress, ACSIEMUL_SHARED_VARIABLES_OFFSET);
-  SET_SHARED_PRIVATE_VAR(ACSIEMUL_SVAR_ACSI_ID, acsiId,
                          memorySharedAddress, ACSIEMUL_SHARED_VARIABLES_OFFSET);
   SET_SHARED_PRIVATE_VAR(ACSIEMUL_SVAR_HOOKS_INSTALLED, 0u, memorySharedAddress,
                          ACSIEMUL_SHARED_VARIABLES_OFFSET);
@@ -3188,9 +3165,9 @@ void __not_in_flash_func(acsi_init)() {
   }
 
   DPRINTF(
-      "ACSI placeholder configured: enabled=%s acsi_id=%u "
+      "ACSI placeholder configured: enabled=%s "
       "start_drive=%c (%u) image=%s\n",
-      enabled ? "true" : "false", (unsigned int)acsiId,
+      enabled ? "true" : "false",
       acsiDriveNumberToLetter(firstDrive), (unsigned int)firstDrive,
       (acsiImagePath[0] != '\0') ? acsiImagePath : "<not set>");
   DPRINTF("ACSI shared drive range: first=%c (%lu) last=%c (%lu)\n",

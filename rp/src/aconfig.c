@@ -20,6 +20,9 @@ static SettingsConfigEntry defaultEntries[] = {
 
     // ACSI configuration
     {ACONFIG_PARAM_DRIVES_ACSI_ENABLED, SETTINGS_TYPE_BOOL, "false"},
+    // Nothing reads ACSI_ID any more. It stays in this list because the
+    // settings loader reads only as many stored entries as there are
+    // defaults: taking one out would drop the last setting a card had saved.
     {ACONFIG_PARAM_DRIVES_ACSI_ID, SETTINGS_TYPE_INT, "7"},
     {ACONFIG_PARAM_DRIVES_ACSI_DRIVE, SETTINGS_TYPE_STRING, "C"},
     {ACONFIG_PARAM_DRIVES_ACSI_IMAGE, SETTINGS_TYPE_STRING, ""},

@@ -86,13 +86,13 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
-### ACSI hard disk emulation (experimental)
+### ACSI hard disk emulation
 
 #### What is ACSI emulation?
 
 In addition to GEMDrive, the Multi-device can emulate **ACSI** hard disks at the block-device level, driven by a raw disk image file on the microSD card. Unlike GEMDrive — which intercepts GEMDOS calls and presents a folder as a drive — the ACSI path emulates the disk at the BIOS level (`hdv_init` / `hdv_bpb` / `hdv_rw` / `hdv_boot` / `hdv_mediach`) and hands TOS a real partition table plus BPBs. Disk images are standard hard disk images compatible with Peter Putnik's **PPDRIVER** (TOS&DOS dual-BPB) and **HDDRIVER** layouts.
 
-This feature is currently marked **EXPERIMENTAL**. It is disabled by default.
+It is disabled by default.
 
 - **Advantages**:
   - Works with software that talks to the hard disk at the BIOS level rather than through GEMDOS.
@@ -107,11 +107,11 @@ This feature is currently marked **EXPERIMENTAL**. It is disabled by default.
 
 **TOS compatibility.** This release has been tested from **TOS 1.04 through TOS 2.06**. It does **not** currently work under **EmuTOS** — the embedded EmuTOS hard disk driver conflicts with the ACSI hooks installed by the emulator and prevents the emulated volumes from coming up. Running ACSI emulation on EmuTOS is not supported in this version.
 
-**Coexistence with real ACSI hardware.** The emulator is designed to live on the same ACSI bus as a real hard disk controlled by Peter Putnik's **PPDRIVER** or **HDDRIVER**. Give the emulated unit a free ACSI ID (the real drive typically sits at `0`) and pick a starting drive letter outside the range already owned by the real driver, and both should appear together in TOS.
+**Coexistence with real ACSI hardware.** The emulated drives can sit beside a real hard disk on the ACSI port, run by its own driver (PPDRIVER, HDDRIVER, AHDI): pick a starting drive letter after the ones the real driver takes, and both sets appear in TOS. The emulated drives are not on the ACSI bus, so they have no ACSI ID: their `pun_info` entries say "no physical unit" (`$FF`), and a real driver loaded from the real disk replaces that table with its own. Tested on TOS 1.04 with a real disk as `C:`–`E:` and the emulated one from `F:`.
 
 When ACSI is **enabled** in the setup screen, the emulator also reserves a small RAM pool (~34 KB) under `_membot` on boot so TOS can rebind its buffer control blocks to the larger logical sector sizes used by the image. If you later **disable** ACSI from the setup menu, the emulator triggers a warm reset so that reservation is released.
 
-The ACSI ID and the starting drive letter are **independent**. You can, for example, declare ACSI ID `0` but map partitions starting at `K:` so they don't clash with a real ACSI driver that already owns `C:`/`D:`/... The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
+The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
 
 #### Building disk images for ACSI
 
@@ -123,7 +123,6 @@ The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible wit
 |---------|-------------|
 | **A[C]SI Enabled** | Enable or disable ACSI block-device emulation. Toggling this setting from the setup menu may trigger a warm reset to reclaim or reserve the BCB RAM pool. |
 | **[I]mage** | Select the hard disk image file on the microSD card to mount. The internal browser navigates the microSD card so you can pick any regular file. |
-| **U[n]it (ACSI ID)** | Choose the ACSI bus ID reported to TOS (`0` to `7`). Default is `7`. This is only the physical unit tag stored in `pun_info`; it does not affect which drive letters the partitions land on. |
 | **Dri[v]e** | Choose the starting drive letter for the first announced partition (`C:` to `P:`). Subsequent partitions take consecutive letters. Must not overlap with the GEMDrive drive letter when both are enabled. |
 
 ### Floppy drive emulation
