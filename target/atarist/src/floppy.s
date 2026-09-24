@@ -43,7 +43,6 @@ SVAR_MEDIA_CHANGED_A:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 4)      ; Med
 SVAR_MEDIA_CHANGED_B:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 5)      ; Media change state B
 
 MED_NOCHANGE:               equ 0
-MED_UNKNOWN:                equ 1
 MED_CHANGED:                equ 2
 
 ; We will need 32 bytes extra for the variables of the floppy emulator
@@ -441,7 +440,7 @@ _bios_trap_notlong:
     cmp.w #Getbpb,6(a0)                  ; is it BIOS call Getbpb?
     beq.s bios_getbpb                    ; if yes, go to getbpb
     cmp.w #Mediach,6(a0)                 ; is it BIOS call Mediach?
-    beq.s bios_mediach                   ; if yes, go to media change
+    beq bios_mediach                     ; if yes, go to media change
     cmp.w #Rwabs,6(a0)                   ; is it BIOS call Rwabs?
     beq bios_rwabs                       ; if yes, go to rwabs
 
@@ -480,7 +479,23 @@ _bios_get_bpb_check:
     tst.w (a1)                    ; recsiz, as a signed word
     ble.s _bios_get_bpb_none
     tst.w 2(a1)                   ; clsiz
+    beq.s _bios_get_bpb_none
+    ; As TOS's getbpb: answering a BPB ends a media change on that drive.
+    ; GEMDOS asks for it right after Mediach or Rwabs told it of the change.
+    moveq #0, d2
+    move.w 8(a0), d2              ; the drive
+    move.w d2, d1
+    lsl.w #2, d1                  ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a1
+    cmp.l #MED_CHANGED, 0(a1, d1.w)
     bne.s _bios_get_bpb_done
+    move.l d0, -(sp)              ; the BPB, which the send does not keep
+    move.l d4, -(sp)
+    moveq #MED_NOCHANGE, d4
+    bsr set_media_change
+    move.l (sp)+, d4
+    move.l (sp)+, d0
+    rte
 _bios_get_bpb_none:
     moveq #0, d0
 _bios_get_bpb_done:
@@ -522,30 +537,43 @@ _bios_rwabs_a:
     ; Test Drive A
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_rwabs_continue
-    ; Emulate A
-    tst.l 10(a0)             ; Check if buffer address is 0
-    bne.s _bios_rwabs_a_continue
-    moveq #0, d0               ; return ok  
-    rte
-_bios_rwabs_a_continue:
-    movem.l d3-d7/a3-a6, -(sp)
-    moveq #0, d4               ; Use A:
-    move.w #SECTOR_SIZE, d2    ; Sector size
+    moveq #0, d2               ; Use A:
     bra.s _bios_rwabs_emulated
 _bios_rwabs_b:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_rwabs_continue
-    ; Emulate B
-    tst.l 10(a0)             ; Check if buffer address is 0
-    bne.s _bios_rwabs_b_continue
-    moveq #0, d0               ; return ok
-    rte
-_bios_rwabs_b_continue:
-    movem.l d3-d7/a3-a6, -(sp)
-    moveq #1, d4               ; Use B:
-    move.w #SECTOR_SIZE, d2    ; Sector size
+    moveq #1, d2               ; Use B:
+; As TOS's floppy Rwabs: a NULL buffer sets the drive's media-change state to
+; the count, and modes 0 and 1 answer E_CHNG on a changed disk without a
+; transfer, so that GEMDOS logs the drive in again - its Getbpb ends the change.
 _bios_rwabs_emulated:
+    tst.l 10(a0)               ; buffer
+    bne.s _bios_rwabs_check_change
+    move.l d4, -(sp)
+    moveq #MED_NOCHANGE, d4    ; a count of 1, "may have changed", is not
+    cmp.w #MED_CHANGED, 14(a0) ; changed here: TOS would find the same serial
+    bne.s _bios_rwabs_set_change
+    moveq #MED_CHANGED, d4
+_bios_rwabs_set_change:
+    bsr set_media_change
+    move.l (sp)+, d4
+    moveq #0, d0
+    rte
+_bios_rwabs_check_change:
+    cmp.w #2, 8(a0)            ; TOS asks only in modes 0 and 1
+    bge.s _bios_rwabs_go
+    move.w d2, d1
+    lsl.w #2, d1               ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a1
+    cmp.l #MED_CHANGED, 0(a1, d1.w)
+    bne.s _bios_rwabs_go
+    moveq #E_CHNG, d0
+    rte
+_bios_rwabs_go:
+    movem.l d3-d7/a3-a6, -(sp)
+    move.l d2, d4              ; the drive
+    move.w #SECTOR_SIZE, d2    ; Sector size
     move.l a0, a5              ; the arguments: a send does not keep a0
 _bios_rwabs_transfer:
     move.w 16(a5),d6           ; start sect no
@@ -585,6 +613,17 @@ _bios_rwabs_done:
 
 
 
+
+; Set drive d2's media-change state to d4. The RP owns the state: it raises
+; it when drive A's slot is cycled, and is told here when TOS's rules end or
+; set it. Keeps every register but d0.
+set_media_change:
+    movem.l d3/d7/a0-a3, -(sp)         ; a send uses a0-a3, and send_sync d7
+    move.l #SVAR_MEDIA_CHANGED_A, d3
+    add.l d2, d3                       ; SVAR_MEDIA_CHANGED_B follows A's
+    send_sync CMD_SET_SHARED_VAR, 8
+    movem.l (sp)+, d3/d7/a0-a3
+    rts
 
 ; Perform the transference of the data from/to the emulated disk in RP2040 
 ; to the computer

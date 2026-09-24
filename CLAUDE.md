@@ -102,7 +102,7 @@ Key design points:
 
 ### Floppy drive emulation
 
-Media-change state is RP-owned. Atari-side `floppy.s` must only *read* the shared media-change flags. Working behavior: RP raises `MED_CHANGED` on drive-A slot swap and clears it after the first successful read of the new disk's root-directory start sector.
+Media change follows TOS's own floppy driver: the RP raises `MED_CHANGED` on a drive-A slot swap; `Mediach` answers it and `Rwabs` (modes 0 and 1) answers `E_CHNG` while it is set; GEMDOS then calls `Getbpb`, which ends the change by telling the RP, as TOS's `getbpb` resets its own state. `Rwabs` with a NULL buffer sets the state, as TOS's does. See AGENTS.md.
 
 Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive B's BPB: the SVAR block is full), written before the token: 0, or the BIOS error TOS's own floppy driver gives for that failure (-13 for a read-only image, -11 for a read fault). `Rwabs` sends a failure through `etv_critic` and tries again on `$10000`, as TOS's driver does, so the desktop shows its usual alert; `Floprd` and `Flopwr` only return it, as TOS's do.
 

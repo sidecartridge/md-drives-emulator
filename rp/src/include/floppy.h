@@ -88,7 +88,6 @@
 #define FLOPPYEMUL_SVAR_MEDIA_CHANGED_B (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 5)
 
 #define FLOPPY_MEDIA_NOCHANGE 0
-#define FLOPPY_MEDIA_UNKNOWN 1
 #define FLOPPY_MEDIA_CHANGED 2
 
 // We will need 32 bytes extra for the variables of the floppy emulator

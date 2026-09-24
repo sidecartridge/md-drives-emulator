@@ -122,8 +122,6 @@ static const char *const floppyDriveASlotKeys[FLOPPY_DRIVE_A_SLOT_MAX + 1] = {
 };
 
 static uint8_t currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
-static bool floppyMediaChangeClearPending[2] = {false, false};
-static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
 
 // Write-behind flush state per drive. FLOPPYEMUL_WRITE_SECTORS marks the
 // drive dirty; floppy_tick() issues a deferred f_sync once no writes have
@@ -176,49 +174,6 @@ static inline void floppySetMediaChange(FloppyDrive drive, uint32_t status) {
   SET_SHARED_PRIVATE_VAR(floppyGetMediaChangedVarIndex(drive), status,
                          memorySharedAddress,
                          FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
-}
-
-static inline uint16_t floppyGetRootDirStartSector(const BPBData *bpb) {
-  if (bpb == NULL || bpb->datrec < bpb->rdlen) {
-    return 0;
-  }
-  return (uint16_t)(bpb->datrec - bpb->rdlen);
-}
-
-static inline void floppyResetMediaChangeClearOnRootRead(FloppyDrive drive) {
-  floppyMediaChangeClearPending[drive] = false;
-  floppyMediaChangeClearSector[drive] = 0;
-}
-
-static inline void floppyArmMediaChangeClearOnRootRead(FloppyDrive drive) {
-  uint16_t rootSector =
-      floppyGetRootDirStartSector(floppyGetBPBData(drive));
-  if (rootSector == 0u) {
-    // Malformed BPB (datrec < rdlen, or NULL). If we armed with sector 0,
-    // the very common "read boot sector" that happens early in TOS's
-    // media-change detection would clear MED_CHANGED prematurely, before
-    // TOS has refreshed its cached directory state. Leave the flag set
-    // and let the Atari-side state machine deal with it.
-    floppyMediaChangeClearPending[drive] = false;
-    floppyMediaChangeClearSector[drive] = 0u;
-    return;
-  }
-  floppyMediaChangeClearSector[drive] = rootSector;
-  floppyMediaChangeClearPending[drive] = true;
-}
-
-static inline void floppyMaybeClearMediaChangeAfterRead(FloppyDrive drive,
-                                                        uint16_t lSector) {
-  if (!floppyMediaChangeClearPending[drive]) {
-    return;
-  }
-
-  if (lSector != floppyMediaChangeClearSector[drive]) {
-    return;
-  }
-
-  floppySetMediaChange(drive, FLOPPY_MEDIA_NOCHANGE);
-  floppyResetMediaChangeClearOnRootRead(drive);
 }
 
 // A .ST image is 512-byte sectors whatever its boot sector claims, so 512 is
@@ -689,7 +644,6 @@ static FRESULT __not_in_flash_func(floppyMountDrivePath)(FloppyDrive drive, cons
   char *fullPath = floppyGetFullPath(drive);
   BPBData *bpb = floppyGetBPBData(drive);
   FloppyDiskState *state = floppyGetStatePtr(drive);
-  floppyResetMediaChangeClearOnRootRead(drive);
 
   snprintf(fullPath, FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH, "%s", fname);
   DPRINTF("Mounting drive %c path: %s\n",
@@ -734,8 +688,10 @@ FRESULT __not_in_flash_func(vDriveOpen)(uint8_t drive) {
   char *fname = NULL;
 
   if (drive == FLOPPY_DRIVE_A) {
+    // The current slot's image: this also re-opens the drive after an error,
+    // and slot 1 there would be a different disk with no change raised.
     SettingsConfigEntry *fnameDriveAParam = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A);
+        aconfig_getContext(), floppyGetDriveASettingKey(currentDriveASlot));
     if (fnameDriveAParam != NULL) {
       fname = fnameDriveAParam->value;
     }
@@ -885,8 +841,9 @@ FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex) {
   }
 
   currentDriveASlot = nextSlot;
+  // Changed until the ST's Getbpb for drive A ends it, as TOS's getbpb does:
+  // GEMDOS asks for the BPB as soon as Mediach or Rwabs tells it of the change.
   floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_CHANGED);
-  floppyArmMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
   if (newSlotIndex != NULL) {
     *newSlotIndex = currentDriveASlot;
   }
@@ -974,10 +931,10 @@ void __not_in_flash_func(floppy_init)() {
   SET_SHARED_PRIVATE_VAR(FLOPPYEMUL_SVAR_ENABLED,
                          floppyEnabled ? 0xFFFFFFFF : 0, memorySharedAddress,
                          FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+  // Drive B's image is fixed for the session - only drive A cycles - so the
+  // RP never raises a change on B; a program can still set one with Rwabs.
   floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_NOCHANGE);
   floppySetMediaChange(FLOPPY_DRIVE_B, FLOPPY_MEDIA_NOCHANGE);
-  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
-  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_B);
   currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
 
   fr = vDriveOpen(FLOPPY_DRIVE_A);  // Open floppy drive A
@@ -1263,8 +1220,6 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("Read sector %i of size %i bytes to memory address %08X\n",
               lSector, sSize, memorySharedAddress + FLOPPYEMUL_IMAGE);
       CHANGE_ENDIANESS_BLOCK16(memorySharedAddress + FLOPPYEMUL_IMAGE, sSize);
-      floppyMaybeClearMediaChangeAfterRead(
-          (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B, lSector);
       floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
