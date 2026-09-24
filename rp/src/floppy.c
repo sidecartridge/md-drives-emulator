@@ -24,7 +24,9 @@ static BPBData BPBDataA = {
     0,                  /* sidecnt     */
     0,                  /* secpcyl     */
     0,                  /* secptrack   */
-    {0, 0, 0},          /* reserved  */
+    0,                  /* bootsecptrack */
+    0,                  /* bootsidecnt */
+    0,                  /* reserved  */
     0                   /* diskNum */
 };
 
@@ -42,7 +44,9 @@ static BPBData BPBDataB = {
     0,                  /* sidecnt     */
     0,                  /* secpcyl     */
     0,                  /* secptrack   */
-    {0, 0, 0},          /* reserved  */
+    0,                  /* bootsecptrack */
+    0,                  /* bootsidecnt */
+    0,                  /* reserved  */
     1                   /* diskNum */
 };
 
@@ -188,6 +192,29 @@ static inline bool floppyTransferSizeIsValid(uint16_t sSize) {
   }
 
   return true;
+}
+
+// Where a Rwabs record is in the image. TOS's floprw places it with the boot
+// sector's own geometry - track record / (sides x sectors), then side 0 or 1;
+// 9 sectors of one side when that is 0, as TOS sets them - and reads that
+// sector of the disk, which the image holds as it physically is. The same
+// number whenever the boot sector describes the image, which is nearly always.
+static inline uint32_t __not_in_flash_func(floppyRecordToImageSector)(
+    const BPBData *bpb, uint16_t record) {
+  uint32_t spt = bpb->bootsecptrack;
+  uint32_t spc = spt * bpb->bootsidecnt;
+  if (spc == 0) {
+    spt = 9;
+    spc = 9;
+  }
+  uint32_t track = record / spc;
+  uint32_t sector = record % spc;
+  uint32_t side = 0;
+  if (sector >= spt) {
+    side = 1;
+    sector -= spt;
+  }
+  return (track * bpb->sidecnt + side) * bpb->secptrack + sector;
 }
 
 static inline void __not_in_flash_func(floppySetTransferStatus)(
@@ -406,6 +433,42 @@ static inline uint16_t floppyReadLe16(const BYTE *buffer, size_t offset) {
   return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
 }
 
+// The image's physical geometry - sectors a track and sides - as Hatari finds
+// it (src/floppy.c, Floppy_FindDiskDetails): the boot sector's when its
+// sector count is the file's and its sides and sectors a track are sane;
+// otherwise two sides above 500 KB, and the sectors a track that 80 to 84
+// tracks of 9 to 12 sectors make the file of, else the boot sector's if 5 to
+// 48, else what 80 tracks leave. Menu disks with a one-sided file system on a
+// two-sided disk are why: their boot sector says one side.
+static void floppyPhysicalGeometry(uint16_t bootSpt, uint16_t bootSides,
+                                   uint16_t bootTotal, uint32_t imageBytes,
+                                   uint16_t *spt, uint16_t *sides) {
+  uint32_t total = imageBytes / FLOPPY_SECTOR_SIZE;
+  *spt = bootSpt;
+  *sides = bootSides;
+  if (bootTotal == total && bootSides >= 1 && bootSides <= 2 && bootSpt >= 1 &&
+      bootSpt <= 48) {
+    return;
+  }
+  uint16_t guessedSides = (imageBytes < 500u * 1024u) ? 1 : 2;
+  uint16_t guessedSpt = 0;
+  for (uint16_t n = 9; n <= 12 && guessedSpt == 0; n++) {
+    for (uint32_t tracks = 80; tracks <= 84; tracks++) {
+      if (total == tracks * n * guessedSides) {
+        guessedSpt = n;
+        break;
+      }
+    }
+  }
+  if (guessedSpt == 0) {
+    guessedSpt = (bootSpt >= 5 && bootSpt <= 48)
+                     ? bootSpt
+                     : (uint16_t)(total / 80u / guessedSides);
+  }
+  *spt = guessedSpt;
+  *sides = guessedSides;
+}
+
 static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   BYTE buffer[FLOPPY_SECTOR_SIZE] = {0}; /* File copy buffer */
   unsigned int br = 0;                   /* File read/write count */
@@ -459,10 +522,18 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   }
 
   bpb_tmp.bflags = 0;  // Magic flags
-  bpb_tmp.sidecnt = floppyReadLe16(buffer, 26);
-  bpb_tmp.secptrack = floppyReadLe16(buffer, 24);
+  // The boot sector's own geometry places a Rwabs record, as TOS's floprw
+  // does; the image's physical one places what the XBIOS reads.
+  bpb_tmp.bootsecptrack = floppyReadLe16(buffer, 24);
+  bpb_tmp.bootsidecnt = floppyReadLe16(buffer, 26);
+  floppyPhysicalGeometry(bpb_tmp.bootsecptrack, bpb_tmp.bootsidecnt,
+                         floppyReadLe16(buffer, 19), (uint32_t)f_size(fsrc),
+                         &bpb_tmp.secptrack, &bpb_tmp.sidecnt);
   bpb_tmp.secpcyl = (uint16_t)(bpb_tmp.secptrack * bpb_tmp.sidecnt);
-  bpb_tmp.trackcnt = 0;
+  bpb_tmp.trackcnt =
+      (bpb_tmp.secpcyl != 0)
+          ? (uint16_t)(f_size(fsrc) / FLOPPY_SECTOR_SIZE / bpb_tmp.secpcyl)
+          : 0;
 
   // Copy the temporary BPB data to the provided BPB structure
   *bpb = bpb_tmp;
@@ -482,8 +553,8 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   DPRINTF("  sidecnt: %u\n", bpb->sidecnt);
   DPRINTF("  secpcyl: %u\n", bpb->secpcyl);
   DPRINTF("  secptrack: %u\n", bpb->secptrack);
-  DPRINTF("  reserved: %u %u %u\n", bpb->reserved[0], bpb->reserved[1],
-          bpb->reserved[2]);
+  DPRINTF("  boot sector: %u sectors a track, %u sides\n", bpb->bootsecptrack,
+          bpb->bootsidecnt);
   DPRINTF("  disk_number: %u\n", bpb->disk_number);
 
   return FR_OK;
@@ -1113,6 +1184,9 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d3.h register
       uint16_t diskNum =
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
+      // d4.h: 1 when the XBIOS sends a sector of the disk as it is, 0 when
+      // Rwabs sends a record
+      uint16_t physical = TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
       DPRINTF("DISK READ %s (%d) - LSECTOR: %i / SSIZE: %i\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize);
       // A failure until the read has succeeded, so that no way out of here
@@ -1167,7 +1241,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         fullPathTmp = fullPathB;
       }
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
+      uint32_t imageSector =
+          physical ? lSector
+                   : floppyRecordToImageSector(
+                         floppyGetBPBData(diskNum == 0 ? FLOPPY_DRIVE_A
+                                                       : FLOPPY_DRIVE_B),
+                         lSector);
+      FRESULT ferr = f_lseek(fobjTmp, (FSIZE_t)imageSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
@@ -1222,8 +1302,10 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d3.h register
       uint16_t diskNum =
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
+      // d4.h: 1 for an XBIOS sector of the disk as it is, 0 for a record
+      uint16_t physical = TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
       uint32_t addrRemote =
-          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5 register
+          TPROTO_GET_NEXT16_PAYLOAD_PARAM32(payloadPtr);  // d5 register
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // skip d5 register
       DPRINTF("DISK WRITE %s (%d) - LSECTOR: %i / SSIZE: %i at addr: %08X\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize, addrRemote);
@@ -1309,7 +1391,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       }
 
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
+      uint32_t imageSector =
+          physical ? lSector
+                   : floppyRecordToImageSector(
+                         floppyGetBPBData(diskNum == 0 ? FLOPPY_DRIVE_A
+                                                       : FLOPPY_DRIVE_B),
+                         lSector);
+      FRESULT ferr = f_lseek(fobjTmp, (FSIZE_t)imageSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\r\n",
                 fullPathTmp, ferr);

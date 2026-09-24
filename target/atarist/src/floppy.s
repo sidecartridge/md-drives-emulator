@@ -313,7 +313,7 @@ _floppy_xbios_call:
     beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
     move.w #SECTOR_SIZE, d2         ; Sector size
-    moveq #1, d4                    ; Use B:
+    move.l #$10001, d4              ; B:, and d4.h 1: a sector of the disk as it is
     moveq #0, d6
     move.w 20(a0),d6                ; track number
     mulu secpcyl_B,d6               ; times the sectors per cylinder
@@ -347,7 +347,7 @@ _floppy_xbios_a:
     beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
     move.w #SECTOR_SIZE, d2         ; Sector size
-    moveq #0, d4                    ; Use A:
+    move.l #$10000, d4              ; A:, and d4.h 1: a sector of the disk as it is
     moveq #0, d6
     move.w 20(a0),d6                ; track number
     mulu secpcyl_A,d6               ; times the sectors per cylinder
@@ -356,7 +356,11 @@ _floppy_xbios_a:
     mulu secptrack_A,d3             ; times the sectors per track
 
 ; d4 is the drive number do_transfer_sidecart sends, so the side goes through
-; d3. It used to go through d4, which sent every side-1 transfer to B:.
+; d3. It used to go through d4, which sent every side-1 transfer to B:. Its
+; high word 1 tells the RP this is a sector of the disk as it physically is,
+; placed with the image's geometry (secpcyl, secptrack); Rwabs sends 0 there,
+; a record, which the RP places with the boot sector's own geometry as TOS's
+; floprw does.
 _floppy_xbios_emulated:
     add.l d3, d6               ; d6 = track number * sec/cyl + side number * sec/track
     add.w 18(a0),d6            ; + the sector number

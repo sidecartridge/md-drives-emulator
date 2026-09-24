@@ -229,7 +229,9 @@ typedef struct {
   uint16_t sidecnt;     /* 10: Side count                         */
   uint16_t secpcyl;     /* 11: Sectors per cylinder               */
   uint16_t secptrack;   /* 12: Sectors per track                  */
-  uint16_t reserved[3]; /* 13-15: Reserved                        */
+  uint16_t bootsecptrack; /* 13: Sectors per track, as the boot sector says */
+  uint16_t bootsidecnt;   /* 14: Sides, as the boot sector says          */
+  uint16_t reserved;      /* 15: Reserved                                */
   uint16_t disk_number; /* 16: Disk number                        */
 } BPBData;
 
