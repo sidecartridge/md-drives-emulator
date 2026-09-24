@@ -187,7 +187,8 @@ sector the test leaves written. On a machine with a high-density drive (TOS 2.06
 STE) it runs on the 1.44 MB pair as well. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
 hardware-only for both harnesses. `--keep DIR` keeps each run's drive and log.
 
-`make_floppy_image.py ro|rw|ro-hd|rw-hd FILE` builds FLOPTEST's disk, 720 KB or 1.44 MB, and
+`make_floppy_image.py ro|rw|ro-hd|rw-hd|ro-ss FILE` builds FLOPTEST's disk - 720 KB, 1.44 MB,
+or a one-sided file system on a two-sided disk, the shape of many menu disks - and
 `check-rw FILE` checks one after a
 run; the rules for what every sector holds are in its docstring and in `floppy_tests.c`, and the
 two must agree.

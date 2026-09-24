@@ -52,7 +52,7 @@ HARNESSES = OrderedDict([
                   "copies": ("FLOPTEST.TOS",),
                   "log": "FLOPTEST.TXT",
                   "banner": "Atari ST floppy test suite",
-                  "disks": ("rw", "ro", "rw-hd", "ro-hd"),
+                  "disks": ("rw", "ro", "rw-hd", "ro-hd", "ro-ss"),
                   "report": "floptest-matrix.md"}),
 ])
 

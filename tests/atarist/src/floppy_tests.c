@@ -36,6 +36,10 @@ typedef struct {
 } Geometry;
 static const Geometry DOUBLE_DENSITY = {9, 3, 14, 713, 0xF9, "720 KB"};
 static const Geometry HIGH_DENSITY = {18, 5, 18, 1431, 0xF0, "1.44 MB"};
+/* A one-sided file system on side 0 of a two-sided 720 KB disk, as many menu
+   disks are: MODE.TXT says SS. */
+static const Geometry ONE_SIDED_BPB = {9, 2, 12, 354, 0xF8,
+                                       "one-sided BPB on two sides"};
 static const Geometry* disk = &DOUBLE_DENSITY;
 
 static const char README[] = "SidecarTridge floppy test image.\r\n";
@@ -123,7 +127,10 @@ static int find_the_test_disk(void) {
   Fread(handle, sizeof(mode) - 1, mode);
   Fclose(handle);
   disk_is_rw = (mode[0] == 'R' && mode[1] == 'W');
-  if (Rwabs(0, buffer, 1, 0, DRIVE_A) == 0 && buffer[24] == HIGH_DENSITY.spt) {
+  if (mode[0] == 'S' && mode[1] == 'S') {
+    disk = &ONE_SIDED_BPB;
+  } else if (Rwabs(0, buffer, 1, 0, DRIVE_A) == 0 &&
+             buffer[24] == HIGH_DENSITY.spt) {
     disk = &HIGH_DENSITY;
   }
   print("Test disk in A:, %s, %s\r\n", disk_is_rw ? "writable" : "read-only",
@@ -565,6 +572,47 @@ static void test_leave_a_sector_written(void) {
   assert_result("Leave sector 1300 written for the host", (int)result, 0);
 }
 
+/* On the one-sided-BPB disk every sector's signature names its place on the
+   two-sided disk. TOS reads a record with the BPB's geometry - one side, so
+   record r is track r / 9, side 0 - and the XBIOS reads the disk as it is. */
+static int two_sided_lba(int track, int side, int sector) {
+  return (track * 2 + side) * ONE_SIDED_BPB.spt + (sector - 1);
+}
+
+static int record_lba(int record) {
+  return two_sided_lba(record / ONE_SIDED_BPB.spt, 0,
+                       record % ONE_SIDED_BPB.spt + 1);
+}
+
+static void test_one_sided_bpb(void) {
+  long result;
+  short xresult;
+  int good = 0;
+  test_getbpb();
+  result = Rwabs(0, buffer, 1, 600, DRIVE_A);
+  assert_result("Rwabs record 600 is on side 0 of track 66",
+                result == 0 && holds_signature(record_lba(600), buffer), TRUE);
+  result = Rwabs(0, buffer, 9, 603, DRIVE_A);
+  assert_result("Rwabs reads nine records across a track", (int)result, 0);
+  for (int n = 0; n < 9; n++) {
+    good += holds_signature(record_lba(603 + n), buffer + n * SECTOR);
+  }
+  assert_result("Each on side 0 of its track", good, 9);
+  xresult = Floprd(buffer, 0L, DRIVE_A, 5, 60, 1, 1);
+  assert_result("Floprd side 1 reads side 1 of the disk", xresult == 0 &&
+                holds_signature(two_sided_lba(60, 1, 5), buffer), TRUE);
+  xresult = Floprd(buffer, 0L, DRIVE_A, 5, 60, 0, 1);
+  assert_result("Floprd side 0 reads where the records are", xresult == 0 &&
+                holds_signature(two_sided_lba(60, 0, 5), buffer), TRUE);
+  good = 0;
+  xresult = Floprd(buffer, 0L, DRIVE_A, 1, 61, 1, ONE_SIDED_BPB.spt);
+  for (int n = 0; n < ONE_SIDED_BPB.spt; n++) {
+    good += holds_signature(two_sided_lba(61, 1, n + 1), buffer + n * SECTOR);
+  }
+  assert_result("Floprd a whole track of side 1", xresult == 0 &&
+                good == ONE_SIDED_BPB.spt, TRUE);
+}
+
 /* A real change: the host cycles drive A to its next slot with SELECT while
    this waits, and GEMDOS must then read the other disk. The host is told by
    the read of CYCLE_SECTOR, which shows on the RP's console; drive A's slots
@@ -609,7 +657,17 @@ int run_floppy_tests(void) {
   test_mfpint_passes_through();
 
   print("=== Floppy: the test disk ===\r\n");
-  if (find_the_test_disk()) {
+  if (!find_the_test_disk()) {
+    /* nothing to test */
+  } else if (disk == &ONE_SIDED_BPB) {
+    print("=== Floppy: a one-sided BPB on a two-sided disk ===\r\n");
+    test_one_sided_bpb();
+    print("=== Floppy: GEMDOS ===\r\n");
+    test_listing();
+    test_read_files();
+    test_program_on_the_floppy();
+    test_dfree();
+  } else {
     print("=== Floppy: BIOS ===\r\n");
     test_getbpb();
     test_mediach_after_boot();

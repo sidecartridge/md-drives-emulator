@@ -351,8 +351,8 @@ python3 tools/dev/make_floppy_image.py rw FLOPTEST.ST.RW   # writable
 python3 tools/dev/make_floppy_image.py ro FLOPTEST.ST      # read-only
 ```
 
-`ro-hd` and `rw-hd` make the same disks at 1.44 MB; FLOPTEST reads which one it has from the
-boot sector.
+`ro-hd` and `rw-hd` make the same disks at 1.44 MB, and `ro-ss` a two-sided disk whose boot
+sector says one side, as many menu disks have; FLOPTEST reads which one it has from the disk.
 
 Put one of them in drive A and run `FLOPTEST.TOS`, from the desktop or as `AUTO\FLOPTEST.PRG` in
 the GEMDRIVE folder (on its own there: whichever harness is in the AUTO folder ends the run by

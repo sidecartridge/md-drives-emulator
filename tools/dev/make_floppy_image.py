@@ -5,12 +5,20 @@
     tools/dev/make_floppy_image.py rw FLOPTEST.ST.RW       # the writable one
     tools/dev/make_floppy_image.py ro-hd FLOPTEST.ST       # 1.44 MB, read-only
     tools/dev/make_floppy_image.py rw-hd FLOPTEST.ST.RW    # 1.44 MB, writable
+    tools/dev/make_floppy_image.py ro-ss FLOPTEST.ST       # one-sided BPB, two sides
     tools/dev/make_floppy_image.py check-rw FLOPTEST.ST.RW # after a run
 
 A 720 KB double-sided disk: 80 tracks, 2 sides, 9 sectors of 512 bytes - or,
 with -hd, a 1.44 MB one with 18 sectors a track and 5-sector FATs. It is a
 normal FAT12 disk that TOS and the desktop can open, and it is also a disk
-whose raw sectors a test can check without knowing anything but their number:
+whose raw sectors a test can check without knowing anything but their number.
+
+ro-ss is the shape of many menu disks: a two-sided 720 KB disk whose boot
+sector says one side, with a one-sided file system (720 sectors, 2-sector
+FATs) on side 0 and side 1 left to the disk's own loader. TOS reads the file
+system with the BPB's geometry, so record r is sector r % 9 of track r / 9,
+side 0; there every sector's signature names where it sits on the two-sided
+disk, whichever way it is read. MODE.TXT says SS.
 
 - README.TXT and MODE.TXT hold known text. MODE.TXT says RO or RW, so a test
   knows which of the two it is reading without being told.
@@ -49,6 +57,7 @@ ROOT_SECTORS = ROOT_ENTRIES * 32 // SECTOR  # 7
 DENSITIES = {
     "dd": (9, 3, 0xF9),   # 1440 sectors, data from 14, 713 clusters
     "hd": (18, 5, 0xF0),  # 2880 sectors, data from 18, 1431 clusters
+    "ss": (9, 2, 0xF8),   # one side: 720 sectors, data from 12, 354 clusters
 }
 
 README = b"SidecarTridge floppy test image.\r\n"
@@ -86,9 +95,10 @@ def pattern(size):
 class Geometry:
     def __init__(self, density):
         self.spt, self.fat_sectors, self.media = DENSITIES[density]
-        self.total = self.spt * SIDES * TRACKS
+        self.sides = 1 if density == "ss" else SIDES
+        self.total = self.spt * self.sides * TRACKS
         self.first_data = RESERVED + FATS * self.fat_sectors + ROOT_SECTORS
-        self.serial = 1 if density == "dd" else 2
+        self.serial = {"dd": 1, "hd": 2, "ss": 3}[density]
 
     def cluster_sector(self, cluster):
         return self.first_data + (cluster - 2) * SECTORS_PER_CLUSTER
@@ -104,7 +114,7 @@ def boot_sector(mode, geo):
     struct.pack_into("<HBHBHHBHHH", boot, 11,
                      SECTOR, SECTORS_PER_CLUSTER, RESERVED, FATS,
                      ROOT_ENTRIES, geo.total, geo.media, geo.fat_sectors,
-                     geo.spt, SIDES)
+                     geo.spt, geo.sides)
     # Not executable: TOS runs a boot sector whose words add up to $1234.
     if sum(struct.unpack(">256H", boot)) & 0xFFFF == 0x1234:
         boot[0x1E] ^= 0x01
@@ -138,6 +148,8 @@ def dir_entry(name, ext, cluster, size):
 def build(mode, density="dd"):
     geo = Geometry(density)
     mode_text = b"RO\r\n" if mode == "ro" else b"RW\r\n"
+    if density == "ss":
+        mode_text = b"SS\r\n"
     files = [
         ("README", "TXT", [2], README),
         ("MODE", "TXT", [3], mode_text),
@@ -170,7 +182,24 @@ def build(mode, density="dd"):
         for n in range(SECTORS_PER_CLUSTER):
             lba = geo.cluster_sector(cluster) + n
             image[lba * SECTOR:(lba + 1) * SECTOR] = signature(lba)
+    if density == "ss":
+        return two_sided(image, geo)
     return bytes(image)
+
+
+def two_sided(logical, geo):
+    """The one-sided file system on side 0 of a two-sided disk. Record r goes
+    where TOS puts it with the BPB's geometry, track r / spt side 0; a free
+    record, and every sector of side 1, holds the signature of its place on
+    the two-sided disk."""
+    physical = [signature(lba) for lba in range(geo.total * 2)]
+    for record in range(geo.total):
+        track, sector = divmod(record, geo.spt)
+        lba = track * 2 * geo.spt + sector
+        data = logical[record * SECTOR:(record + 1) * SECTOR]
+        if data != signature(record):
+            physical[lba] = data
+    return b"".join(physical)
 
 
 def check_rw(path):
@@ -190,7 +219,7 @@ def check_rw(path):
 
 
 def main():
-    modes = ("ro", "rw", "ro-hd", "rw-hd", "check-rw")
+    modes = ("ro", "rw", "ro-hd", "rw-hd", "ro-ss", "check-rw")
     if len(sys.argv) != 3 or sys.argv[1] not in modes:
         sys.exit(__doc__)
     if sys.argv[1] == "check-rw":
