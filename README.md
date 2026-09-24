@@ -143,7 +143,7 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 | **Boo[t] enabled** | Enable or disable the boot sector emulation. When enabled, the emulator will attempt to boot from the floppy disk image. |
 | **XBIO[S] trap** | Enable or disable the XBIOS trap for floppy disk operations. When enabled, the emulator will intercept XBIOS calls related to floppy disk operations. |
 
-Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks.
+Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks. The desktop's **Format** does not work on an emulated drive either: the emulator answers that the disk cannot be formatted (write protected, for a read-only `.ST` image), and the disk in the computer's own drive is never touched.
 
 #### Runtime floppy A image cycling
 

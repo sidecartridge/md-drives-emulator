@@ -19,6 +19,8 @@
 #define SCRATCH_SECTOR 1301     /* written and put back */
 #define FAILING_SECTOR 1320     /* the host makes its next read fail */
 #define CYCLE_SECTOR 1330       /* read to tell the host to press SELECT */
+#define FORMAT_TRACK 75         /* Flopfmt is asked to format its side 1 */
+#define ERROR -1                /* general error */
 #define EREADF -11              /* read fault */
 #define EWRPRO -13              /* write protected */
 #define E_CHNG -14              /* media change */
@@ -51,6 +53,9 @@ static const char README[] = "SidecarTridge floppy test image.\r\n";
 static unsigned short buffer_words[MAX_SECTORS_PER_TRACK * SECTOR / 2];
 static unsigned char* const buffer = (unsigned char*)buffer_words;
 static unsigned short spare_words[SECTOR / 2];
+/* TOS's Flopfmt builds the raw track here before the controller sees it:
+   60 + 612 bytes a sector + 1401, 12477 bytes for 18 sectors. */
+static unsigned short format_words[16384 / 2];
 static unsigned char* const spare = (unsigned char*)spare_words;
 
 static int disk_is_rw = FALSE;
@@ -335,6 +340,38 @@ static void test_flopver(void) {
   print("Flopver = %d, first word %04x\r\n", result, buffer_words[0]);
   assert_result("Flopver of a good track", result, 0);
   assert_result("It lists no bad sector", buffer_words[0], 0);
+}
+
+/* TOS's Flopfmt formats the track, or answers E_WRPRO on a write-protected
+   disk. An emulated drive formats nothing - the ROM would format the disk in
+   the physical drive instead: a read-only image answers E_WRPRO as TOS does,
+   a writable one the general error, and the track is left as it was. Under
+   TOS's own driver the writable case would format the test disk, so it runs
+   only on an emulated drive, whose BPB lives in the cartridge. */
+static void test_flopfmt(void) {
+  short result;
+  int good = 0;
+  int first = lba_of(FORMAT_TRACK, 1, 1);
+  int emulated = ((long)Getbpb(DRIVE_A) & 0xFF0000L) == 0xFA0000L;
+  if (disk_is_rw && !emulated) {
+    print("[SKIP] Flopfmt on the writable disk: TOS's driver would format "
+          "it\r\n");
+    return;
+  }
+  result = Flopfmt(format_words, 0L, DRIVE_A, disk->spt, FORMAT_TRACK, 1, 1,
+                   0x87654321L, 0xE5E5);
+  print("Flopfmt track %d side 1 = %d\r\n", FORMAT_TRACK, result);
+  if (disk_is_rw) {
+    assert_result("Flopfmt on the writable image is refused", result, ERROR);
+  } else {
+    assert_result("Flopfmt on the read-only disk is refused, write protected",
+                  result, EWRPRO);
+  }
+  Floprd(buffer, 0L, DRIVE_A, 1, FORMAT_TRACK, 1, disk->spt);
+  for (int n = 0; n < disk->spt; n++) {
+    good += holds_signature(first + n, buffer + n * SECTOR);
+  }
+  assert_result("And the track is as it was", good, disk->spt);
 }
 
 /* A floppy driver that hooks the XBIOS must pass on what is not a floppy call.
@@ -695,6 +732,7 @@ int run_floppy_tests(void) {
     print("=== Floppy: writing ===\r\n");
     test_rwabs_write();
     test_flopwr();
+    test_flopfmt();
     test_create_file();
     test_leave_a_sector_written();
 

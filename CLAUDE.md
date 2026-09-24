@@ -108,6 +108,8 @@ Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive
 
 The BPB handed to GEMDOS is built from the boot sector as TOS's own floppy `Getbpb` builds it, on 1.04 and 2.06 alike (measured under Hatari): one reserved sector and two FATs whatever the boot sector says, the root directory truncated to whole sectors. A disk that works on a real ST is laid out that way. An `Rwabs` record is placed as TOS's `floprw` places it, with the boot sector's own sectors per track and sides; the XBIOS reads the disk as it physically is, with the geometry the RP finds from the image's size (Hatari's rule). The two differ only on disks whose boot sector does not describe them, like menu disks with a one-sided BPB on two sides.
 
+Flopfmt on an emulated drive is refused: `floppy.s` sends it to the RP (`FLOPPYEMUL_FORMAT_TRACK`), which answers E_WRPRO for a read-only image and -1 otherwise. Handed to the ROM, as it used to be, it formatted whatever disk was in the physical drive while the desktop's follow-up writes landed on the image.
+
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
 ### Start order and boot drive

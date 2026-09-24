@@ -1120,6 +1120,21 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       break;
     }
 
+    case FLOPPYEMUL_FORMAT_TRACK: {
+      // An emulated disk is not formatted. The ST sends Flopfmt here instead
+      // of to the ROM, which formatted whatever disk was in the physical drive
+      // while the desktop's writes that follow it landed on the image. The
+      // answer is TOS's for a disk it cannot format: write protected for a
+      // read-only image, the general error otherwise.
+      uint16_t diskNum = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);  // d3.l
+      FloppyDiskState state =
+          diskNum == 0 ? floppyDiskStatus.stateA : floppyDiskStatus.stateB;
+      DPRINTF("Flopfmt on %s refused\n", diskNum == 0 ? "A:" : "B:");
+      floppySetTransferStatus(state == FLOPPY_DISK_MOUNTED_RO ? FLOPPY_EWRPRO
+                                                              : FLOPPY_ERROR);
+      break;
+    }
+
     case FLOPPYEMUL_SAVE_VECTORS: {
       // Save the vectors needed for the floppy emulation
       DPRINTF("Saving vectors\n");

@@ -197,6 +197,8 @@ FLOPPY_ASSERT_ALIGNED_2(FLOPPYEMUL_IMAGE);
 #define FLOPPYEMUL_RESET (APP_FLOPPYEMUL << 8 | 6)  // Reset the floppy emulator
 #define FLOPPYEMUL_SAVE_BIOS_VECTOR \
   (APP_FLOPPYEMUL << 8 | 7)  // Save the BIOS vector of the floppy emulator
+#define FLOPPYEMUL_FORMAT_TRACK \
+  (APP_FLOPPYEMUL << 8 | 8)  // Flopfmt on an emulated drive: refused
 #define FLOPPYEMUL_SHOW_VECTOR_CALL \
   (APP_FLOPPYEMUL << 8 | 11)  // Show the vector call of the floppy emulator
 #define FLOPPYEMUL_DEBUG \

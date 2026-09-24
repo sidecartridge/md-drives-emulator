@@ -28,6 +28,7 @@ CMD_SAVE_HARDWARE   equ ($4 + APP_FLOPPYEMUL)     ; Command code to save the har
 CMD_SET_SHARED_VAR  equ ($5 + APP_FLOPPYEMUL)     ; Command code to set a shared variable
 CMD_RESET           equ ($6 + APP_FLOPPYEMUL)     ; Command code to reset the floppy emulator before starting the boot process
 CMD_SAVE_BIOS_VECTOR equ ($7 + APP_FLOPPYEMUL)     ; Command code to save the old BIOS vector
+CMD_FORMAT_TRACK    equ ($8 + APP_FLOPPYEMUL)     ; Flopfmt on an emulated drive: refused
 CMD_SHOW_VECTOR_CALL equ ($B + APP_FLOPPYEMUL)    ; Command code to show the XBIOS vector call 
 CMD_DEBUG            equ ($C + APP_FLOPPYEMUL)    ; Command code to send to the RP2040 the debug command
 
@@ -261,9 +262,9 @@ detect_ms16:
     rts
 
 ; New XBIOS: Floprd, Flopwr and Flopver for an emulated drive are served from
-; the Sidecart. Every other call, and those three for a drive that is not
-; emulated, go to TOS untouched: a hook on the XBIOS trap sees every program's
-; XBIOS calls, not only the floppy ones.
+; the Sidecart, and Flopfmt is refused there. Every other call, and those four
+; for a drive that is not emulated, go to TOS untouched: a hook on the XBIOS
+; trap sees every program's XBIOS calls, not only the floppy ones.
 ; The XBIOS, like the BIOS may utilize registers D0-D2 and A0-A2 as scratch registers and their
 ; contents should not be depended upon at the completion of a call. In addition, the function
 ; opcode placed on the stack will be modified.
@@ -301,14 +302,15 @@ _notlong:
     cmp.w #Flopver, d0              ; is it XBIOS call Flopver?
     beq.s _floppy_xbios_call
     cmp.w #Flopfmt, d0              ; is it XBIOS call Flopfmt?
-    beq _floppy_format              ; if yes, go to flopppy format
+    beq.s _floppy_xbios_call
 _floppy_xbios_not_ours:
     move.l old_XBIOS_trap, -(sp)    ; if not, continue with XBIOS call
     rts
 
     ;
     ; Floprd, Flopwr and Flopver take the same arguments: buf, filler, devno,
-    ; sectno, trackno, sideno, count. d0 says which of the three this is.
+    ; sectno, trackno, sideno, count; Flopfmt has devno in the same place. d0
+    ; says which of the four this is.
     ;
 _floppy_xbios_call:
     move.w 16(a0), d1               ; devno
@@ -327,26 +329,6 @@ _floppy_xbios_call:
     move.w 22(a0),d3                ; side number
     mulu secptrack_B,d3             ; times the sectors per track
     bra _floppy_xbios_emulated
-
-    ;
-    ; Trapped XBIOS call 10 with the floppy disk drive format function
-    ; Return always formatted with errors
-_floppy_format:
-;    movem.l d0-d7/a0-a6,-(sp)
-;    send_sync CMD_DEBUG, 16             ; Send the command to the Sidecart. 2 bytes of payload
-;    movem.l (sp)+, d0-d7/a0-a6
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts
-
-    cmp.w #1,16(a0)
-    bne.s _floppy_format_emulated_a   ; if is not B then is A
-    clr.w 16(a0)                      ; Map B drive to physical A
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts
-_floppy_format_emulated_a:
-    moveq #-1, d0                     ; If SidecarT, always formatted with errors
-    clr.l 8(a0)                       ; Set the error code to 0 in the buff
-    rte
 
 _floppy_xbios_a:
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
@@ -368,6 +350,8 @@ _floppy_xbios_a:
 ; a record, which the RP places with the boot sector's own geometry as TOS's
 ; floprw does.
 _floppy_xbios_emulated:
+    cmp.w #Flopfmt, d0
+    beq.s _floppy_xbios_format
     add.l d3, d6               ; d6 = track number * sec/cyl + side number * sec/track
     add.w 18(a0),d6            ; + the sector number
     subq.w #1,d6               ; sectors are numbered from 1: d6 = logical sector
@@ -417,6 +401,25 @@ _floppy_xbios_verify_failed:
     addq.l #4, sp
     movem.l (sp)+,d3-d7/a3-a6
     rte                        ; with the error in d0
+
+
+; Flopfmt on an emulated drive formats nothing. Handed to the ROM it formatted
+; whatever disk was in the physical drive, and the desktop's writes that follow
+; it landed on the image. The RP answers as TOS answers a disk it cannot
+; format: write protected for a read-only image, the general error otherwise.
+_floppy_xbios_format:
+    moveq #0, d3
+    move.w d4, d3              ; the drive
+    send_sync CMD_FORMAT_TRACK, 4
+    tst.w d0
+    beq.s _floppy_xbios_format_answered
+    moveq #-1, d0              ; no answer: the general error
+    bra.s _floppy_xbios_format_done
+_floppy_xbios_format_answered:
+    move.l transfer_status, d0
+_floppy_xbios_format_done:
+    movem.l (sp)+,d3-d7/a3-a6
+    rte
 
 
 bios_trap:
