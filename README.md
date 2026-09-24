@@ -358,7 +358,10 @@ on the writable one, and logs to `FLOPTEST.TXT` on the boot drive. After a run o
 disk, `make_floppy_image.py check-rw FLOPTEST.ST.RW` says whether the sector it leaves written
 reached the card. One case needs the host: on a debug build, `tools/dev/swd.py app
 floppy_fail_read 1320` before the run makes a read fail, and FLOPTEST checks that it is reported
-as a failure; without it that case is skipped.
+as a failure; without it that case is skipped. The last case is a real media change: with the
+other test disk as drive A's slot 2 (`CTRL+A` in the setup menu), it waits for drive A to be
+cycled - `tools/dev/console.py wait "LSECTOR: 1330 " && tools/dev/swd.py select short` does it
+from the host when the case reads sector 1330 - and checks GEMDOS then reads the other disk.
 
 Its reference is TOS's own floppy driver: `tools/dev/hatari_tests.py --harness floptest` runs it
 under Hatari on both disks and every TOS Hatari can, and puts hardware logs beside those results.

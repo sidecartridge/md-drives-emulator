@@ -20,8 +20,11 @@
 #define SCRATCH_SECTOR 1301     /* written and put back */
 #define XBIOS_SECTOR 1310       /* track 72, side 1, sector 6 */
 #define FAILING_SECTOR 1320     /* the host makes its next read fail */
+#define CYCLE_SECTOR 1330       /* read to tell the host to press SELECT */
 #define EREADF -11              /* read fault */
 #define EWRPRO -13              /* write protected */
+#define E_CHNG -14              /* media change */
+#define MEDIA_CHANGED 2         /* what Mediach answers for a changed disk */
 
 static const char README[] = "SidecarTridge floppy test image.\r\n";
 #define PROGRAM_SIZE 36L  /* PROG.TOS: a header, Pterm0 and no fixups */
@@ -81,6 +84,14 @@ static int holds_signature(int lba, const unsigned char* data) {
 static int holds_written(int lba, const unsigned char* data) {
   make_written(lba, spare);
   return memcmp(data, spare, SECTOR) == 0;
+}
+
+/* Whether the buffer still holds the 0x5A it was filled with. */
+static int buffer_untouched(void) {
+  for (int i = 0; i < SECTOR * 2; i++) {
+    if (buffer[i] != 0x5A) return FALSE;
+  }
+  return TRUE;
 }
 
 static int lba_of(int track, int side, int sector) {
@@ -168,6 +179,40 @@ static void test_rwabs_file_sector(void) {
     if (buffer[i] != (unsigned char)(i * 7 + (i >> 9))) good = 0;
   }
   assert_result("It holds the file's first 512 bytes", good, TRUE);
+}
+
+/* TOS's floppy driver keeps a media-change state per drive: Rwabs with no
+   buffer sets it to the count, Mediach answers it, Rwabs in modes 0 and 1
+   answers E_CHNG while it says changed - without a transfer - and Getbpb,
+   which GEMDOS calls after being told, ends it. Mode 2 and the XBIOS are
+   physical and never ask. So a change can be made here without touching the
+   disk, and every part of that checked against TOS's own driver. */
+static void test_forced_media_change(void) {
+  long result;
+  short xresult;
+  assert_result("Rwabs with no buffer sets the drive changed",
+                (int)Rwabs(0, NULL, MEDIA_CHANGED, 0, DRIVE_A), 0);
+  assert_result("Mediach then says changed", (int)Mediach(DRIVE_A),
+                MEDIA_CHANGED);
+  memset(buffer, 0x5A, SECTOR * 2);
+  result = Rwabs(0, buffer, 1, 1093, DRIVE_A);
+  assert_result("Rwabs on the changed disk answers E_CHNG", (int)result,
+                E_CHNG);
+  assert_result("Without reading", buffer_untouched(), TRUE);
+  result = Rwabs(2, buffer, 1, 1093, DRIVE_A);
+  assert_result("Rwabs mode 2 does not ask, and reads", result == 0 &&
+                holds_signature(1093, buffer), TRUE);
+  xresult = Floprd(buffer, 0L, DRIVE_A, 5, 60, 0, 1);
+  assert_result("Nor does Floprd", xresult == 0 &&
+                holds_signature(lba_of(60, 0, 5), buffer), TRUE);
+  assert_result("Neither ends the change", (int)Mediach(DRIVE_A),
+                MEDIA_CHANGED);
+  assert_result("Getbpb answers", Getbpb(DRIVE_A) != 0, TRUE);
+  assert_result("And that ends it", (int)Mediach(DRIVE_A) != MEDIA_CHANGED,
+                TRUE);
+  result = Rwabs(0, buffer, 1, 1093, DRIVE_A);
+  assert_result("Rwabs reads again", result == 0 &&
+                holds_signature(1093, buffer), TRUE);
 }
 
 static void test_rwabs_write(void) {
@@ -301,13 +346,6 @@ static void test_mfpint_passes_through(void) {
    on to the end of the track - the controller cannot go further - and stops
    with -8, sector not found, while EmuTOS answers 0 and moves nothing. Either
    is TOS; running on past the track is not. */
-static int buffer_untouched(void) {
-  for (int i = 0; i < SECTOR * 2; i++) {
-    if (buffer[i] != 0x5A) return FALSE;
-  }
-  return TRUE;
-}
-
 static void test_count_of_zero(void) {
   long result;
   short xresult;
@@ -507,6 +545,43 @@ static void test_leave_a_sector_written(void) {
   assert_result("Leave sector 1300 written for the host", (int)result, 0);
 }
 
+/* A real change: the host cycles drive A to its next slot with SELECT while
+   this waits, and GEMDOS must then read the other disk. The host is told by
+   the read of CYCLE_SECTOR, which shows on the RP's console; drive A's slots
+   are the two test disks, so MODE.TXT says the other mode afterwards. The
+   last case, since it leaves the other disk in the drive. Nobody presses
+   SELECT under Hatari, or on a run nobody set up for it: skipped then. */
+static void test_slot_cycle(void) {
+  char mode[8] = {0};
+  int handle;
+  int changed = FALSE;
+  Rwabs(0, buffer, 1, CYCLE_SECTOR, DRIVE_A);
+  print("Waiting for drive A to be cycled (SELECT)...\r\n");
+  for (int i = 0; i < 50 * 20 && !changed; i++) {
+    Vsync();
+    changed = (Mediach(DRIVE_A) == MEDIA_CHANGED);
+  }
+  if (!changed) {
+    print("[SKIP] Drive A was not cycled (swd.py select short when the "
+          "console shows sector %d)\r\n", CYCLE_SECTOR);
+    return;
+  }
+  assert_result("Cycling drive A makes Mediach say changed", changed, TRUE);
+  handle = Fopen("A:\\MODE.TXT", 0);
+  assert_result("GEMDOS opens MODE.TXT on the new disk", A_VALID_HANDLE(handle),
+                TRUE);
+  if (handle > 0) {
+    Fread(handle, sizeof(mode) - 1, mode);
+    Fclose(handle);
+  }
+  print("MODE.TXT after the cycle: %c%c, before: %s\r\n", mode[0], mode[1],
+        disk_is_rw ? "RW" : "RO");
+  assert_result("And reads the other disk",
+                (mode[0] == 'R' && mode[1] == 'W') != disk_is_rw, TRUE);
+  assert_result("The change is over", (int)Mediach(DRIVE_A) != MEDIA_CHANGED,
+                TRUE);
+}
+
 int run_floppy_tests(void) {
   long old_critic = (long)Setexc(0x101, (long)critic_returns_error);
 
@@ -522,6 +597,7 @@ int run_floppy_tests(void) {
     test_rwabs_free_sector();
     test_rwabs_across_sides();
     test_rwabs_file_sector();
+    test_forced_media_change();
 
     print("=== Floppy: XBIOS ===\r\n");
     test_floprd_side(0);
@@ -543,6 +619,9 @@ int run_floppy_tests(void) {
     test_flopwr();
     test_create_file();
     test_leave_a_sector_written();
+
+    print("=== Floppy: media change ===\r\n");
+    test_slot_cycle();
   }
 
   Setexc(0x101, old_critic);
