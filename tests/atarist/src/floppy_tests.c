@@ -270,6 +270,35 @@ static void test_mfpint_passes_through(void) {
                 installed == (long)trampoline, TRUE);
 }
 
+/* A count of zero moves nothing and answers 0 at once, as TOS's Rwabs does.
+   The buffer is filled first, so anything written into it shows. A driver
+   that counts down with dbf after a subq turns zero into 65536 sectors and
+   overruns memory, so this runs before anything is written to the disk.
+   Floprd is another matter: Atari's TOS, 1.04 to 2.06, wraps as well, reads
+   on to the end of the track - the controller cannot go further - and stops
+   with -8, sector not found, while EmuTOS answers 0 and moves nothing. Either
+   is TOS; running on past the track is not. */
+static int buffer_untouched(void) {
+  for (int i = 0; i < SECTOR * 2; i++) {
+    if (buffer[i] != 0x5A) return FALSE;
+  }
+  return TRUE;
+}
+
+static void test_count_of_zero(void) {
+  long result;
+  short xresult;
+  memset(buffer, 0x5A, SECTOR * 2);
+  result = Rwabs(0, buffer, 0, 1093, DRIVE_A);
+  assert_result("Rwabs of no sectors answers 0", (int)result, 0);
+  assert_result("And moves nothing", buffer_untouched(), TRUE);
+  memset(buffer, 0x5A, SECTOR * 2);
+  xresult = Floprd(buffer, 0L, DRIVE_A, 1, 60, 0, 0);
+  print("Floprd of no sectors = %d\r\n", xresult);
+  assert_result("Floprd of no sectors answers as TOS does, 0 or -8",
+                xresult == 0 || xresult == -8, TRUE);
+}
+
 /* -------------------------------------------------------------- GEMDOS */
 
 static void test_listing(void) {
@@ -447,6 +476,7 @@ int run_floppy_tests(void) {
     test_floprd_side(1);
     test_floprd_track();
     test_flopver();
+    test_count_of_zero();
 
     print("=== Floppy: GEMDOS ===\r\n");
     test_listing();
