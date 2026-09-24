@@ -221,22 +221,14 @@ static inline void floppyMaybeClearMediaChangeAfterRead(FloppyDrive drive,
   floppyResetMediaChangeClearOnRootRead(drive);
 }
 
+// A .ST image is 512-byte sectors whatever its boot sector claims, so 512 is
+// the only size the ST sends and the only one a read or write may ask for. It
+// is a multiple of 4, as the ST's copy loop needs, and fits both the image
+// buffer and a write's payload.
 static inline bool floppyTransferSizeIsValid(uint16_t sSize) {
-  if (sSize == 0) {
-    DPRINTF("ERROR: Floppy transfer size must be greater than zero\n");
-    return false;
-  }
-
-  if ((sSize & 1u) != 0u) {
-    DPRINTF("ERROR: Floppy transfer size must be even for 16-bit swaps: %u\n",
-            sSize);
-    return false;
-  }
-
-  if ((uint32_t)sSize > FLOPPYEMUL_IMAGE_BUFFER_SIZE) {
-    DPRINTF(
-        "ERROR: Floppy transfer size %u exceeds shared image buffer size %lu\n",
-        sSize, (unsigned long)FLOPPYEMUL_IMAGE_BUFFER_SIZE);
+  if (sSize != FLOPPY_SECTOR_SIZE) {
+    DPRINTF("ERROR: Floppy transfer size %u is not %u\n", sSize,
+            FLOPPY_SECTOR_SIZE);
     return false;
   }
 
@@ -1290,6 +1282,15 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       // A failure until the write has succeeded, as for a read.
       floppySetTransferStatus(FLOPPY_ERROR);
       if (!floppyTransferSizeIsValid(sSize)) {
+        return;
+      }
+      // The sector's data follows the token, d3, d4 and d5 in the payload:
+      // never swap or write more of it than arrived.
+      if (lastProtocol->payload_size < 16u + sSize) {
+        DPRINTF("ERROR: Floppy write of %u bytes carries only %u\n", sSize,
+                (unsigned int)((lastProtocol->payload_size >= 16u)
+                                   ? lastProtocol->payload_size - 16u
+                                   : 0u));
         return;
       }
 

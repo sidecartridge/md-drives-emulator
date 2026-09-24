@@ -74,6 +74,8 @@ transfer_status:       equ (disk_number_B + 2) ; disk_number_B + 2 bytes
 sidecart_read_buf:     equ (FLOPPYEMUL_VARIABLES_OFFSET + 256)
 
 ; CONSTANTS
+SECTOR_SIZE     equ 512     ; A .ST image is 512-byte sectors, whatever its boot
+                            ; sector claims: the BPB is only what GEMDOS is told
 VEC_BIOS        equ $2D     ; BIOS vector
 XBIOS_trap      equ $b8     ; TRAP #14 Handler (XBIOS)
 _membot         equ $432    ; This value represents last memory used by the TOS, and start of the heap area available
@@ -221,8 +223,7 @@ _start_boot:
 
     moveq #0, d6            ; Start reading at sector 0
     moveq #0, d4            ; Read from drive A
-    moveq #0, d2            ; clear d2.l
-    move.w BPB_data_A, d2   ; Sector size of the emulated drive A
+    move.l #SECTOR_SIZE, d2 ; Sector size
     move.l _membot.w,a4        ; Start reading at $2000
     bsr read_sector_from_sidecart
     tst.w d0
@@ -312,7 +313,7 @@ _floppy_xbios_call:
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_B, d2           ; Sector size of the emulated drive B
+    move.w #SECTOR_SIZE, d2         ; Sector size
     moveq #1, d4                    ; Use B:
     moveq #0, d6
     move.w 20(a0),d6                ; track number
@@ -346,7 +347,7 @@ _floppy_xbios_a:
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_A, d2           ; Sector size of the emulated drive A
+    move.w #SECTOR_SIZE, d2         ; Sector size
     moveq #0, d4                    ; Use A:
     moveq #0, d6
     move.w 20(a0),d6                ; track number
@@ -464,13 +465,25 @@ _bios_get_bpb_load_emul_bpp_A:
     beq.s _bios_get_bpb_not_emul_bpp
     ; Emulate A
     move.l #BPB_data_A,d0         ; Load the emulated BPP A
-    rte  
+    bra.s _bios_get_bpb_check
 
 _bios_get_bpb_load_emul_bpp_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_get_bpb_not_emul_bpp
     move.l #BPB_data_B,d0         ; Load the emulated BPP B
+; No BPB, as TOS answers, for a boot sector whose sector size is not positive
+; or whose cluster size is 0: a disk with no file system on it, whose numbers
+; GEMDOS would otherwise divide by.
+_bios_get_bpb_check:
+    move.l d0, a1
+    tst.w (a1)                    ; recsiz, as a signed word
+    ble.s _bios_get_bpb_none
+    tst.w 2(a1)                   ; clsiz
+    bne.s _bios_get_bpb_done
+_bios_get_bpb_none:
+    moveq #0, d0
+_bios_get_bpb_done:
     rte
 
 bios_mediach:
@@ -517,7 +530,7 @@ _bios_rwabs_a:
 _bios_rwabs_a_continue:
     movem.l d3-d7/a3-a6, -(sp)
     moveq #0, d4               ; Use A:
-    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
+    move.w #SECTOR_SIZE, d2    ; Sector size
     bra.s _bios_rwabs_emulated
 _bios_rwabs_b:
     ; Test Drive B
@@ -531,7 +544,7 @@ _bios_rwabs_b:
 _bios_rwabs_b_continue:
     movem.l d3-d7/a3-a6, -(sp)
     moveq #1, d4               ; Use B:
-    move.w BPB_data_B, d2      ; Sector size of the emulated drive B
+    move.w #SECTOR_SIZE, d2    ; Sector size
 _bios_rwabs_emulated:
     move.l a0, a5              ; the arguments: a send does not keep a0
 _bios_rwabs_transfer:
@@ -687,7 +700,7 @@ read_sector_from_sidecart:
     bne.s _read_sector_failed           ; and the buffer is not this sector
     move.w d2, d5                       ; Save in d5 the number of bytes to copy
     move.l #sidecart_read_buf, a1
-    lsr.w #2, d5
+    lsr.w #2, d5                        ; four bytes a turn: d2 is SECTOR_SIZE
     subq.w #1,d5                        ; one less
     move.l a4, d3
     btst #0,d3                          ; If it's even, take the fast lane. If it's odd, take the slow lane
