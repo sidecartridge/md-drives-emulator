@@ -7,18 +7,16 @@
 #include "workdir_tests.h" /* Dfree */
 
 /* The disk in A: is made by tools/dev/make_floppy_image.py, and these rules are
-   that script's: 720 KB, 80 tracks, 2 sides, 9 sectors of 512 bytes, FAT12
-   with three files, and a signature in every free sector naming the sector.
-   The two must agree. */
+   that script's: 80 tracks, 2 sides, 9 sectors of 512 bytes (720 KB) or 18
+   (1.44 MB), FAT12 with four files, and a signature in every free sector
+   naming the sector. The two must agree. */
 #define SECTOR 512
-#define SECTORS_PER_TRACK 9
+#define MAX_SECTORS_PER_TRACK 18
 #define SIDES 2
 #define DRIVE_A 0
 #define PATTERN_SIZE 20480L
-#define PATTERN_FIRST_SECTOR 18 /* PATTERN.BIN starts at cluster 4 */
 #define WRITTEN_SECTOR 1300     /* left written for the host to check */
 #define SCRATCH_SECTOR 1301     /* written and put back */
-#define XBIOS_SECTOR 1310       /* track 72, side 1, sector 6 */
 #define FAILING_SECTOR 1320     /* the host makes its next read fail */
 #define CYCLE_SECTOR 1330       /* read to tell the host to press SELECT */
 #define EREADF -11              /* read fault */
@@ -26,13 +24,27 @@
 #define E_CHNG -14              /* media change */
 #define MEDIA_CHANGED 2         /* what Mediach answers for a changed disk */
 
+/* The two densities the script makes: 720 KB and 1.44 MB. Which one is in
+   the drive is read from its boot sector's sectors per track. */
+typedef struct {
+  int spt;    /* sectors per track */
+  int fsiz;   /* sectors per FAT */
+  int datrec; /* first data sector: 1 + 2 FATs + 7 root directory sectors */
+  int numcl;  /* clusters */
+  int media;  /* media byte */
+  const char* name;
+} Geometry;
+static const Geometry DOUBLE_DENSITY = {9, 3, 14, 713, 0xF9, "720 KB"};
+static const Geometry HIGH_DENSITY = {18, 5, 18, 1431, 0xF0, "1.44 MB"};
+static const Geometry* disk = &DOUBLE_DENSITY;
+
 static const char README[] = "SidecarTridge floppy test image.\r\n";
 #define PROGRAM_SIZE 36L  /* PROG.TOS: a header, Pterm0 and no fixups */
 #define PROGRAM_FLAGS 5L  /* what its header asks for */
 
 /* Word aligned: TOS's floppy driver moves data by DMA, which cannot reach an
    odd address, and Flopver wants 1024 bytes of it as scratch. */
-static unsigned short buffer_words[SECTORS_PER_TRACK * SECTOR / 2];
+static unsigned short buffer_words[MAX_SECTORS_PER_TRACK * SECTOR / 2];
 static unsigned char* const buffer = (unsigned char*)buffer_words;
 static unsigned short spare_words[SECTOR / 2];
 static unsigned char* const spare = (unsigned char*)spare_words;
@@ -95,7 +107,7 @@ static int buffer_untouched(void) {
 }
 
 static int lba_of(int track, int side, int sector) {
-  return (track * SIDES + side) * SECTORS_PER_TRACK + (sector - 1);
+  return (track * SIDES + side) * disk->spt + (sector - 1);
 }
 
 /* Which of the two disks is in the drive, from MODE.TXT. FALSE when there is
@@ -111,7 +123,11 @@ static int find_the_test_disk(void) {
   Fread(handle, sizeof(mode) - 1, mode);
   Fclose(handle);
   disk_is_rw = (mode[0] == 'R' && mode[1] == 'W');
-  print("Test disk in A:, %s\r\n", disk_is_rw ? "writable" : "read-only");
+  if (Rwabs(0, buffer, 1, 0, DRIVE_A) == 0 && buffer[24] == HIGH_DENSITY.spt) {
+    disk = &HIGH_DENSITY;
+  }
+  print("Test disk in A:, %s, %s\r\n", disk_is_rw ? "writable" : "read-only",
+        disk->name);
   return TRUE;
 }
 
@@ -125,10 +141,10 @@ static void test_getbpb(void) {
   assert_result("BPB sectors per cluster", bpb[1], 2);
   assert_result("BPB bytes per cluster", bpb[2], 1024);
   assert_result("BPB root directory sectors", bpb[3], 7);
-  assert_result("BPB sectors per FAT", bpb[4], 3);
-  assert_result("BPB second FAT at", bpb[5], 4);
-  assert_result("BPB first data sector", bpb[6], 14);
-  assert_result("BPB cluster count", bpb[7], 713);
+  assert_result("BPB sectors per FAT", bpb[4], disk->fsiz);
+  assert_result("BPB second FAT at", bpb[5], disk->fsiz + 1);
+  assert_result("BPB first data sector", bpb[6], disk->datrec);
+  assert_result("BPB cluster count", bpb[7], disk->numcl);
   assert_result("BPB flags: a 12-bit FAT", bpb[8], 0);
 }
 
@@ -146,9 +162,9 @@ static void test_rwabs_boot_sector(void) {
   if (result != 0) return;
   assert_result("Boot sector: 512 bytes a sector",
                 buffer[11] == 0x00 && buffer[12] == 0x02, TRUE);
-  assert_result("Boot sector: media byte F9", buffer[21], 0xF9);
-  assert_result("Boot sector: 9 sectors a track, 2 sides",
-                buffer[24] == 9 && buffer[26] == 2, TRUE);
+  assert_result("Boot sector: the media byte", buffer[21], disk->media);
+  assert_result("Boot sector: its sectors a track, 2 sides",
+                buffer[24] == disk->spt && buffer[26] == 2, TRUE);
   assert_result("Boot sector: the serial of this disk",
                 buffer[8] == 'R' && buffer[9] == (disk_is_rw ? 'W' : 'O'),
                 TRUE);
@@ -162,17 +178,18 @@ static void test_rwabs_free_sector(void) {
 }
 
 static void test_rwabs_across_sides(void) {
-  /* 1085 to 1093: the last four sectors of track 60 side 0, then the first
-     five of side 1. */
-  long result = Rwabs(0, buffer, 9, 1085, DRIVE_A);
+  /* The last four sectors of track 60 side 0, then the first five of side 1. */
+  int first = lba_of(60, 0, disk->spt - 3);
+  long result = Rwabs(0, buffer, 9, first, DRIVE_A);
   int good = 0;
   assert_result("Rwabs reads nine sectors across a side", (int)result, 0);
-  for (int n = 0; n < 9; n++) good += holds_signature(1085 + n, buffer + n * SECTOR);
+  for (int n = 0; n < 9; n++) good += holds_signature(first + n, buffer + n * SECTOR);
   assert_result("Each of the nine holds its own signature", good, 9);
 }
 
 static void test_rwabs_file_sector(void) {
-  long result = Rwabs(0, buffer, 1, PATTERN_FIRST_SECTOR, DRIVE_A);
+  /* PATTERN.BIN starts at cluster 4 */
+  long result = Rwabs(0, buffer, 1, disk->datrec + 2 * 2, DRIVE_A);
   int good = 1;
   assert_result("Rwabs reads the first sector of PATTERN.BIN", (int)result, 0);
   for (int i = 0; i < SECTOR; i++) {
@@ -256,7 +273,7 @@ static void test_floprd_side(int side) {
   short result = Floprd(buffer, 0L, DRIVE_A, 5, 60, side, 1);
   sprintf(name, "Floprd track 60 side %d sector 5", side);
   assert_result(name, result, 0);
-  sprintf(name, "It is sector %d of drive A", lba);
+  sprintf(name, "It is that sector of drive A, side %d", side);
   assert_result(name, holds_signature(lba, buffer), TRUE);
   if (side == 1 && result == 0 && holds_signature(lba, buffer)) {
     xbios_side1_reaches_a = TRUE;
@@ -266,24 +283,24 @@ static void test_floprd_side(int side) {
 static void test_floprd_track(void) {
   int first = lba_of(61, 1, 1);
   int good = 0;
-  short result = Floprd(buffer, 0L, DRIVE_A, 1, 61, 1, SECTORS_PER_TRACK);
+  short result = Floprd(buffer, 0L, DRIVE_A, 1, 61, 1, disk->spt);
   assert_result("Floprd a whole track, side 1", result, 0);
-  for (int n = 0; n < SECTORS_PER_TRACK; n++) {
+  for (int n = 0; n < disk->spt; n++) {
     good += holds_signature(first + n, buffer + n * SECTOR);
   }
-  assert_result("Each sector of it holds its own signature", good,
-                SECTORS_PER_TRACK);
+  assert_result("Each sector of it holds its own signature", good, disk->spt);
 }
 
 static void test_flopwr(void) {
   short result;
   int calls;
+  int xbios_sector = lba_of(72, 1, 6);
   if (!xbios_side1_reaches_a) {
     print("[SKIP] Flopwr: XBIOS side 1 does not reach drive A, so a write "
           "would land on another disk\r\n");
     return;
   }
-  make_written(XBIOS_SECTOR, buffer);
+  make_written(xbios_sector, buffer);
   calls = critic_calls;
   result = Flopwr(buffer, 0L, DRIVE_A, 6, 72, 1, 1);
   if (!disk_is_rw) {
@@ -296,10 +313,10 @@ static void test_flopwr(void) {
   assert_result("Flopwr track 72 side 1 sector 6", result, 0);
   /* Read it back through the BIOS: the two must agree on where it is. */
   memset(buffer, 0, SECTOR);
-  Rwabs(0, buffer, 1, XBIOS_SECTOR, DRIVE_A);
-  assert_result("Rwabs finds it at sector 1310",
-                holds_written(XBIOS_SECTOR, buffer), TRUE);
-  make_signature(XBIOS_SECTOR, buffer);
+  Rwabs(0, buffer, 1, xbios_sector, DRIVE_A);
+  assert_result("Rwabs finds it where Flopwr put it",
+                holds_written(xbios_sector, buffer), TRUE);
+  make_signature(xbios_sector, buffer);
   Flopwr(buffer, 0L, DRIVE_A, 6, 72, 1, 1);
 }
 
@@ -307,7 +324,7 @@ static void test_flopver(void) {
   /* All sectors good: 0, and an empty list - its first word 0. */
   short result;
   for (int n = 0; n < SECTOR; n++) buffer_words[n] = 0xFFFF;
-  result = Flopver(buffer, 0L, DRIVE_A, 1, 60, 0, SECTORS_PER_TRACK);
+  result = Flopver(buffer, 0L, DRIVE_A, 1, 60, 0, disk->spt);
   print("Flopver = %d, first word %04x\r\n", result, buffer_words[0]);
   assert_result("Flopver of a good track", result, 0);
   assert_result("It lists no bad sector", buffer_words[0], 0);
@@ -492,15 +509,18 @@ static void test_dfree(void) {
   Dfree info;
   int result = Dfree(&info, 1); /* A: */
   assert_result("Dfree(A:)", result, 0);
-  assert_result("Dfree: 713 clusters on the disk", (int)info.b_total, 713);
-  /* 690 clusters are free. Atari's TOS, 1.00 to 2.06, says 688: its Dfree
-     walks the FAT from entry 0 instead of 2, counting the two reserved entries
-     as used and never reaching the last two clusters. EmuTOS says 690. GEMDOS
-     counts this from the FAT, so a driver serving wrong FAT sectors would show
-     some other number, while either of these two is TOS being itself. */
+  assert_result("Dfree: the clusters on the disk", (int)info.b_total,
+                disk->numcl);
+  /* The files take 23 clusters, so 690 are free on the 720 KB disk. Atari's
+     TOS, 1.00 to 2.06, says two fewer: its Dfree walks the FAT from entry 0
+     instead of 2, counting the two reserved entries as used and never
+     reaching the last two clusters. EmuTOS says 690. GEMDOS counts this from
+     the FAT, so a driver serving wrong FAT sectors would show some other
+     number, while either of these two is TOS being itself. */
   print("Dfree(A:) free clusters = %ld\r\n", (long)info.b_free);
   assert_result("Dfree: the free clusters TOS counts on this disk",
-                info.b_free == 688 || info.b_free == 690, TRUE);
+                info.b_free == disk->numcl - 25 || info.b_free == disk->numcl - 23,
+                TRUE);
 }
 
 static void test_create_file(void) {

@@ -3,10 +3,13 @@
 
     tools/dev/make_floppy_image.py ro FLOPTEST.ST          # the read-only disk
     tools/dev/make_floppy_image.py rw FLOPTEST.ST.RW       # the writable one
+    tools/dev/make_floppy_image.py ro-hd FLOPTEST.ST       # 1.44 MB, read-only
+    tools/dev/make_floppy_image.py rw-hd FLOPTEST.ST.RW    # 1.44 MB, writable
     tools/dev/make_floppy_image.py check-rw FLOPTEST.ST.RW # after a run
 
-A 720 KB double-sided disk: 80 tracks, 2 sides, 9 sectors of 512 bytes. It is
-a normal FAT12 disk that TOS and the desktop can open, and it is also a disk
+A 720 KB double-sided disk: 80 tracks, 2 sides, 9 sectors of 512 bytes - or,
+with -hd, a 1.44 MB one with 18 sectors a track and 5-sector FATs. It is a
+normal FAT12 disk that TOS and the desktop can open, and it is also a disk
 whose raw sectors a test can check without knowing anything but their number:
 
 - README.TXT and MODE.TXT hold known text. MODE.TXT says RO or RW, so a test
@@ -33,17 +36,20 @@ import struct
 import sys
 
 SECTOR = 512
-SECTORS_PER_TRACK = 9
 SIDES = 2
 TRACKS = 80
-TOTAL_SECTORS = SECTORS_PER_TRACK * SIDES * TRACKS  # 1440
 SECTORS_PER_CLUSTER = 2
 RESERVED = 1
 FATS = 2
-FAT_SECTORS = 3
 ROOT_ENTRIES = 112
 ROOT_SECTORS = ROOT_ENTRIES * 32 // SECTOR  # 7
-FIRST_DATA = RESERVED + FATS * FAT_SECTORS + ROOT_SECTORS  # 14
+
+# Sectors per track, sectors per FAT and media byte of the two densities. The
+# FATs are sized for the cluster count; FLOPTEST expects exactly these.
+DENSITIES = {
+    "dd": (9, 3, 0xF9),   # 1440 sectors, data from 14, 713 clusters
+    "hd": (18, 5, 0xF0),  # 2880 sectors, data from 18, 1431 clusters
+}
 
 README = b"SidecarTridge floppy test image.\r\n"
 PATTERN_SIZE = 20480
@@ -77,34 +83,41 @@ def pattern(size):
     return bytes((i * 7 + (i >> 9)) & 0xFF for i in range(size))
 
 
-def cluster_sector(cluster):
-    return FIRST_DATA + (cluster - 2) * SECTORS_PER_CLUSTER
+class Geometry:
+    def __init__(self, density):
+        self.spt, self.fat_sectors, self.media = DENSITIES[density]
+        self.total = self.spt * SIDES * TRACKS
+        self.first_data = RESERVED + FATS * self.fat_sectors + ROOT_SECTORS
+        self.serial = 1 if density == "dd" else 2
+
+    def cluster_sector(self, cluster):
+        return self.first_data + (cluster - 2) * SECTORS_PER_CLUSTER
 
 
-def boot_sector(mode):
+def boot_sector(mode, geo):
     boot = bytearray(SECTOR)
     boot[0:2] = b"\x60\x38"                   # bra.s, as a formatted disk has
     boot[2:8] = b"FLOPTE"
     # The serial number is how TOS tells one disk from another after a swap,
     # so the two variants must not share one.
-    boot[8:11] = b"RO\x01" if mode == "ro" else b"RW\x01"
+    boot[8:11] = (b"RO" if mode == "ro" else b"RW") + bytes((geo.serial,))
     struct.pack_into("<HBHBHHBHHH", boot, 11,
                      SECTOR, SECTORS_PER_CLUSTER, RESERVED, FATS,
-                     ROOT_ENTRIES, TOTAL_SECTORS, 0xF9, FAT_SECTORS,
-                     SECTORS_PER_TRACK, SIDES)
+                     ROOT_ENTRIES, geo.total, geo.media, geo.fat_sectors,
+                     geo.spt, SIDES)
     # Not executable: TOS runs a boot sector whose words add up to $1234.
     if sum(struct.unpack(">256H", boot)) & 0xFFFF == 0x1234:
         boot[0x1E] ^= 0x01
     return bytes(boot)
 
 
-def fat12(chains):
-    entries = [0] * (FAT_SECTORS * SECTOR * 2 // 3)
-    entries[0], entries[1] = 0xFF9, 0xFFF
+def fat12(chains, geo):
+    entries = [0] * (geo.fat_sectors * SECTOR * 2 // 3)
+    entries[0], entries[1] = 0xF00 | geo.media, 0xFFF
     for clusters in chains:
         for current, following in zip(clusters, clusters[1:] + [0xFFF]):
             entries[current] = following
-    table = bytearray(FAT_SECTORS * SECTOR)
+    table = bytearray(geo.fat_sectors * SECTOR)
     for n, value in enumerate(entries):
         offset = n * 3 // 2
         if n % 2 == 0:
@@ -122,7 +135,8 @@ def dir_entry(name, ext, cluster, size):
                        DOS_TIME, DOS_DATE, cluster, size)
 
 
-def build(mode):
+def build(mode, density="dd"):
+    geo = Geometry(density)
     mode_text = b"RO\r\n" if mode == "ro" else b"RW\r\n"
     files = [
         ("README", "TXT", [2], README),
@@ -132,29 +146,29 @@ def build(mode):
         ("PROG", "TOS", [4 + PATTERN_SIZE // 1024], PROGRAM),
     ]
     used = {c for _, _, clusters, _ in files for c in clusters}
-    image = bytearray(TOTAL_SECTORS * SECTOR)
-    image[0:SECTOR] = boot_sector(mode)
+    image = bytearray(geo.total * SECTOR)
+    image[0:SECTOR] = boot_sector(mode, geo)
 
-    table = fat12([clusters for _, _, clusters, _ in files])
+    table = fat12([clusters for _, _, clusters, _ in files], geo)
     for copy in range(FATS):
-        start = (RESERVED + copy * FAT_SECTORS) * SECTOR
+        start = (RESERVED + copy * geo.fat_sectors) * SECTOR
         image[start:start + len(table)] = table
 
     root = bytearray(ROOT_SECTORS * SECTOR)
     for n, (name, ext, clusters, content) in enumerate(files):
         root[n * 32:(n + 1) * 32] = dir_entry(name, ext, clusters[0],
                                               len(content))
-        start = cluster_sector(clusters[0]) * SECTOR
+        start = geo.cluster_sector(clusters[0]) * SECTOR
         image[start:start + len(content)] = content
-    start = (RESERVED + FATS * FAT_SECTORS) * SECTOR
+    start = (RESERVED + FATS * geo.fat_sectors) * SECTOR
     image[start:start + len(root)] = root
 
-    last_cluster = 2 + (TOTAL_SECTORS - FIRST_DATA) // SECTORS_PER_CLUSTER - 1
+    last_cluster = 2 + (geo.total - geo.first_data) // SECTORS_PER_CLUSTER - 1
     for cluster in range(2, last_cluster + 1):
         if cluster in used:
             continue
         for n in range(SECTORS_PER_CLUSTER):
-            lba = cluster_sector(cluster) + n
+            lba = geo.cluster_sector(cluster) + n
             image[lba * SECTOR:(lba + 1) * SECTOR] = signature(lba)
     return bytes(image)
 
@@ -176,14 +190,17 @@ def check_rw(path):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in ("ro", "rw", "check-rw"):
+    modes = ("ro", "rw", "ro-hd", "rw-hd", "check-rw")
+    if len(sys.argv) != 3 or sys.argv[1] not in modes:
         sys.exit(__doc__)
     if sys.argv[1] == "check-rw":
         sys.exit(check_rw(sys.argv[2]))
+    mode, _, density = sys.argv[1].partition("-")
+    image = build(mode, density or "dd")
     with open(sys.argv[2], "wb") as handle:
-        handle.write(build(sys.argv[1]))
+        handle.write(image)
     print("wrote %s (%s, %d bytes)" % (sys.argv[2], sys.argv[1].upper(),
-                                     TOTAL_SECTORS * SECTOR))
+                                     len(image)))
 
 
 if __name__ == "__main__":

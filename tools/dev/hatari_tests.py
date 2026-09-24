@@ -52,9 +52,12 @@ HARNESSES = OrderedDict([
                   "copies": ("FLOPTEST.TOS",),
                   "log": "FLOPTEST.TXT",
                   "banner": "Atari ST floppy test suite",
-                  "disks": ("rw", "ro"),
+                  "disks": ("rw", "ro", "rw-hd", "ro-hd"),
                   "report": "floptest-matrix.md"}),
 ])
+
+# Machines with a high-density drive: only they get the 1.44 MB disks.
+HD_MACHINES = ("megaste", "tt", "falcon")
 
 # TOS version -> (image file, Hatari machine). The machine matters: Hatari
 # refuses a TOS its machine cannot run. TOS below 1.04 is not here at all:
@@ -109,7 +112,7 @@ def run_hatari(harness, tos_path, machine, timeout, keep_dir=None, disk=None):
         subprocess.run([sys.executable, MAKE_IMAGE, disk, image], check=True,
                        stdout=subprocess.DEVNULL)
         floppy = ["--disk-a", image,
-                  "--protect-floppy", "on" if disk == "ro" else "off"]
+                  "--protect-floppy", "on" if disk.startswith("ro") else "off"]
 
     env = dict(os.environ, SDL_VIDEODRIVER="dummy")
     command = [
@@ -145,7 +148,7 @@ def run_hatari(harness, tos_path, machine, timeout, keep_dir=None, disk=None):
     if os.path.exists(log_path):
         with open(log_path, errors="replace") as handle:
             log = handle.read()
-    if disk == "rw":
+    if disk and disk.startswith("rw"):
         # Hatari writes the disk back when it stops: did the write the test
         # leaves behind get there?
         check = subprocess.run([sys.executable, MAKE_IMAGE, "check-rw", image],
@@ -235,6 +238,8 @@ def main():
             print("skipping TOS %s: no %s" % (version, path))
             continue
         for disk in harness["disks"]:
+            if disk and disk.endswith("-hd") and machine not in HD_MACHINES:
+                continue
             column = "Hatari %s" % version + (" %s" % disk if disk else "")
             print("running TOS %s (%s)%s..." % (
                 version, machine, ", %s disk" % disk if disk else ""), flush=True)

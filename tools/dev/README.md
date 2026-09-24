@@ -183,10 +183,12 @@ Hatari is the reference for what correct means. For FSTESTS that is its GEMDOS d
 for GEMDRIVE; for FLOPTEST it is its emulated WD1772 read by TOS's own floppy driver, which is what
 our floppy emulation replaces. FLOPTEST runs twice per TOS, on a writable and a write-protected
 disk made fresh by `make_floppy_image.py`, and after the writable run the image is checked for the
-sector the test leaves written. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
+sector the test leaves written. On a machine with a high-density drive (TOS 2.06 runs as a Mega
+STE) it runs on the 1.44 MB pair as well. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
 hardware-only for both harnesses. `--keep DIR` keeps each run's drive and log.
 
-`make_floppy_image.py ro|rw FILE` builds FLOPTEST's disk and `check-rw FILE` checks one after a
+`make_floppy_image.py ro|rw|ro-hd|rw-hd FILE` builds FLOPTEST's disk, 720 KB or 1.44 MB, and
+`check-rw FILE` checks one after a
 run; the rules for what every sector holds are in its docstring and in `floppy_tests.c`, and the
 two must agree.
 
