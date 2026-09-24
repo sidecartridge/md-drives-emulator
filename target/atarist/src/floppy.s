@@ -233,8 +233,10 @@ detect_ms16:
     send_sync CMD_SAVE_HARDWARE, 12
     rts
 
-; New XBIOS map A calls to Sidecart,
-; B to physical A if it exists
+; New XBIOS: Floprd, Flopwr and Flopver for an emulated drive are served from
+; the Sidecart. Every other call, and those three for a drive that is not
+; emulated, go to TOS untouched: a hook on the XBIOS trap sees every program's
+; XBIOS calls, not only the floppy ones.
 ; The XBIOS, like the BIOS may utilize registers D0-D2 and A0-A2 as scratch registers and their
 ; contents should not be depended upon at the completion of a call. In addition, the function
 ; opcode placed on the stack will be modified.
@@ -262,33 +264,42 @@ _notlong:
 ;    move.w 6(a0), d3                     ; get XBIOS call number
 ;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
 ;    movem.l (sp)+, d0-d7/a0-a6
-                                    ; get XBIOS call number
-    cmp.w #8,6(a0)                  ; is it XBIOS call Flopwr?
-    beq _floppy_read                ; if yes, go to flopppy read
-    cmp.w #9,6(a0)                  ; is it XBIOS call Floprd?
-    beq _floppy_write               ; if yes, go to flopppy write
-    cmp.w #13,6(a0)                 ; is it XBIOS call Flopver?
-    beq.s _floppy_verify            ; if yes, go to flopppy verify
-    cmp.w #10,6(a0)                 ; is it XBIOS call Flopfmt?
-    beq.s _floppy_format            ; if yes, go to flopppy format
+    move.w 6(a0), d0                ; get XBIOS call number
+    cmp.w #Floprd, d0               ; is it XBIOS call Floprd?
+    beq.s _floppy_xbios_call
+    cmp.w #Flopwr, d0               ; is it XBIOS call Flopwr?
+    beq.s _floppy_xbios_call
+    ; Flopver is 19, $13 in hex. XBIOS 13 decimal is Mfpint, and taking it
+    ; here kept programs from installing MFP interrupt handlers.
+    cmp.w #Flopver, d0              ; is it XBIOS call Flopver?
+    beq.s _floppy_xbios_call
+    cmp.w #Flopfmt, d0              ; is it XBIOS call Flopfmt?
+    beq _floppy_format              ; if yes, go to flopppy format
+_floppy_xbios_not_ours:
     move.l old_XBIOS_trap, -(sp)    ; if not, continue with XBIOS call
-    rts 
+    rts
 
     ;
-    ; Trapped XBIOS call 13 with the floppy disk drive verify function
-    ; Return always verified successfully
+    ; Floprd, Flopwr and Flopver take the same arguments: buf, filler, devno,
+    ; sectno, trackno, sideno, count. d0 says which of the three this is.
     ;
-_floppy_verify:
-    cmp.w #1,16(a0)
-    bne.s _floppy_verify_emulated_a   ; if is not B then is A
-    clr.w 16(a0)                      ; Map B drive to physical A
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts 
-
-_floppy_verify_emulated_a:
-    clr.l d0                           ; If SidecarT, always verified successfully
-    move.l  d0, 8(a0)                  ; Set the error code to 0 in buff
-    rte
+_floppy_xbios_call:
+    move.w 16(a0), d1               ; devno
+    beq _floppy_xbios_a
+    cmp.w #1, d1
+    bne.s _floppy_xbios_not_ours    ; neither A: nor B:
+    btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
+    movem.l d3-d7/a3-a6, -(sp)
+    move.w BPB_data_B, d2           ; Sector size of the emulated drive B
+    moveq #1, d4                    ; Use B:
+    moveq #0, d6
+    move.w 20(a0),d6                ; track number
+    mulu secpcyl_B,d6               ; times the sectors per cylinder
+    moveq #0, d3
+    move.w 22(a0),d3                ; side number
+    mulu secptrack_B,d3             ; times the sectors per track
+    bra _floppy_xbios_emulated
 
     ;
     ; Trapped XBIOS call 10 with the floppy disk drive format function
@@ -310,57 +321,72 @@ _floppy_format_emulated_a:
     clr.l 8(a0)                       ; Set the error code to 0 in the buff
     rte
 
-    ;
-    ; Trapped XBIOS calls 9 with the floppy disk drive write functions
-    ;
-_floppy_write:
-    moveq #1, d0                       ; d0 = write flag
-    tst.w 16(a0)
-    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
-    bra.s _floppy_xbios_emulated_b
-
-    ;
-    ; Trapped XBIOS calls 8 with the floppy disk drive read functions
-    ;
-_floppy_read:
-    moveq #0, d0                       ; d0 = read flag
-    tst.w 16(a0)
-    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
-
-_floppy_xbios_emulated_b:
+_floppy_xbios_a:
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
+    beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_B, d2      ; Sector size of the emulated drive B
-    moveq #1, d4               ; Use B:
+    move.w BPB_data_A, d2           ; Sector size of the emulated drive A
+    moveq #0, d4                    ; Use A:
     moveq #0, d6
-    move.w 20(a0),d6           ; track number
-    mulu secpcyl_B,d6          ; calculate sectors per cylinder
-    move.w 22(a0),d4           ; Get the side number
-    mulu secptrack_B,d4        ; calculate sectors per track
-    bra.s _floppy_xbios_emulated
+    move.w 20(a0),d6                ; track number
+    mulu secpcyl_A,d6               ; times the sectors per cylinder
+    moveq #0, d3
+    move.w 22(a0),d3                ; side number
+    mulu secptrack_A,d3             ; times the sectors per track
 
-_floppy_xbios_emulated_a:
-    movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
-    moveq #0, d4               ; Use A:
-    moveq #0, d6
-    move.w 20(a0),d6           ; track number
-    mulu secpcyl_A,d6          ; calculate sectors per cylinder
-    move.w 22(a0),d4           ; Get the side number
-    mulu secptrack_A,d4        ; calculate sectors per track
-
+; d4 is the drive number do_transfer_sidecart sends, so the side goes through
+; d3. It used to go through d4, which sent every side-1 transfer to B:.
 _floppy_xbios_emulated:
-    add.l d4, d6               ; d6 = track number * sec/cyl + side number * sec/track
-    add.w 18(a0),d6            ; d6 = side no * sec/cyl + track no * sec/track + start sect no
-    subq.w #1,d6               ; d6 = logical sector number to start the transfer
-    
+    add.l d3, d6               ; d6 = track number * sec/cyl + side number * sec/track
+    add.w 18(a0),d6            ; + the sector number
+    subq.w #1,d6               ; sectors are numbered from 1: d6 = logical sector
     move.w 24(a0),d1           ; number of sectors to read/write
     move.l 8(a0),a4            ; buffer address
-    move.l d0, d5              ; rwflag
+    cmp.w #Flopver, d0
+    beq.s _floppy_xbios_verify
+    moveq #0, d5               ; Floprd reads
+    cmp.w #Flopwr, d0
+    bne.s _floppy_xbios_transfer
+    moveq #1, d5               ; Flopwr writes
+_floppy_xbios_transfer:
     bsr do_transfer_sidecart
 
     movem.l (sp)+,d3-d7/a3-a6
     clr.l d0
     rte
+
+; Flopver reads each sector into the start of the caller's buffer and then
+; leaves there the list of the sectors that failed, ended by a zero word, as
+; TOS does. One sector per transfer: the buffer need only hold 1024 bytes,
+; whatever the count, and is never written past its first sector.
+_floppy_xbios_verify:
+    move.l a4, a5              ; where each sector is read, and the list goes
+    move.w 18(a0), -(sp)       ; the sector being verified, as the caller counts
+    move.w d1, -(sp)           ; and how many are left
+_floppy_xbios_verify_next:
+    tst.w (sp)
+    beq.s _floppy_xbios_verified
+    moveq #1, d1               ; one sector
+    moveq #0, d5               ; read
+    move.l a5, a4
+    bsr do_transfer_sidecart   ; moves d6 on to the next sector when it succeeds
+    tst.w d0
+    bne.s _floppy_xbios_verify_failed
+    subq.w #1, (sp)
+    addq.w #1, 2(sp)
+    bra.s _floppy_xbios_verify_next
+_floppy_xbios_verified:
+    addq.l #4, sp
+    clr.w (a5)                 ; no bad sector
+    moveq #0, d0
+    movem.l (sp)+,d3-d7/a3-a6
+    rte
+_floppy_xbios_verify_failed:
+    move.w 2(sp), (a5)+        ; the sector that failed
+    clr.w (a5)                 ; and the end of the list
+    addq.l #4, sp
+    movem.l (sp)+,d3-d7/a3-a6
+    rte                        ; with the error in d0
 
 
 bios_trap:
@@ -548,6 +574,9 @@ exit_transfer_sidecart:
 ;  d0: error code, 0 if no error
 ;  a4: next address in the computer memory to store the data
 read_sectors_from_sidecart:
+    moveq #0, d0                ; a count of zero is answered with 0 at once, as
+    tst.w d1                    ; TOS does: subq then dbf made it 65536 sectors
+    beq.s _read_sectors_from_sidecart_done
     subq.w #1,d1                ; one less
 _sectors_to_read:
     bsr.s read_sector_from_sidecart
@@ -556,6 +585,7 @@ _sectors_to_read:
     addq #1,d6
     dbf d1, _sectors_to_read
 _read_sectors_from_sidecart_error:
+_read_sectors_from_sidecart_done:
     rts
 
 ; Write sectors from the sidecart
@@ -569,6 +599,9 @@ _read_sectors_from_sidecart_error:
 ;  d0: error code, 0 if no error
 ;  a4: next address in the computer memory to retrieve the data
 write_sectors_from_sidecart:
+    moveq #0, d0                ; a count of zero is answered with 0 at once, as
+    tst.w d1                    ; TOS does: subq then dbf made it 65536 sectors
+    beq.s _no_sectors_to_write
     subq.w #1,d1                ; one less
 _sectors_to_write:
     bsr.s write_sector_to_sidecart
@@ -577,6 +610,7 @@ _sectors_to_write:
     addq #1,d6
     dbf d1, _sectors_to_write
 _error_sectors_to_write:
+_no_sectors_to_write:
     rts
 
 ; Read a sector from the sidecart
