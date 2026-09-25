@@ -76,6 +76,7 @@ sidecart_read_buf:     equ (FLOPPYEMUL_VARIABLES_OFFSET + 256)
 ; CONSTANTS
 SECTOR_SIZE     equ 512     ; A .ST image is 512-byte sectors, whatever its boot
                             ; sector claims: the BPB is only what GEMDOS is told
+BIOS_trap       equ $b4     ; TRAP #13 Handler (BIOS)
 _hdv_bpb        equ $472    ; The disk vectors every TOS disk driver hooks
 _hdv_rw         equ $476
 _hdv_mediach    equ $47e
@@ -112,11 +113,12 @@ floppy_start:
 ; Figure out the TOS version
     bsr get_tos_version
 
-    bsr set_vectors_hdv
+    bsr set_vector_bios         ; while the boot sector runs: at the BIOS trap
 
     bsr set_vector_xbios
 
-    bra boot_disk
+    bsr boot_disk               ; runs the disk's boot sector, which may not come back
+    bra set_vectors_hdv         ; then into the disk vectors
 
 .exit_graciouslly:
     rts
@@ -148,7 +150,25 @@ set_vectors_hdv:
     move.l #floppy_hdv_bpb, _hdv_bpb.w
     move.l #floppy_hdv_mediach, _hdv_mediach.w
     move.l #floppy_hdv_rw, _hdv_rw.w
+    cmp.l #bios_trap, BIOS_trap.w       ; the trap hook out, unless something
+    bne.s _dont_set_hdv                 ; has hooked the BIOS after it
+    move.l old_bios_handler, BIOS_trap.w
 _dont_set_hdv:
+    rts
+
+; While the disk's boot sector runs the emulation answers at the BIOS trap and
+; leaves the disk vectors as TOS set them, which is what a boot sector sees on
+; a real ST: a hard-disk driver hooks them only after it. Menu disks check
+; that: Medway's boot sector wants hdv_bpb in the ROM ($FCxxxx), and says "A
+; virus is lurking in memory" otherwise. set_vectors_hdv moves the emulation
+; into the vectors once the boot sector is done.
+set_vector_bios:
+    move.l BIOS_trap.w, d3
+    move.l #old_bios_handler, d4
+    bsr.s save_vector
+    bne.s _dont_set_bios_trap           ; the old vector is not in its slot
+    move.l #bios_trap, BIOS_trap.w
+_dont_set_bios_trap:
     rts
 
 ; The RP writes vector d3 into slot d4. Z set once the slot holds it.
@@ -434,12 +454,59 @@ _floppy_xbios_format_done:
     ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
     dc.l 'XBRA'
     dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
+old_bios_handler:
+    dc.l 0                              ; written by the RP (read-only window)
+; The BIOS trap, while the boot sector runs: Getbpb, Mediach and Rwabs of an
+; emulated drive go to the handlers the disk vectors get later, with a0 on the
+; call as they expect it and their rts brought back to an rte; every other call
+; goes on to TOS.
+bios_trap:
+    move.l sp, a0
+    btst #5, (sp)                       ; called from supervisor mode?
+    bne.s .bt_cpu
+    move.l usp, a0
+    subq.l #6, a0
+.bt_cpu:
+    tst.w _longframe.w
+    beq.s .bt_call
+    addq.w #2, a0
+.bt_call:
+    moveq #8, d1                        ; Getbpb and Mediach: the drive at 8(a0)
+    cmp.w #Getbpb, 6(a0)
+    beq.s .bt_drive
+    cmp.w #Mediach, 6(a0)
+    beq.s .bt_drive
+    moveq #18, d1                       ; Rwabs: at 18(a0)
+    cmp.w #Rwabs, 6(a0)
+    bne.s .bt_pass
+.bt_drive:
+    move.w 0(a0, d1.w), d0
+    cmp.w #1, d0
+    bhi.s .bt_pass                      ; not A: or B:
+    btst d0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3)
+    beq.s .bt_pass                      ; not emulated
+    pea .bt_done(pc)
+    cmp.w #Getbpb, 6(a0)
+    beq floppy_getbpb
+    cmp.w #Mediach, 6(a0)
+    beq floppy_mediach
+    bra floppy_rwabs
+.bt_done:
+    rte
+.bt_pass:
+    move.l old_bios_handler, -(sp)
+    rts
+
+    ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
+    dc.l 'XBRA'
+    dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
 old_hdv_bpb:
     dc.l 0                              ; written by the RP (read-only window)
 ; hdv_bpb is called with its arguments at 4(sp); with a0 4 bytes below them they
 ; are at the offsets the BIOS trap's frame gave this code.
 floppy_hdv_bpb:
     lea -4(sp), a0
+floppy_getbpb:
     cmp.w #0,8(a0)              ; Is this the disk_number we are emulating? 
     beq.s _bios_get_bpb_load_emul_bpp_A      ; If is the disk A to emulate, load the BPB A built 
     cmp.w #1,8(a0)              ; Is it the Drive B?
@@ -500,6 +567,7 @@ old_hdv_mediach:
 ; are at the offsets the BIOS trap's frame gave this code.
 floppy_hdv_mediach:
     lea -4(sp), a0
+floppy_mediach:
     cmp.w #0,8(a0)              ; Is this the disk_number we are emulating? 
     beq.s _bios_mediach_changed_A      ; If is the disk A to emulate, media changed A
     cmp.w #1,8(a0)              ; Is it the Drive B?
@@ -532,6 +600,7 @@ old_hdv_rw:
 ; are at the offsets the BIOS trap's frame gave this code.
 floppy_hdv_rw:
     lea -4(sp), a0
+floppy_rwabs:
     cmp.w #0, 18(a0)         ; Is this the disk_number we are emulating?
     beq.s _bios_rwabs_a      ; If is the disk A to emulate, load the BPB A built
     cmp.w #1, 18(a0)         ; Is it the Drive B?
