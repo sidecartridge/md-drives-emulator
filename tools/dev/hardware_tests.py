@@ -267,7 +267,7 @@ def main():
     before = md5(log)
     os.sync()
     subprocess.run(["diskutil", "eject", CARD], capture_output=True)
-    time.sleep(2)
+    time.sleep(1)
     if os.path.isdir(CARD):
         sys.exit("the card is still mounted: [E] would do nothing")
 
@@ -278,26 +278,34 @@ def main():
             threading.Thread(target=press_select_on_cue, daemon=True).start()
         print(swd("key", "e").strip())
 
+    # The card is off USB for the whole run, so once it is back the run is
+    # over, whether the harness finished it or not: take the log then, and say
+    # when it has no end, instead of waiting for one that is not coming.
     deadline = time.time() + args.timeout
     text = ""
+    away = False
     while time.time() < deadline:
-        time.sleep(5)
+        time.sleep(1)
         if not os.path.isdir(CARD):
+            away = True
             mount_card()
             continue
-        time.sleep(3)  # the card has only just come back
-        now = md5(log)
-        if now is not None and now != before:
-            try:
-                with open(log, "r", errors="replace") as handle:
-                    text = last_run(handle.read(), harness["banner"])
-            except OSError:
-                text = ""  # the card went away again while it was read
-            if "All tests completed." in text:
-                break
-        text = ""
+        if not away:
+            continue  # the emulation has not taken the card yet
+        time.sleep(1)  # the card has only just come back
+        if md5(log) == before:
+            sys.exit("the device is back in its setup menu, but the log has "
+                     "no new run")
+        try:
+            with open(log, "r", errors="replace") as handle:
+                text = last_run(handle.read(), harness["banner"])
+        except OSError:
+            away = False  # the card went away again while it was read
+            continue
+        break
     if not text:
         sys.exit("no new run in the log within %d s" % args.timeout)
+    finished = "All tests completed." in text
     if not args.release:
         swd("app", "countdown_stop")
 
@@ -315,6 +323,8 @@ def main():
         if line.startswith("TOS ") or line.startswith("Test disk"):
             print(line)
     print("OK %d FAIL %d SKIP %d" % tuple(counts))
+    if not finished:
+        print("the run did not finish: no \"All tests completed.\" in the log")
     for line in text.splitlines():
         if line.startswith("[FAIL]") or line.startswith("[SKIP]"):
             print(line)
@@ -322,7 +332,7 @@ def main():
         print(subprocess.run(MAKE_IMAGE + ["check-rw", image], capture_output=True,
                              text=True).stdout.strip())
     print("log: %s" % os.path.relpath(kept, REPO))
-    return 1 if counts[1] else 0
+    return 1 if counts[1] or not finished else 0
 
 
 if __name__ == "__main__":

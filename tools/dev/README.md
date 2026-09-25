@@ -224,6 +224,12 @@ ejected someone presses `[E]` on the ST's keyboard: the menu's countdown stays s
 card has been on USB, and a release build takes no keys over SWD. FLOPTEST's read-failure and
 cycle cases skip.
 
+The card is off USB for the whole run, so the tool takes the log as soon as the card is back -
+checking every second - and says when the run has no end ("the run did not finish") instead of
+waiting for one. Both harnesses run their cases twice, from supervisor mode and then again from
+user mode, where programs call from; the second pass's names carry `(user) `. FLOPTEST's second
+pass leaves out the cases that read supervisor memory and the ones the host triggers once.
+
 `--mste 8`, `16` or `16c` sets a Mega STE's CPU speed and cache for the run: the tool writes
 `MSTE.INF` at the root of the GEMDRIVE folder, the harness reads it at its start and sets
 `$FFFF8E21`, and logs the register at its start and its end (`Mega STE at the start: 16 MHz, cache
