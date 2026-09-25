@@ -1222,11 +1222,16 @@ _notlong:
     move.l d5, 28(a4)                     ; Save the size of the bss segment
 
 ; Pexec mode 5 hands back a basepage built without ever reading the program, so
-; the flags in its header are ours to copy: from TOS 1.04 Malloc reads them here
-; to decide which RAM a program's allocations come from, and MiNT its memory
-; protection. The field is unused on TOS 1.00 and 1.02, where writing it is
-; harmless (checked against the Compendium).
+; the flags in its header are ours to copy - where TOS's own loader copies them:
+; from GEMDOS $1700 (TOS 1.62) on. TOS 1.00 to 1.06 leave p_flags 0, measured
+; with a program on a floppy, which TOS loads itself, under Hatari and on
+; hardware; the Compendium has 1.04 copying them, and it does not.
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_SVERSION * 4)), d0
+    and.l #$FFFF, d0                      ; GEMDOS version
+    cmp.w #$1700, d0
+    bcs.s .pexec_flags_done               ; older: p_flags stays as TOS left it
     move.l 22(a5), 40(a4)                 ; PRGFLAGS of the program -> p_flags
+.pexec_flags_done:
 
     send_write_sync CMD_SAVE_BASEPAGE, 256 ; Send the command to the Sidecart. 256 bytes of buffer to send
 

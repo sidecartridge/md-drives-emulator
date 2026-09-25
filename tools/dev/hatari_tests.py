@@ -175,6 +175,13 @@ def report(title, columns, results):
     lines.append("Hatari's GEMDOS drive needs TOS 1.04 or later, so TOS 1.00 and 1.02 "
                  "appear only as hardware columns.")
     lines.append("")
+    if title == "FSTESTS":
+        lines.append("On TOS 1.62 Hatari's GEMDOS drive is not TOS's loader: it asks TOS "
+                     "for a bare basepage (Pexec mode 5 below TOS 2.00) and never writes "
+                     "p_flags, where TOS 1.62's own loader copies the header's flags. "
+                     "\"The program's flags reach its basepage\" fails there under Hatari "
+                     "and is TOS's answer on hardware.")
+        lines.append("")
     counts = []
     for column in columns:
         values = results[column].values()

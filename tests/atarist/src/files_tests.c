@@ -855,16 +855,19 @@ static int copy_without_fastload(const char *from, const char *to) {
   return (count < 0) ? -1 : 0;
 }
 
-// A program gets the memory its header asks for: the loader copies the header's
-// PRGFLAGS into the basepage, where GEMDOS looks for them from TOS 1.04 on, and
-// clears the heap unless the program asked for fastload. TOS 1.00 and 1.02
-// ignore the flags and always clear the heap, so this expects that of them.
+// A program gets the memory its header asks for, as its TOS's own loader gives
+// it: the header's PRGFLAGS are copied into the basepage from GEMDOS $1700
+// (TOS 1.62) on, and p_flags is 0 below that - measured with a program TOS
+// loads itself, from a floppy. The heap is cleared unless the program asked for
+// fastload; TOS 1.00 and 1.02 ignore the flags and always clear it, so this
+// expects that of them.
 void test_program_loaded_as_its_header_asks(void) {
   print("=== The memory a program's header asks for ===\r\n");
   const char *program = fstests_program();
   unsigned char header[28] = {0};
   long headerFlags = 0;
   int oldGemdos = (int)(Sversion() & 0xFFFF) < 0x1500;
+  int flagsCopied = (int)(Sversion() & 0xFFFF) >= 0x1700;
   int handle = Fopen(program, 0);
   long basepage;
 
@@ -879,8 +882,13 @@ void test_program_loaded_as_its_header_asks(void) {
   basepage = Pexec(3, program, "", NULL); /* load it, do not run it */
   assert_result("Load the program without running it", basepage > 0, TRUE);
   if (basepage <= 0) return;
-  assert_result("The program's flags reach its basepage",
-                ((const long *)basepage)[10] /* $28 */, headerFlags);
+  if (flagsCopied) {
+    assert_result("The program's flags reach its basepage",
+                  ((const long *)basepage)[10] /* $28 */, headerFlags);
+  } else {
+    assert_result("Below GEMDOS $1700 p_flags is 0, as TOS leaves it",
+                  ((const long *)basepage)[10] /* $28 */, 0);
+  }
   if (!(headerFlags & 1L) || oldGemdos) {
     assert_result("The heap this program is given is cleared",
                   heap_is_dirty((const long *)basepage), 0);
