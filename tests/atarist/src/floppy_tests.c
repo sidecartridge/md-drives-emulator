@@ -244,6 +244,81 @@ static void test_forced_media_change(void) {
                 holds_signature(1093, buffer), TRUE);
 }
 
+/* The desktop's Esc on a window (aes/trap14.S, _mediach, from hd_keybd): it
+   wraps hdv_bpb, hdv_mediach and hdv_rw so that the window's drive reads as
+   changed, opens a file on it so that GEMDOS checks the drive, and counts on
+   GEMDOS then asking hdv_bpb for it - that wrapper puts the three vectors
+   back. The wrappers here are the desktop's, the "restored" count added. A
+   driver that answers the drive in front of the vectors is never asked
+   through them: the wrappers stay, and the next Esc wraps them around
+   themselves, after which every disk call behind them loops for ever. */
+short esc_dev;
+long esc_oldgetbpb, esc_oldmediach, esc_oldrwabs;
+volatile short esc_restored;
+void esc_newgetbpb(void);
+void esc_newmediach(void);
+void esc_newrwabs(void);
+__asm__(
+    "_esc_newgetbpb:\n"
+    "  move.w _esc_dev,d0\n"
+    "  cmp.w 4(sp),d0\n"
+    "  bne.s 1f\n"
+    "  addq.w #1,_esc_restored\n"
+    "  move.l _esc_oldgetbpb,0x472.w\n"
+    "  move.l _esc_oldmediach,0x47e.w\n"
+    "  move.l _esc_oldrwabs,0x476.w\n"
+    "1:move.l _esc_oldgetbpb,a0\n"
+    "  jmp (a0)\n"
+    "_esc_newmediach:\n"
+    "  move.w _esc_dev,d0\n"
+    "  cmp.w 4(sp),d0\n"
+    "  bne.s 2f\n"
+    "  moveq #2,d0\n"
+    "  rts\n"
+    "2:move.l _esc_oldmediach,a0\n"
+    "  jmp (a0)\n"
+    "_esc_newrwabs:\n"
+    "  move.w _esc_dev,d0\n"
+    "  cmp.w 14(sp),d0\n"
+    "  bne.s 3f\n"
+    "  moveq #-14,d0\n"
+    "  rts\n"
+    "3:move.l _esc_oldrwabs,a0\n"
+    "  jmp (a0)\n");
+
+static void test_desktop_esc(void) {
+  volatile long* const hdv_bpb = (volatile long*)0x472L;
+  volatile long* const hdv_rw = (volatile long*)0x476L;
+  volatile long* const hdv_mediach = (volatile long*)0x47EL;
+  long handle;
+  int still_wrapped;
+  esc_dev = DRIVE_A;
+  esc_restored = 0;
+  esc_oldgetbpb = *hdv_bpb;
+  esc_oldmediach = *hdv_mediach;
+  esc_oldrwabs = *hdv_rw;
+  *hdv_bpb = (long)esc_newgetbpb;
+  *hdv_mediach = (long)esc_newmediach;
+  *hdv_rw = (long)esc_newrwabs;
+  handle = Fopen("A:\\X", 0);
+  if (handle >= 0) Fclose((short)handle);
+  still_wrapped = (*hdv_bpb == (long)esc_newgetbpb);
+  if (still_wrapped) { /* the desktop takes them out itself then */
+    *hdv_bpb = esc_oldgetbpb;
+    *hdv_mediach = esc_oldmediach;
+    *hdv_rw = esc_oldrwabs;
+  }
+  print("Desktop Esc on A:: Getbpb through the wrapper %d time(s), %s\r\n",
+        (int)esc_restored, still_wrapped ? "wrappers left" : "wrappers gone");
+  assert_result("The desktop's Esc on A: is seen through the disk vectors",
+                esc_restored == 1 && !still_wrapped, TRUE);
+  assert_result("And they are back as they were",
+                *hdv_bpb == esc_oldgetbpb && *hdv_mediach == esc_oldmediach &&
+                    *hdv_rw == esc_oldrwabs,
+                TRUE);
+  Getbpb(DRIVE_A); /* GEMDOS logged A: out: nothing left pending */
+}
+
 static void test_rwabs_write(void) {
   long result;
   if (!disk_is_rw) {
@@ -792,6 +867,7 @@ int run_floppy_tests(void) {
     test_rwabs_across_sides();
     test_rwabs_file_sector();
     test_forced_media_change();
+    test_desktop_esc();
 
     print("=== Floppy: XBIOS ===\r\n");
     test_floprd_side(0);
