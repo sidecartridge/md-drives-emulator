@@ -1027,6 +1027,98 @@ void test_eof_and_closed_handle_behavior() {
   Fdelete("EOFCLOSE.TXT");
 }
 
+// What GEMDOS gives back: every register but d0 as it got it to a caller in
+// supervisor mode, and all but a0 to one in user mode (TOS 1.04 and 2.06 alike,
+// measured from a floppy under Hatari with no drive emulation in front of
+// GEMDOS). Callers count on it - the desktop's Esc, in supervisor mode, reads
+// the disk vectors through an a0 it set before two GEMDOS calls - so a hook in
+// front of GEMDOS must do the same, for the calls it takes and for those it
+// passes on. Each call is made from assembler with d1-d7/a0-a6 set to known
+// values, and what comes back is compared.
+long regs_call_words, regs_call_bytes, regs_d0, regs_sp;
+long regs_before[14], regs_after[14], regs_saved[15];
+void gemdos_regs_call(void);
+__asm__(
+    "_gemdos_regs_call:\n"
+    "  movem.l d0-d7/a0-a6,_regs_saved\n"
+    "  move.l sp,_regs_sp\n"
+    "  move.l _regs_call_words,a0\n"
+    "  move.l _regs_call_bytes,d0\n"
+    "  lea 0(a0,d0.l),a1\n"
+    "1:move.w -(a1),-(sp)\n"
+    "  subq.l #2,d0\n"
+    "  bne.s 1b\n"
+    "  movem.l _regs_before,d1-d7/a0-a6\n"
+    "  trap #1\n"
+    "  movem.l d1-d7/a0-a6,_regs_after\n"
+    "  move.l d0,_regs_d0\n"
+    "  move.l _regs_sp,sp\n"
+    "  movem.l _regs_saved,d0-d7/a0-a6\n"
+    "  rts\n");
+
+static int registers_from_supervisor;
+
+static long call_keeping_registers(const char *what, const unsigned short *words,
+                                   int count) {
+  static const char *const names[14] = {"d1", "d2", "d3", "d4", "d5",
+                                        "d6", "d7", "a0", "a1", "a2",
+                                        "a3", "a4", "a5", "a6"};
+  char changed[64] = {0};
+  char name[96];
+  sprintf(name, "%s, from %s mode", what,
+          registers_from_supervisor ? "supervisor" : "user");
+  for (int i = 0; i < 14; i++)
+    regs_before[i] = 0x5A000000L | ((long)(i + 1) << 16) | 0x2460L;
+  regs_call_words = (long)words;
+  regs_call_bytes = count * 2;
+  gemdos_regs_call();
+  for (int i = 0; i < 14; i++) {
+    if (regs_after[i] != regs_before[i] &&
+        (registers_from_supervisor || i != 7 /* a0 */)) {
+      strcat(changed, " ");
+      strcat(changed, names[i]);
+    }
+  }
+  if (changed[0]) print("%s: changed%s\r\n", name, changed);
+  assert_result(name, changed[0] == 0, TRUE);
+  return regs_d0;
+}
+
+static void register_calls(void) {
+  const char *program = fstests_program();
+  long address = (long)program;
+  unsigned short open_call[4] = {0x3D, (unsigned short)(address >> 16),
+                                 (unsigned short)address, 0};
+  unsigned short version_call[1] = {0x30};
+  long handle =
+      call_keeping_registers("Fopen of a file on this drive", open_call, 4);
+  if (handle >= 0) {
+    unsigned short close_call[2] = {0x3E, (unsigned short)handle};
+    call_keeping_registers("Fclose of it", close_call, 2);
+  }
+  call_keeping_registers("Sversion, which no hook takes", version_call, 1);
+  long block = (long)Malloc(64);
+  if (block > 0) {
+    unsigned short free_call[3] = {0x49, (unsigned short)(block >> 16),
+                                   (unsigned short)block};
+    call_keeping_registers("Mfree", free_call, 3);
+    call_keeping_registers("The call after an Mfree", version_call, 1);
+  }
+}
+
+static long register_calls_in_supervisor(void) {
+  registers_from_supervisor = TRUE;
+  register_calls();
+  registers_from_supervisor = FALSE;
+  return 0;
+}
+
+void test_gemdos_keeps_registers(void) {
+  print("=== GEMDOS keeps the caller's registers ===\r\n");
+  register_calls();
+  Supexec(register_calls_in_supervisor);
+}
+
 int run_files_tests(int presskey) {
   print("=== GEMDOS Files Test Suite ===\n\r");
 

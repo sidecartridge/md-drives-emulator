@@ -143,6 +143,8 @@ int main(int argc, char *argv[]) {
     run_one(test_pexec_from_another_current_drive, "the Pexec case");
   if (suite_selected("files") || suite_selected("prgflags"))
     run_one(test_program_loaded_as_its_header_asks, "the program flags case");
+  if (suite_selected("files") || suite_selected("registers"))
+    run_one(test_gemdos_keeps_registers, "the registers case");
 
   end_of_run();
   Pterm(0);

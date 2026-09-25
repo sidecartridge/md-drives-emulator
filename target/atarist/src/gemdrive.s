@@ -31,8 +31,10 @@ PRG_STRUCT_SIZE         equ 28         ; Size of the GEMDOS structure in the exe
                                        ; 4 bytes: g_hflags
                                        ; 2 bytes: g_absflg
 PRG_MAGIC_NUMBER        equ $601A      ; Magic number of the PRG file
-STACK_SIZE_HACK_PEXEC   equ 50         ; This is the size of the stack to hack the Pexec() function in <=1.06 TOS versions
-                                       ; The size is the same as the size of the movem.l in the save_regs/restore_regs macros plus 4
+GD_STACK_SIZE           equ 1024       ; GEMDRIVE's own stack, for the calls it takes
+GD_CALLER_SP            equ 52         ; Where, on it, a handler finds the caller's stack pointer: above
+                                       ; d1-d7/a0-a5 (52 bytes); that stack holds the caller's a6, then its
+                                       ; exception frame
 
 ROM4_START_ADDR         equ $FA0000 ; ROM4 start address
 ROM3_START_ADDR         equ $FB0000 ; ROM3 start address
@@ -111,6 +113,7 @@ SHARED_VARIABLE_DRIVE_NUMBER            equ SHARED_VARIABLE_SHARED_FUNCTIONS_SIZ
 SHARED_VARIABLE_PEXEC_RESTORE           equ SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 3             ; Pexec address to restore the program
 SHARED_VARIABLE_FAKE_FLOPPY             equ SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 4             ; Fake floppy drive to launch AUTO programs
 SHARED_VARIABLE_ENABLED                 equ SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 5             ; Enabled flag
+SHARED_VARIABLE_STACK                   equ SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 6             ; Top of GEMDRIVE's own stack
 
 GEMDRVEMUL_VARIABLES_OFFSET             equ (RANDOM_TOKEN_ADDR + $100)  ; The variables used by GEMDRIVE start at 0x8100
 
@@ -192,23 +195,17 @@ DTA_MAGIC_OFFSET        equ     2
 
 ; Macros
 
-; Restore the registers in the interrupt handler
-; Don't forget to update STACK_SIZE_HACK_PEXEC if you change the number of registers
+; Give the caller its registers back and go back to its stack, from GEMDRIVE's
+; own (see exec_trapped_handler). Don't forget GD_CALLER_SP if you change them
 restore_regs        macro
-                    movem.l (sp)+, d1-d7/a2-a6
+                    movem.l (sp)+, d1-d7/a0-a5
+                    move.l (sp), sp                      ; the caller's stack, at its a6
+                    move.l (sp)+, a6
                     endm
 
-; Save the registers in the interrupt handler
-; Don't forget to update STACK_SIZE_HACK_PEXEC if you change the number of registers
-save_regs           macro
-                    movem.l d1-d7/a2-a6,-(sp)
-                    endm
-
-; Restore the registries, restore the CPU speed + cache if needed and return from the exception
+; Give the caller its registers back and return from the exception, with d0
 return_rte          macro
-                    restore_regs
-                    restore_cpu_cache
-                    rte
+                    bra .gd_return
                     endm
 
 ; Return the error code from the Sidecart and restore the registers in the interrupt handler
@@ -305,6 +302,20 @@ gemdrive_start:
 
 ; Clean the reentry lock flag
     reentry_gem_unlock
+
+; GEMDRIVE's own stack, owned by the initial process, which never ends. The
+; hook goes in only once the RP holds where it is
+    move.l #GD_STACK_SIZE, -(sp)
+    gemdos Malloc, 6
+    tst.l d0
+    ble.s .exit_graciouslly
+    add.l #GD_STACK_SIZE, d0
+    move.l d0, d4
+    move.l #SHARED_VARIABLE_STACK, d3
+    send_sync CMD_SET_SHARED_VAR, 8
+    bne.s .exit_graciouslly             ; no answer
+    cmp.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_STACK * 4)), d4
+    bne.s .exit_graciouslly             ; send_sync keeps d4
 
 ; Save the vectors in the RP2040 memory
     bsr save_vectors
@@ -411,64 +422,42 @@ gemdrive_trap:
     rts                                 ; to old code.
 
 ;
-; No reentry, we can exec the trapped handler
-; But first, check user or supervisor mode and the CPU type
+; No reentry, we can exec the trapped handler.
 ;
+; TOS's GEMDOS gives a caller in supervisor mode every register but d0 back as
+; it got it (in user mode all but a0), and callers count on it: the desktop's
+; Esc, in supervisor mode, reads the disk vectors through an a0 it set before
+; two GEMDOS calls, and left its wrappers in them when a0 came back changed. So
+; the call is looked up with d0 alone - and a0 for a user-mode caller, whose a0
+; TOS changes anyway - and a call that is not ours goes on to TOS with every
+; register as it came, and nothing pushed. A call that is ours runs on
+; GEMDRIVE's own stack, which costs the caller's 4 bytes: the caller's may have
+; almost no room. At boot a GEMDOS call nested in the first call GEMDRIVE takes
+; had less than 8 bytes to spare above what TOS keeps on that stack, and TOS
+; 1.04 starts GEM on a 132-byte stack.
 exec_trapped_handler:
     btst #5, (sp)                         ; Check if called from user mode
-    beq.s _user_mode                      ; if so, do correct stack pointer
-_not_user_mode:
-    move.l sp,a0                          ; Move stack pointer to a0
-    bra.s _check_cpu
-_user_mode:
-    move.l usp,a0                          ; if user mode, correct stack pointer
-    subq.l #6,a0
-;
-; This code checks if the CPU is a 68000 or not
-;
-_check_cpu:
-    tst.w _longframe                          ; Check if the CPU is a 68000 or not
-    beq.s _notlong
-_long:
-    addq.w #2, a0                             ; Correct the stack pointer parameters for long frames 
-_notlong:
-
-;
-; Trap #1 handler goes here
-;
-; Look the call up before saving any register, with scratch registers only
-; (d0, a1; d1 holds the MegaSTE speed). Calls GEMDRIVE does not handle go on
-; to TOS with nothing pushed: TOS 1.04 starts GEM on a 132-byte stack and
-; calls GEMDOS from it (Super, Mshrink, Malloc) with about 110 bytes left
-; above the AES variables that hold the resolution. Saving 48 bytes of
-; registers there left GEM in low resolution and damaged GEMDOS globals.
-	move.w 6(a0), d0                     ; get GEMDOS opcode number
+    bne.s .gd_super
+    move.l usp, a0                        ; user mode: the call is on its stack
+    subq.l #6, a0                         ; where the handlers expect it
+    tst.w _longframe.w
+    beq.s .gd_user_call
+    addq.w #2, a0
+.gd_user_call:
+    move.w 6(a0), d0                      ; get GEMDOS opcode number
+    bra.s .gd_lookup
+.gd_super:
+    move.w 6(sp), d0                      ; the opcode, after SR and PC
+    tst.w _longframe.w
+    beq.s .gd_lookup
+    move.w 8(sp), d0                      ; after the format word too
+.gd_lookup:
 	cmp.w #$57, d0                       ; Highest opcode handled in the table
-	bhi.s .exec_old_handler_unsaved
+	bhi .exec_old_handler_unsaved
 	add.w d0, d0                         ; Multiply opcode by 4
 	add.w d0, d0
-	lea .gemdos_dispatch_table(pc), a1
-	movea.l (a1,d0.w), a1
-	cmpa.l #.exec_old_handler, a1
-	beq.s .exec_old_handler_unsaved
-	save_regs
-	jmp (a1)
-
-.exec_old_handler_unsaved:
-	restore_cpu_cache
-	move.l old_handler,-(sp)            ; Fake a return
-	rts                                 ; to old code.
-
-;.show_vector_calls:
-;    ; Trace the not implemented GEMDOS call
-;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
-
-.exec_old_handler:
-	restore_regs
-	restore_cpu_cache
-	move.l old_handler,-(sp)            ; Fake a return
-	rts                                 ; to old code.
-
+	move.l .gemdos_dispatch_table(pc,d0.w), d0
+	bra.w .gd_dispatch                   ; past the table, which the lookup must reach in 127 bytes
 	even
 .gemdos_dispatch_table:
 	dc.l .Pterm            ; 0x00
@@ -559,6 +548,49 @@ _notlong:
 	dc.l .exec_old_handler ; 0x55
 	dc.l .Frename          ; 0x56
 	dc.l .Fdatime          ; 0x57
+.gd_dispatch:
+	cmp.l #.exec_old_handler, d0
+	beq .exec_old_handler_unsaved
+    ; Ours: onto GEMDRIVE's own stack, with the caller's registers
+    move.l a6, -(sp)
+    move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_STACK * 4)), a6
+    move.l sp, -(a6)                      ; the caller's stack pointer, on ours
+    move.l a6, sp
+    movem.l d1-d7/a0-a5, -(sp)
+    move.l d0, a1                         ; the handler
+    move.l GD_CALLER_SP(sp), a0           ; the caller's stack, at its a6
+    addq.l #4, a0                         ; its exception frame
+    btst #5, (a0)
+    bne.s .gd_args
+    move.l usp, a0                        ; user mode: the call on its own stack,
+    subq.l #6, a0                         ; where the handlers expect it
+.gd_args:
+    tst.w _longframe.w
+    beq.s .gd_go
+    addq.w #2, a0
+.gd_go:
+	jmp (a1)
+
+.exec_old_handler_unsaved:
+	restore_cpu_cache
+	move.l old_handler,-(sp)            ; Fake a return
+	rts                                 ; to old code.
+
+;.show_vector_calls:
+;    ; Trace the not implemented GEMDOS call
+;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
+
+.exec_old_handler:
+	restore_regs
+	restore_cpu_cache
+	move.l old_handler,-(sp)            ; Fake a return
+	rts                                 ; to old code.
+
+.gd_return:
+	restore_regs
+	restore_cpu_cache
+	rte
+
 
 
 ; Start of the GEMDOS calls
@@ -1327,10 +1359,11 @@ _notlong:
 ; Hack for TOS 1.00 and 1.02
 ; Trap the exit of the classic PE_GO call
     move.l #SHARED_VARIABLE_PEXEC_RESTORE, d3
-    ; See the definition of STACK_SIZE_HACK_PEXEC to understand its size
-    move.l STACK_SIZE_HACK_PEXEC(sp),d4  ; Store the return address in the shared variable PEXEC_RESTORE
+    move.l GD_CALLER_SP(sp), a1          ; the caller's stack: its a6, then its frame
+    move.l 6(a1),d4                      ; Store the return address in the shared variable PEXEC_RESTORE
     send_sync CMD_SET_SHARED_VAR, 8      ; Send the command to the Sidecart. 8 bytes of payload
-    move.l #.pexec_mshrink_exit, STACK_SIZE_HACK_PEXEC(sp)  ; Trap the exit of the PE_GO before exiting to release memory
+    move.l GD_CALLER_SP(sp), a1          ; a send does not keep a1
+    move.l #.pexec_mshrink_exit, 6(a1)   ; Trap the exit of the PE_GO before exiting to release memory
 
     move.l GEMDRVEMUL_PEXEC_STACK_ADDR, a0  ; We need to set again the a0 register
     move.w #PE_GO, 8(a0)                    ; overwrite the mode with PE_GO

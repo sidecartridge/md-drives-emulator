@@ -176,7 +176,11 @@ pf_trap:
     pf_own_stack pf_compact_report
 
 .pf_check_call:
-    ; GEMDOS leaves d0-d2/a0-a2 undefined, so a0 and d0 are free here
+    ; TOS's GEMDOS gives a caller in supervisor mode every register but d0
+    ; back as it got it, and callers count on it (the desktop's Esc reads the
+    ; disk vectors through an a0 set before two GEMDOS calls). The caller's a0 waits in d0, which the call
+    ; answers in, while a0 points at the call.
+    move.l a0, d0
     move.l usp, a0
     btst #5, (sp)                       ; called from supervisor mode?
     beq.s .pf_have_args
@@ -185,21 +189,25 @@ pf_trap:
     beq.s .pf_have_args
     addq.l #2, a0
 .pf_have_args:
-    move.w (a0), d0                     ; GEMDOS function number
-    beq.s .pf_frees                     ; Pterm0
-    cmp.w #$31, d0                      ; Ptermres
+    tst.w (a0)                          ; GEMDOS function number: Pterm0
     beq.s .pf_frees
-    cmp.w #$49, d0                      ; Mfree
+    cmp.w #$31, (a0)                    ; Ptermres
     beq.s .pf_frees
-    cmp.w #$4A, d0                      ; Mshrink
+    cmp.w #$49, (a0)                    ; Mfree
     beq.s .pf_frees
-    cmp.w #$4C, d0                      ; Pterm
+    cmp.w #$4A, (a0)                    ; Mshrink
+    beq.s .pf_frees
+    cmp.w #$4C, (a0)                    ; Pterm
     bne.s .pf_pass
 .pf_frees:
+    move.l d0, a0                       ; the caller's again: the stack switch keeps it
     tst.l pf_flag
-    bne.s .pf_pass
+    bne.s .pf_chain
     pf_own_stack pf_raise_flag
+    bra.s .pf_chain
 .pf_pass:
+    move.l d0, a0                       ; the caller's again
+.pf_chain:
     move.l pf_next, -(sp)
     rts
 
