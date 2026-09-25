@@ -216,6 +216,14 @@ default the TOS the run reports and the disk), with a summary, and a writable di
 hands. It needs a debug build, `console.py watch` running, GEMDRIVE on as C:, and harnesses built
 with file logging.
 
+`--release` runs on a release build, which has no devhooks mailbox and no console: the menu is not
+driven, so drive A must already hold `FLOPTEST.ST.RW` (for `rw`, `rw-hd`) or `FLOPTEST.ST` (for
+`ro`, `ro-hd`) with the other in slot 2 - set it on a debug build before flashing the release one,
+the settings survive a flash. The disk images are written under those names, and once the card is
+ejected someone presses `[E]` on the ST's keyboard: the menu's countdown stays stopped once the
+card has been on USB, and a release build takes no keys over SWD. FLOPTEST's read-failure and
+cycle cases skip.
+
 ## SELECT regression checks: `select_harness.py`
 
 Presses SELECT through `swd.py select` and reads the firmware's own state over SWD (app state,

@@ -25,6 +25,15 @@ Needs a debug build (the menu and the read failure go through the devhooks
 mailbox), `console.py watch` running (the SELECT press waits for FLOPTEST's
 cue on the console), GEMDRIVE on as C:, and the harnesses built with file
 logging (the third argument to tests/atarist/build.sh).
+
+--release runs on a release build, which has neither the mailbox nor the
+console: nothing is chosen in the menu, so drive A must already hold the disk
+the run is for - FLOPTEST.ST.RW for rw and rw-hd, FLOPTEST.ST for ro and
+ro-hd, with the other one in slot 2 - set on a debug build before flashing the
+release one (the settings survive a flash). The images are written under those
+names, and once the card is ejected someone presses [E] on the ST's keyboard:
+the menu's countdown stays stopped once the card has been on USB, and a
+release build takes no keys over SWD. The read-failure and cycle cases skip.
 """
 
 import argparse
@@ -165,12 +174,15 @@ def main():
                         "(default: the TOS the run reports, and the disk)")
     parser.add_argument("--timeout", type=int, default=1800,
                         help="seconds to wait for the run (default 1800)")
+    parser.add_argument("--release", action="store_true",
+                        help="a release build: the menu is not driven (see above)")
     args = parser.parse_args()
     harness = HARNESSES[args.harness]
 
     if not wait_for_card(10):
         sys.exit("the card is not mounted: is the device in its setup menu?")
-    swd("app", "countdown_stop")
+    if not args.release:
+        swd("app", "countdown_stop")
     gemdrive, drive, floppy = menu_folders()
     if gemdrive is None or drive != "C":
         sys.exit("GEMDRIVE must be on as C: to start the harness from C:\\AUTO")
@@ -196,6 +208,16 @@ def main():
             sys.exit("floppy emulation must be on")
         disks = os.path.join(CARD, floppy.strip("/"))
         kind, name, (other_kind, other_name) = DISKS[args.disk]
+        if args.release:
+            if args.disk == "ro-ss":
+                sys.exit("ro-ss needs its own disk in drive A: a debug build")
+            name, other_name = (("FLOPTEST.ST.RW", "FLOPTEST.ST")
+                                if kind.startswith("rw") else
+                                ("FLOPTEST.ST", "FLOPTEST.ST.RW"))
+            shown = [l for l in screen_lines() if "(SHFT+)A] Drive:" in l]
+            if not shown or not shown[0].rstrip().endswith("/" + name):
+                sys.exit("drive A must hold %s for a release run (menu: %s); "
+                         "set it on a debug build" % (name, shown))
         image = os.path.join(disks, name)
         for make, file_name in ((kind, name), (other_kind, other_name)):
             subprocess.run(MAKE_IMAGE + [make, os.path.join(disks, file_name)],
@@ -203,13 +225,14 @@ def main():
         folders.append(disks)
         clean_card_files(*folders)
         os.sync()
-        swd("key", "a")
-        choose(name)
-        swd("key", "\x01")
-        swd("key", "2")
-        choose(other_name)
-        swd("key", "m")
-        print(swd("app", "floppy_fail_read", str(FAILING_SECTOR)).strip())
+        if not args.release:
+            swd("key", "a")
+            choose(name)
+            swd("key", "\x01")
+            swd("key", "2")
+            choose(other_name)
+            swd("key", "m")
+            print(swd("app", "floppy_fail_read", str(FAILING_SECTOR)).strip())
     else:
         clean_card_files(*folders)
 
@@ -221,11 +244,12 @@ def main():
     if os.path.isdir(CARD):
         sys.exit("the card is still mounted: [E] would do nothing")
 
-    helper = None
-    if args.harness == "floptest":
-        helper = threading.Thread(target=press_select_on_cue, daemon=True)
-        helper.start()
-    print(swd("key", "e").strip())
+    if args.release:
+        print("card ejected: press [E] on the ST's keyboard to start the run")
+    else:
+        if args.harness == "floptest":
+            threading.Thread(target=press_select_on_cue, daemon=True).start()
+        print(swd("key", "e").strip())
 
     deadline = time.time() + args.timeout
     text = ""
@@ -242,7 +266,8 @@ def main():
         text = ""
     if not text:
         sys.exit("no new run in the log within %d s" % args.timeout)
-    swd("app", "countdown_stop")
+    if not args.release:
+        swd("app", "countdown_stop")
 
     tos = re.search(r"^TOS (\S+),", text, re.M)
     name = args.name or "-".join(
