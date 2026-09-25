@@ -5,6 +5,9 @@ _p_cookies                              equ $5a0    ; pointer to the system Cook
 
 COOKIE_JAR_MEGASTE                      equ $00010010 ; Mega STE computer
 COOKIE_JAR_TT                           equ $00020000 ; TT; the Falcon is $00030000: both a 68030
+DRIVERS_HARDWARE_TYPE_ADDR              equ $FA8208 ; detect_hw's machine: the drivers' shared variable 0,
+                                                    ; after the token and seed at $FA8200. main.s has its
+                                                    ; own token at $FAF000, so this, not RANDOM_TOKEN_SEED_ADDR
 MEGASTE_SPEED_CACHE_REG                 equ $FFFF8E21 ; Mega STE: bit 0 the cache, bit 1 16 MHz (no cache at 8 MHz)
 SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE   equ 16      ; Size of the shared variables for the shared functions
 SHARED_VARIABLE_HARDWARE_TYPE           equ 0       ; Hardware type of the Atari ST computer
@@ -97,10 +100,16 @@ get_tos_version:
 ; counts in another register, or another module's, with its own timeout - and
 ; run a mix of them. A command then gave up early and was sent again: on the
 ; Falcon every other GEMDRIVE Fopen and Fcreate reached the RP twice, and
-; reads came back from the wrong place. Clear it, as TOS's own clrcache does. The machine is detect_hw's; before it has run, and on every
-; other machine, nothing is done (below the 68020 there is no CACR). Uses d7.
+; reads came back from the wrong place. Clear it, as TOS's own clrcache does.
+; The machine is detect_hw's; before it has run, and on every other machine,
+; nothing is done. A 68000 has no CACR, and is told by _longframe before any
+; variable is read: the setup menu, in main.s, sends before any driver has
+; written the machine, and reading the wrong place put a Mega STE into four
+; bombs. Uses d7.
 clear_icache_after_copy:
-    cmp.l #COOKIE_JAR_TT, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+    tst.w $59e.w                        ; _longframe: 0 on a 68000
+    beq.s .clear_icache_done
+    cmp.l #COOKIE_JAR_TT, DRIVERS_HARDWARE_TYPE_ADDR
     bcs.s .clear_icache_done
     dc.w $4e7a, $7002                   ; movec cacr, d7
     or.w #$0008, d7                     ; CI: clear the instruction cache
