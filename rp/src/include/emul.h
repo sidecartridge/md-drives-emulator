@@ -60,6 +60,9 @@ enum {
 // already held, to test what the firmware does when memory runs out; 0 KB
 // releases everything held. Result 0 when the allocation is refused.
 #define DEVHOOKS_APP_HEAP_HOLD 4
+// Makes the next floppy read of the given logical sector (payload word 0), on
+// either drive, fail as an SD error, through the real error path.
+#define DEVHOOKS_APP_FLOPPY_FAIL_READ 5
 
 #define MAX_DOMAIN_LENGTH 255
 #define MAX_LABEL_LENGTH 63

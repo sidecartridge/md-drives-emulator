@@ -1,10 +1,15 @@
 #include "test_runner.h"
 
+#include "sidecart.h"
+
 static FILE* log_fp = NULL;
+static const char* log_name = "LOG.TXT";
+
+void set_log_name(const char* name) { log_name = name; }
 
 void open_log(void) {
   if (!log_fp) {
-    log_fp = fopen("LOG.TXT", "a");
+    log_fp = fopen(log_name, "a");
   }
 }
 
@@ -107,6 +112,54 @@ void state_restore(const BorrowedState* state, const char* who) {
   Dsetdrv(state->drive);
   Dsetpath(state->path[0] ? state->path : "\\");
   Fsetdta(state->dta);
+}
+
+void print_tos_version(void) {
+  /* Which TOS ran this, so a log says on its own where it comes from. The
+     version word is at ROM+2, and the ROM is at $FC0000 on a 192 KB machine or
+     at $E00000 on a 256 KB one. The reset vector at $4 points into it, so its
+     high word says which: reading the byte instead sees the $00 above the
+     address and sends a 192 KB machine to $E00000, which is not mapped there.
+     This is the same test get_tos_version makes in the cartridge firmware. */
+  const unsigned short* rom = (*(const unsigned short*)0x4L == 0x00FC)
+                                  ? (const unsigned short*)0xFC0002L
+                                  : (const unsigned short*)0xE00002L;
+  print("TOS %x.%02x, GEMDOS %x\r\n", *rom >> 8, *rom & 0xFF,
+        (int)Sversion());
+}
+
+// Ask the device to restart and take the computer with it. The device comes
+// back in the setup menu, where the card is on USB; the computer has to reboot
+// too, because the cartridge it booted from goes away for a moment and comes
+// back in another mode. Runs in supervisor mode: reading the 200 Hz counter
+// and reaching the reset vector both need it, and nothing here calls the OS,
+// whose GEMDOS trap goes through a cartridge that is restarting.
+static int restart_device_and_reboot(void) {
+  const volatile long* hz200 = (const volatile long*)0x4BAL;
+  long deadline;
+
+  if (sidecart_restart_device() != 0) return -1;
+
+  deadline = *hz200 + (6L * 200L); /* the device needs about two seconds */
+  while (*hz200 < deadline) {
+  }
+  __asm__ volatile("move.w #0x2700,%sr\n\tmove.l 4.w,%a0\n\tjmp (%a0)");
+  return 0; /* not reached */
+}
+
+void end_of_run(void) {
+  print("All tests completed.\r\n");
+  if (running_from_auto()) {
+    // Nobody is watching a boot: ask the device to restart, so it comes back
+    // in the setup menu with the card on USB and the log can be read from a
+    // computer, and reboot with it.
+    print("Asking the device to restart, the log is on the card\r\n");
+    close_log();
+    if (Supexec(&restart_device_and_reboot) != 0)
+      press_key("The device did not answer. Press a key.\r\n");
+  } else {
+    press_key("Press a key.\r\n");
+  }
 }
 
 void assert_result(const char* test, int result, int expected) {

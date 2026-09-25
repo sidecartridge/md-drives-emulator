@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Run FSTESTS under Hatari's GEMDOS drive and report what each TOS makes of it.
+"""Run a test harness under Hatari and report what each TOS makes of it.
 
     tools/dev/hatari_tests.py [--tos 1.04 --tos 2.06] [--hardware "1.04=path/LOG.TXT"]
+    tools/dev/hatari_tests.py --harness floptest [--hardware "1.04 rw=path/FLOPTEST.TXT"]
 
-Hatari's GEMDOS drive (--harddrive) is the reference for what GEMDRIVE should
-do, so the same FSTESTS binary is run there and the results are put next to
-ours. A run needs no hands: FSTESTS writes LOG.TXT into the drive directory,
-which is a host directory, so the run ends as soon as the log says it is over.
+Hatari is the reference for what correct means. For FSTESTS it is Hatari's
+GEMDOS drive (--harddrive) standing in for GEMDRIVE. For FLOPTEST it is
+Hatari's floppy drive: an emulated WD1772 read by TOS's own floppy driver, the
+thing our floppy emulation replaces. Each floppy TOS is run twice, on the
+writable disk and on the read-only one, both made fresh by
+make_floppy_image.py, and after the writable run the image is checked for the
+sector the test leaves written.
 
-FSTESTS must be built with file logging (the third argument to its build.sh),
-or there is no LOG.TXT to read.
+A run needs no hands: the harness writes its log into the GEMDOS drive
+directory, which is a host directory, so the run ends as soon as the log says
+it is over. Build the harnesses with file logging (the third argument to
+tests/atarist/build.sh), or there is no log to read.
 
-Hardware results come from the LOG.TXT left on the card, passed as
---hardware "<TOS>=<path>". The report is a table: one row per test, one column
-per platform and TOS.
+Hardware results come from the log left on the card, passed as
+--hardware "<column>=<path>". The report is a table: one row per test, one
+column per platform and TOS.
 """
 
 import argparse
@@ -28,9 +34,30 @@ from collections import OrderedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-FSTESTS = os.path.join(REPO, "tests", "atarist", "dist", "FSTESTS.TOS")
+DIST = os.path.join(REPO, "tests", "atarist", "dist")
+MAKE_IMAGE = os.path.join(HERE, "make_floppy_image.py")
 DEFAULT_TOS_DIR = os.path.expanduser("~/mister_wkspc/TOS")
-DEFAULT_REPORT = os.path.join(HERE, "logs", "fstests-matrix.md")
+
+# What each harness is: its program and the copies of it the tests look for,
+# its log, the line that starts each run in the log, and the disks it runs on
+# (None: no floppy at all).
+HARNESSES = OrderedDict([
+    ("fstests", {"program": "FSTESTS.TOS",
+                 "copies": ("FSTESTS.TOS", "FSTESTS.TTP"),
+                 "log": "LOG.TXT",
+                 "banner": "Atari ST GEMDRIVE Test Suite",
+                 "disks": (None,),
+                 "report": "fstests-matrix.md"}),
+    ("floptest", {"program": "FLOPTEST.TOS",
+                  "copies": ("FLOPTEST.TOS",),
+                  "log": "FLOPTEST.TXT",
+                  "banner": "Atari ST floppy test suite",
+                  "disks": ("rw", "ro", "rw-hd", "ro-hd", "ro-ss"),
+                  "report": "floptest-matrix.md"}),
+])
+
+# Machines with a high-density drive: only they get the 1.44 MB disks.
+HD_MACHINES = ("megaste", "tt", "falcon")
 
 # TOS version -> (image file, Hatari machine). The machine matters: Hatari
 # refuses a TOS its machine cannot run. TOS below 1.04 is not here at all:
@@ -49,15 +76,14 @@ TOS_IMAGES = OrderedDict([
 
 DONE_MARKER = "All tests completed."
 RESULT_RE = re.compile(r"^\[(?P<status> OK |FAIL|SKIP)\] (?P<name>.*?)(?: \(R: .*\))?\s*$")
-SUITE_BANNER = "Atari ST GEMDRIVE Test Suite"
 
 
-def parse_log(text):
+def parse_log(text, banner):
     """The results of the last run in a log, as {test name: OK|FAIL|SKIP}.
 
     A log grows with every run (FSTESTS appends), so only the last run counts.
     """
-    runs = text.split(SUITE_BANNER)
+    runs = text.split(banner)
     last = runs[-1] if len(runs) > 1 else text
     results = OrderedDict()
     for line in last.splitlines():
@@ -68,13 +94,25 @@ def parse_log(text):
     return results
 
 
-def run_hatari(tos_path, machine, timeout, keep_dir=None):
-    """Run FSTESTS under Hatari on one TOS. Returns its log, or None."""
-    work = keep_dir or tempfile.mkdtemp(prefix="fstests-hatari-")
+def run_hatari(harness, tos_path, machine, timeout, keep_dir=None, disk=None):
+    """Run a harness under Hatari on one TOS. Returns its log, or None."""
+    work = keep_dir or tempfile.mkdtemp(prefix="hatari-tests-")
     os.makedirs(work, exist_ok=True)
-    for name in ("FSTESTS.TOS", "FSTESTS.TTP"):
-        shutil.copy(FSTESTS, os.path.join(work, name))
-    log_path = os.path.join(work, "LOG.TXT")
+    drive = os.path.join(work, "c")
+    os.makedirs(drive, exist_ok=True)
+    for name in harness["copies"]:
+        shutil.copy(os.path.join(DIST, harness["program"]),
+                    os.path.join(drive, name))
+    log_path = os.path.join(drive, harness["log"])
+    floppy = []
+    if disk:
+        # Hatari decides the format by the extension, so both disks are .ST
+        # here; which one it is lives inside, in MODE.TXT.
+        image = os.path.join(work, "FLOPTEST_%s.ST" % disk.upper())
+        subprocess.run([sys.executable, MAKE_IMAGE, disk, image], check=True,
+                       stdout=subprocess.DEVNULL)
+        floppy = ["--disk-a", image,
+                  "--protect-floppy", "on" if disk.startswith("ro") else "off"]
 
     env = dict(os.environ, SDL_VIDEODRIVER="dummy")
     command = [
@@ -86,9 +124,9 @@ def run_hatari(tos_path, machine, timeout, keep_dir=None):
         "--conout", "2",
         "--fast-forward", "on",
         "--confirm-quit", "off",
-        "--harddrive", work,
-        "--auto", "C:\\FSTESTS.TOS",
-    ]
+        "--harddrive", drive,
+        "--auto", "C:\\" + harness["program"],
+    ] + floppy
     process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT)
     deadline = time.time() + timeout
@@ -110,12 +148,18 @@ def run_hatari(tos_path, machine, timeout, keep_dir=None):
     if os.path.exists(log_path):
         with open(log_path, errors="replace") as handle:
             log = handle.read()
+    if disk and disk.startswith("rw"):
+        # Hatari writes the disk back when it stops: did the write the test
+        # leaves behind get there?
+        check = subprocess.run([sys.executable, MAKE_IMAGE, "check-rw", image],
+                               stdout=subprocess.PIPE, universal_newlines=True)
+        print("  image: " + check.stdout.strip())
     if keep_dir is None:
         shutil.rmtree(work, ignore_errors=True)
     return log
 
 
-def report(columns, results):
+def report(title, columns, results):
     """The matrix, as Markdown."""
     names = OrderedDict()
     for column in columns:
@@ -123,7 +167,7 @@ def report(columns, results):
             names[name] = True
 
     lines = []
-    lines.append("# FSTESTS results")
+    lines.append("# %s results" % title)
     lines.append("")
     lines.append("Rows are tests, columns are where they ran. Produced by "
                  "`tools/dev/hatari_tests.py`.")
@@ -131,6 +175,13 @@ def report(columns, results):
     lines.append("Hatari's GEMDOS drive needs TOS 1.04 or later, so TOS 1.00 and 1.02 "
                  "appear only as hardware columns.")
     lines.append("")
+    if title == "FSTESTS":
+        lines.append("On TOS 1.62 Hatari's GEMDOS drive is not TOS's loader: it asks TOS "
+                     "for a bare basepage (Pexec mode 5 below TOS 2.00) and never writes "
+                     "p_flags, where TOS 1.62's own loader copies the header's flags. "
+                     "\"The program's flags reach its basepage\" fails there under Hatari "
+                     "and is TOS's answer on hardware.")
+        lines.append("")
     counts = []
     for column in columns:
         values = results[column].values()
@@ -155,23 +206,29 @@ def report(columns, results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--harness", choices=list(HARNESSES), default="fstests",
+                        help="which test program to run (default: %(default)s)")
     parser.add_argument("--tos", action="append", metavar="VERSION",
                         help="a TOS to run (default: all of %s)" % ", ".join(TOS_IMAGES))
     parser.add_argument("--tos-dir", default=DEFAULT_TOS_DIR,
                         help="where the TOS images are (default: %(default)s)")
-    parser.add_argument("--hardware", action="append", default=[], metavar="TOS=LOG",
-                        help="a LOG.TXT from the card, as a column")
+    parser.add_argument("--hardware", action="append", default=[], metavar="COLUMN=LOG",
+                        help="a log from the card, as a column")
     parser.add_argument("--timeout", type=int, default=300,
                         help="seconds to give one run (default: %(default)s)")
-    parser.add_argument("--report", default=DEFAULT_REPORT,
-                        help="where to write the table (default: %(default)s)")
+    parser.add_argument("--report",
+                        help="where to write the table (default: "
+                             "tools/dev/logs/<harness>-matrix.md)")
     parser.add_argument("--keep", metavar="DIR",
                         help="keep the emulated drive here instead of a temporary directory")
     args = parser.parse_args()
+    harness = HARNESSES[args.harness]
+    program = os.path.join(DIST, harness["program"])
+    report_path = args.report or os.path.join(HERE, "logs", harness["report"])
 
-    if not os.path.exists(FSTESTS):
+    if not os.path.exists(program):
         sys.exit("No %s: build it first, with logging on:\n"
-                 "  ./tests/atarist/build.sh \"$PWD/tests/atarist\" release 1" % FSTESTS)
+                 "  ./tests/atarist/build.sh \"$PWD/tests/atarist\" release 1" % program)
 
     columns, results = [], OrderedDict()
     for version in (args.tos or list(TOS_IMAGES)):
@@ -187,41 +244,47 @@ def main():
         if not os.path.exists(path):
             print("skipping TOS %s: no %s" % (version, path))
             continue
-        column = "Hatari %s" % version
-        print("running TOS %s (%s)..." % (version, machine), flush=True)
-        keep = os.path.join(args.keep, version) if args.keep else None
-        log = run_hatari(path, machine, args.timeout, keep)
-        if not log:
-            print("  no LOG.TXT: did the program run? is FSTESTS built with logging?")
-            continue
-        results[column] = parse_log(log)
-        if DONE_MARKER not in log:
-            print("  the run did not finish (timeout): partial results")
-        columns.append(column)
-        values = results[column].values()
-        print("  %d OK, %d FAIL, %d SKIP" % (
-            sum(1 for v in values if v == "OK"),
-            sum(1 for v in values if v == "FAIL"),
-            sum(1 for v in values if v == "SKIP")), flush=True)
+        for disk in harness["disks"]:
+            if disk and disk.endswith("-hd") and machine not in HD_MACHINES:
+                continue
+            column = "Hatari %s" % version + (" %s" % disk if disk else "")
+            print("running TOS %s (%s)%s..." % (
+                version, machine, ", %s disk" % disk if disk else ""), flush=True)
+            keep = (os.path.join(args.keep, column.replace(" ", "-"))
+                    if args.keep else None)
+            log = run_hatari(harness, path, machine, args.timeout, keep, disk)
+            if not log:
+                print("  no %s: did the program run? is it built with logging?"
+                      % harness["log"])
+                continue
+            results[column] = parse_log(log, harness["banner"])
+            if DONE_MARKER not in log:
+                print("  the run did not finish (timeout): partial results")
+            columns.append(column)
+            values = results[column].values()
+            print("  %d OK, %d FAIL, %d SKIP" % (
+                sum(1 for v in values if v == "OK"),
+                sum(1 for v in values if v == "FAIL"),
+                sum(1 for v in values if v == "SKIP")), flush=True)
 
     for entry in args.hardware:
         version, _, path = entry.partition("=")
         if not path:
-            sys.exit('--hardware wants "<TOS>=<path to LOG.TXT>"')
+            sys.exit('--hardware wants "<column>=<path to the log>"')
         with open(os.path.expanduser(path), errors="replace") as handle:
             column = "Hardware %s" % version
-            results[column] = parse_log(handle.read())
+            results[column] = parse_log(handle.read(), harness["banner"])
             columns.append(column)
 
     if not columns:
         sys.exit("nothing ran")
 
-    table = report(columns, results)
-    os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)
-    with open(args.report, "w") as handle:
+    table = report(harness["program"].split(".")[0], columns, results)
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w") as handle:
         handle.write(table)
     print("\n" + table.split("| Test |")[0].rstrip())
-    print("written to %s" % args.report)
+    print("written to %s" % report_path)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,10 @@
 
 void print(const char* fmt, ...);
 
+/* The log goes to LOG.TXT on the current drive unless a harness names another
+   file before it prints anything. */
+void set_log_name(const char* name);
+
 void open_log(void);
 
 void close_log(void);
@@ -49,6 +53,14 @@ typedef struct {
 
 void state_save(BorrowedState* state);
 void state_restore(const BorrowedState* state, const char* who);
+
+/* One line naming the TOS and GEMDOS the run is on. Supervisor mode. */
+void print_tos_version(void);
+
+/* How every harness ends: "All tests completed.", and then, when it runs from
+   the AUTO folder, the device restarts and the computer reboots with it;
+   otherwise it waits for a key. */
+void end_of_run(void);
 
 void press_key(char* message);
 

@@ -84,7 +84,7 @@ ACSIEMUL_BPB_DATA_TOTAL_SIZE    equ 640
 ACSIEMUL_IMAGE_BUFFER           equ (ACSIEMUL_BPB_PTR_TABLE + ACSIEMUL_BPB_PTR_TABLE_SIZE + ACSIEMUL_BPB_DATA_TOTAL_SIZE)
 
 SVAR_ENABLED            equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 0)
-; slot 1 (ACSI ID) is RP-written only; no Atari-side reader.
+; slot 1 is unused: it held the ACSI ID, which nothing read.
 SVAR_HOOKS_INSTALLED    equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 2)
 SVAR_OLD_HDV_INIT       equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 3)
 SVAR_OLD_HDV_BPB        equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 4)
@@ -108,7 +108,7 @@ _hdv_mediach            equ $47e                            ; Address of the HDV
 _bootdev                equ $446                            ; BIOS boot device number
 _dskbufp                equ $4c6                            ; Disk buffer pointer (used by sidecart_functions.s)
 
-PUN_INFO_P_MAX_SECTOR   equ 94
+PUN_INFO_P_MAX_SECTOR   equ $5C                  ; AHDI 3.0 pun_info: P_max_sector
 
 BCB_LINK                equ 0
 BCB_BUFDRV              equ 4
@@ -225,6 +225,11 @@ acsi_start:
     cmp.l #2, (ACSIEMUL_SHARED_VARIABLES + (SVAR_FIRST_VOLUME_DRIVE * 4))
     bne.s acsi_exit_graciously
     move.w #2, _bootdev.w
+    ; And the current drive: GEMDOS took it from _bootdev before any of this
+    ; ran, and TOS looks for \AUTO\ there. The floppy driver, which runs
+    ; first, has made it A:.
+    move.w #2, -(sp)
+    gemdos Dsetdrv, 4
 
 acsi_exit_graciously:
     rts

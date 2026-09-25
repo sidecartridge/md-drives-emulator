@@ -86,13 +86,13 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
-### ACSI hard disk emulation (experimental)
+### ACSI hard disk emulation
 
 #### What is ACSI emulation?
 
 In addition to GEMDrive, the Multi-device can emulate **ACSI** hard disks at the block-device level, driven by a raw disk image file on the microSD card. Unlike GEMDrive — which intercepts GEMDOS calls and presents a folder as a drive — the ACSI path emulates the disk at the BIOS level (`hdv_init` / `hdv_bpb` / `hdv_rw` / `hdv_boot` / `hdv_mediach`) and hands TOS a real partition table plus BPBs. Disk images are standard hard disk images compatible with Peter Putnik's **PPDRIVER** (TOS&DOS dual-BPB) and **HDDRIVER** layouts.
 
-This feature is currently marked **EXPERIMENTAL**. It is disabled by default.
+It is disabled by default.
 
 - **Advantages**:
   - Works with software that talks to the hard disk at the BIOS level rather than through GEMDOS.
@@ -107,11 +107,11 @@ This feature is currently marked **EXPERIMENTAL**. It is disabled by default.
 
 **TOS compatibility.** This release has been tested from **TOS 1.04 through TOS 2.06**. It does **not** currently work under **EmuTOS** — the embedded EmuTOS hard disk driver conflicts with the ACSI hooks installed by the emulator and prevents the emulated volumes from coming up. Running ACSI emulation on EmuTOS is not supported in this version.
 
-**Coexistence with real ACSI hardware.** The emulator is designed to live on the same ACSI bus as a real hard disk controlled by Peter Putnik's **PPDRIVER** or **HDDRIVER**. Give the emulated unit a free ACSI ID (the real drive typically sits at `0`) and pick a starting drive letter outside the range already owned by the real driver, and both should appear together in TOS.
+**Coexistence with real ACSI hardware.** The emulated drives can sit beside a real hard disk on the ACSI port, run by its own driver (PPDRIVER, HDDRIVER, AHDI): pick a starting drive letter after the ones the real driver takes, and both sets appear in TOS. The emulated drives are not on the ACSI bus, so they have no ACSI ID: their `pun_info` entries say "no physical unit" (`$FF`), and a real driver loaded from the real disk replaces that table with its own. Tested on TOS 1.04 with a real disk as `C:`–`E:` and the emulated one from `F:`.
 
 When ACSI is **enabled** in the setup screen, the emulator also reserves a small RAM pool (~34 KB) under `_membot` on boot so TOS can rebind its buffer control blocks to the larger logical sector sizes used by the image. If you later **disable** ACSI from the setup menu, the emulator triggers a warm reset so that reservation is released.
 
-The ACSI ID and the starting drive letter are **independent**. You can, for example, declare ACSI ID `0` but map partitions starting at `K:` so they don't clash with a real ACSI driver that already owns `C:`/`D:`/... The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
+The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
 
 #### Building disk images for ACSI
 
@@ -123,7 +123,6 @@ The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible wit
 |---------|-------------|
 | **A[C]SI Enabled** | Enable or disable ACSI block-device emulation. Toggling this setting from the setup menu may trigger a warm reset to reclaim or reserve the BCB RAM pool. |
 | **[I]mage** | Select the hard disk image file on the microSD card to mount. The internal browser navigates the microSD card so you can pick any regular file. |
-| **U[n]it (ACSI ID)** | Choose the ACSI bus ID reported to TOS (`0` to `7`). Default is `7`. This is only the physical unit tag stored in `pun_info`; it does not affect which drive letters the partitions land on. |
 | **Dri[v]e** | Choose the starting drive letter for the first announced partition (`C:` to `P:`). Subsequent partitions take consecutive letters. Must not overlap with the GEMDrive drive letter when both are enabled. |
 
 ### Floppy drive emulation
@@ -144,7 +143,9 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 | **Boo[t] enabled** | Enable or disable the boot sector emulation. When enabled, the emulator will attempt to boot from the floppy disk image. |
 | **XBIO[S] trap** | Enable or disable the XBIOS trap for floppy disk operations. When enabled, the emulator will intercept XBIOS calls related to floppy disk operations. |
 
-Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks.
+Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks. The desktop's **Format** does not work on an emulated drive either: the emulator answers that the disk cannot be formatted (write protected, for a read-only `.ST` image), and the disk in the computer's own drive is never touched.
+
+On a computer with a single floppy drive, that drive stays usable as **B:** while **A:** is emulated: TOS treats a single drive as both A: and B: (it may ask you to insert disk B the first time), and A: is now the emulated one. The desktop's **Disk Copy** can then copy a real disk from B: onto an emulated A: whose image has the same shape: a 360 KB image for a single-sided disk, 720 KB for a double-sided one.
 
 #### Runtime floppy A image cycling
 
@@ -340,6 +341,34 @@ The same binary, copied to `AUTO\FSTESTS.PRG` in the GEMDRIVE folder with GEMDRI
 boot. Started from the AUTO folder it does not wait for a key at the end: it asks the device to
 restart, so the device comes back in the setup menu with the card available over USB and `LOG.TXT`
 can be read from a computer. Build with file logging on for there to be a log.
+
+### Floppy tests
+
+`FLOPTEST.TOS` is built by the same command, and tests the floppy drive only. It reads a disk made
+for it, where every byte is predictable:
+
+```bash
+python3 tools/dev/make_floppy_image.py rw FLOPTEST.ST.RW   # writable
+python3 tools/dev/make_floppy_image.py ro FLOPTEST.ST      # read-only
+```
+
+`ro-hd` and `rw-hd` make the same disks at 1.44 MB, and `ro-ss` a two-sided disk whose boot
+sector says one side, as many menu disks have; FLOPTEST reads which one it has from the disk.
+
+Put one of them in drive A and run `FLOPTEST.TOS`, from the desktop or as `AUTO\FLOPTEST.PRG` in
+the GEMDRIVE folder (on its own there: whichever harness is in the AUTO folder ends the run by
+restarting the device). It checks the BIOS, XBIOS and GEMDOS calls against the disk, writes only
+on the writable one, and logs to `FLOPTEST.TXT` on the boot drive. After a run on the writable
+disk, `make_floppy_image.py check-rw FLOPTEST.ST.RW` says whether the sector it leaves written
+reached the card. One case needs the host: on a debug build, `tools/dev/swd.py app
+floppy_fail_read 1320` before the run makes a read fail, and FLOPTEST checks that it is reported
+as a failure; without it that case is skipped. The last case is a real media change: with the
+other test disk as drive A's slot 2 (`CTRL+A` in the setup menu), it waits for drive A to be
+cycled - `tools/dev/console.py wait "LSECTOR: 1330 " && tools/dev/swd.py select short` does it
+from the host when the case reads sector 1330 - and checks GEMDOS then reads the other disk.
+
+Its reference is TOS's own floppy driver: `tools/dev/hatari_tests.py --harness floptest` runs it
+under Hatari on both disks and every TOS Hatari can, and puts hardware logs beside those results.
 
 ## Project docs
 

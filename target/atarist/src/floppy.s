@@ -28,6 +28,7 @@ CMD_SAVE_HARDWARE   equ ($4 + APP_FLOPPYEMUL)     ; Command code to save the har
 CMD_SET_SHARED_VAR  equ ($5 + APP_FLOPPYEMUL)     ; Command code to set a shared variable
 CMD_RESET           equ ($6 + APP_FLOPPYEMUL)     ; Command code to reset the floppy emulator before starting the boot process
 CMD_SAVE_BIOS_VECTOR equ ($7 + APP_FLOPPYEMUL)     ; Command code to save the old BIOS vector
+CMD_FORMAT_TRACK    equ ($8 + APP_FLOPPYEMUL)     ; Flopfmt on an emulated drive: refused
 CMD_SHOW_VECTOR_CALL equ ($B + APP_FLOPPYEMUL)    ; Command code to show the XBIOS vector call 
 CMD_DEBUG            equ ($C + APP_FLOPPYEMUL)    ; Command code to send to the RP2040 the debug command
 
@@ -43,7 +44,6 @@ SVAR_MEDIA_CHANGED_A:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 4)      ; Med
 SVAR_MEDIA_CHANGED_B:       equ (FLOPPYEMUL_SHARED_VARIABLE_SIZE + 5)      ; Media change state B
 
 MED_NOCHANGE:               equ 0
-MED_UNKNOWN:                equ 1
 MED_CHANGED:                equ 2
 
 ; We will need 32 bytes extra for the variables of the floppy emulator
@@ -66,11 +66,20 @@ secpcyl_B:             equ sidecnt_B + 2 ; sidecnt + 2 bytes
 secptrack_B:           equ secpcyl_B + 2 ; secpcyl + 2 bytes
 disk_number_B:         equ secptrack_B + 8 ; secptrack + 8 bytes
 
+; What the last read or write answered: 0, or the BIOS error TOS's own floppy
+; driver gives for that failure. The RP writes it before the token.
+transfer_status:       equ (disk_number_B + 2) ; disk_number_B + 2 bytes
+
 ; After the variables, allocate the buffer to read/write sectors
 sidecart_read_buf:     equ (FLOPPYEMUL_VARIABLES_OFFSET + 256)
 
 ; CONSTANTS
-VEC_BIOS        equ $2D     ; BIOS vector
+SECTOR_SIZE     equ 512     ; A .ST image is 512-byte sectors, whatever its boot
+                            ; sector claims: the BPB is only what GEMDOS is told
+BIOS_trap       equ $b4     ; TRAP #13 Handler (BIOS)
+_hdv_bpb        equ $472    ; The disk vectors every TOS disk driver hooks
+_hdv_rw         equ $476
+_hdv_mediach    equ $47e
 XBIOS_trap      equ $b8     ; TRAP #14 Handler (XBIOS)
 _membot         equ $432    ; This value represents last memory used by the TOS, and start of the heap area available
 _bootdev        equ $446    ; This value represents the device from which the system was booted (0 = A:, 1 = B:, etc.)
@@ -78,6 +87,7 @@ _bootdev        equ $446    ; This value represents the device from which the sy
 _nflops         equ $4a6    ; This value indicates the number of floppy drives currently connected to the system
 _drvbits        equ $4c2    ; Each of 32 bits in this longword represents a drive connected to the system. Bit #0 is A, Bit #1 is B and so on.
 _dskbufp        equ $4c6    ; Address of the disk buffer pointer    
+etv_critic      equ $404    ; The critical error handler
 _longframe      equ $59e    ; Address of the long frame flag. If this value is 0 then the processor uses short stack frames, otherwise it uses long stack frames.
 
 
@@ -103,35 +113,72 @@ floppy_start:
 ; Figure out the TOS version
     bsr get_tos_version
 
-    bsr set_vector_bios
+    bsr set_vector_bios         ; while the boot sector runs: at the BIOS trap
 
     bsr set_vector_xbios
 
-    bra boot_disk
+    bsr boot_disk               ; runs the disk's boot sector, which may not come back
+    bra set_vectors_hdv         ; then into the disk vectors
 
 .exit_graciouslly:
     rts
 
 
-; Save the old BIOS vectors and install
-set_vector_bios:
-    move.l #bios_trap,-(sp)             ; Otherwise, use the standard entry point
-    move.w #VEC_BIOS,-(sp)
-    move.w #Setexc,-(sp)                     ; Setexc() modify BIOS vector and add our trap
-    trap #13
-    addq.l #8,sp
-    move.l d0, d3                       ; Address of the old BIOS vector
-    move.l #old_bios_handler, d4        ; Address of the old handler
-    move.l #bios_trap, d5               ; Address of the new handler
-    send_sync CMD_SAVE_BIOS_VECTOR, 12   ; Send the command to the Sidecart. 12 bytes of payload
-    tst.w d0                            ; 0 if no error
+; Save the three disk vectors and install ours. Each old vector goes to the RP
+; first, into its XBRA slot in the read-only window, and ours are installed
+; only once all three are there: until then a call this driver passes on would
+; jump to 0. These are the vectors every TOS disk driver hooks, not the BIOS
+; trap in front of them, so that what wraps them sees the emulated drives as
+; TOS's own. The desktop's Esc does: it wraps them to force a media change on
+; the window's drive and counts on GEMDOS's Getbpb for that drive going
+; through its wrapper to put them back. Answered at the trap, it never did, and
+; the next Esc wrapped the wrappers around themselves: every disk call behind
+; them - B:, a physical drive, ACSI - then looped for ever.
+set_vectors_hdv:
+    move.l _hdv_bpb.w, d3
+    move.l #old_hdv_bpb, d4
+    bsr.s save_vector
+    bne.s _dont_set_hdv
+    move.l _hdv_mediach.w, d3
+    move.l #old_hdv_mediach, d4
+    bsr.s save_vector
+    bne.s _dont_set_hdv
+    move.l _hdv_rw.w, d3
+    move.l #old_hdv_rw, d4
+    bsr.s save_vector
+    bne.s _dont_set_hdv
+    move.l #floppy_hdv_bpb, _hdv_bpb.w
+    move.l #floppy_hdv_mediach, _hdv_mediach.w
+    move.l #floppy_hdv_rw, _hdv_rw.w
+    cmp.l #bios_trap, BIOS_trap.w       ; the trap hook out, unless something
+    bne.s _dont_set_hdv                 ; has hooked the BIOS after it
+    move.l old_bios_handler, BIOS_trap.w
+_dont_set_hdv:
     rts
 
-    ds.b ((4 - (* & 3)) & 3)                ; bump to the next 4-byte boundary 
-    dc.l 'XBRA'                             ; XBRA structure
-    dc.l 'SDFE'                             ; Put your cookie here (SidecarTridge Floppy Emulator)
-old_bios_handler:
-    dc.l 0                                  ; We can't modify this address because it's in ROM, but we can modify it in the RP2040 memory
+; While the disk's boot sector runs the emulation answers at the BIOS trap and
+; leaves the disk vectors as TOS set them, which is what a boot sector sees on
+; a real ST: a hard-disk driver hooks them only after it. Menu disks check
+; that: Medway's boot sector wants hdv_bpb in the ROM ($FCxxxx), and says "A
+; virus is lurking in memory" otherwise. set_vectors_hdv moves the emulation
+; into the vectors once the boot sector is done.
+set_vector_bios:
+    move.l BIOS_trap.w, d3
+    move.l #old_bios_handler, d4
+    bsr.s save_vector
+    bne.s _dont_set_bios_trap           ; the old vector is not in its slot
+    move.l #bios_trap, BIOS_trap.w
+_dont_set_bios_trap:
+    rts
+
+; The RP writes vector d3 into slot d4. Z set once the slot holds it.
+save_vector:
+    send_sync CMD_SAVE_BIOS_VECTOR, 12  ; d5, the third long, is not used
+    bne.s _save_vector_done             ; no answer
+    move.l d4, a0
+    cmp.l (a0), d3                      ; send_sync keeps d3 and d4
+_save_vector_done:
+    rts
 
 
 
@@ -139,6 +186,9 @@ old_bios_handler:
 set_vector_xbios:
     move.l XBIOS_trap.w,d3              ; Payload is the old XBIOS_trap
     send_sync CMD_SAVE_VECTORS, 4
+    bne.s _dont_set_xbios_trap          ; no answer
+    cmp.l old_XBIOS_trap, d3            ; answered, and the old vector is there?
+    bne.s _dont_set_xbios_trap
     tst.l   (FLOPPY_SHARED_VARIABLES + (SVAR_XBIOS_TRAP_ENABLED * 4))  ; 0: XBIOS trap disabled, Not 0: XBIOS trap enabled
     beq.s _dont_set_xbios_trap 
     move.l  #new_XBIOS_trap_routine,XBIOS_trap.w
@@ -165,6 +215,12 @@ _boot_disk_no_floppy:
 ;    movem.l (sp)+,d0-d7/a0-a6
 
     clr.w _bootdev.w                ; Set emulated A as bootdevice
+    ; And the current drive, which GEMDOS took from _bootdev when it started -
+    ; before this runs, and _bootdev survives a reset: it would still be the
+    ; drive of the session before, and TOS looks for \AUTO\ on the current
+    ; drive. A driver that sets _bootdev after this one sets both too.
+    clr.w -(sp)
+    gemdos Dsetdrv, 4
     move.w #2, _nflops.w            ; Set the number of drives to 2. Always
     ; Configure drive A
     btst   #0, (_drvbits + 3).w     ; Check if drive A exists
@@ -201,11 +257,12 @@ _start_boot:
     beq.s _dont_boot
 
     moveq #0, d6            ; Start reading at sector 0
-    move.l d0, d4           ; Read from drive A
-    move.l d0, d2           ; clear d2.l 
-    move.w BPB_data_A, d2   ; Sector size of the emulated drive A
+    moveq #0, d4            ; Read from drive A
+    move.l #SECTOR_SIZE, d2 ; Sector size
     move.l _membot.w,a4        ; Start reading at $2000
     bsr read_sector_from_sidecart
+    tst.w d0
+    bne.s _dont_boot        ; nothing was read: _membot holds no boot sector
 
     ; Test checksum
 
@@ -233,8 +290,10 @@ detect_ms16:
     send_sync CMD_SAVE_HARDWARE, 12
     rts
 
-; New XBIOS map A calls to Sidecart,
-; B to physical A if it exists
+; New XBIOS: Floprd, Flopwr and Flopver for an emulated drive are served from
+; the Sidecart, and Flopfmt is refused there. Every other call, and those four
+; for a drive that is not emulated, go to TOS untouched: a hook on the XBIOS
+; trap sees every program's XBIOS calls, not only the floppy ones.
 ; The XBIOS, like the BIOS may utilize registers D0-D2 and A0-A2 as scratch registers and their
 ; contents should not be depended upon at the completion of a call. In addition, the function
 ; opcode placed on the stack will be modified.
@@ -262,154 +321,198 @@ _notlong:
 ;    move.w 6(a0), d3                     ; get XBIOS call number
 ;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
 ;    movem.l (sp)+, d0-d7/a0-a6
-                                    ; get XBIOS call number
-    cmp.w #8,6(a0)                  ; is it XBIOS call Flopwr?
-    beq _floppy_read                ; if yes, go to flopppy read
-    cmp.w #9,6(a0)                  ; is it XBIOS call Floprd?
-    beq _floppy_write               ; if yes, go to flopppy write
-    cmp.w #13,6(a0)                 ; is it XBIOS call Flopver?
-    beq.s _floppy_verify            ; if yes, go to flopppy verify
-    cmp.w #10,6(a0)                 ; is it XBIOS call Flopfmt?
-    beq.s _floppy_format            ; if yes, go to flopppy format
+    move.w 6(a0), d0                ; get XBIOS call number
+    cmp.w #Floprd, d0               ; is it XBIOS call Floprd?
+    beq.s _floppy_xbios_call
+    cmp.w #Flopwr, d0               ; is it XBIOS call Flopwr?
+    beq.s _floppy_xbios_call
+    ; Flopver is 19, $13 in hex. XBIOS 13 decimal is Mfpint, and taking it
+    ; here kept programs from installing MFP interrupt handlers.
+    cmp.w #Flopver, d0              ; is it XBIOS call Flopver?
+    beq.s _floppy_xbios_call
+    cmp.w #Flopfmt, d0              ; is it XBIOS call Flopfmt?
+    beq.s _floppy_xbios_call
+_floppy_xbios_not_ours:
     move.l old_XBIOS_trap, -(sp)    ; if not, continue with XBIOS call
-    rts 
-
-    ;
-    ; Trapped XBIOS call 13 with the floppy disk drive verify function
-    ; Return always verified successfully
-    ;
-_floppy_verify:
-    cmp.w #1,16(a0)
-    bne.s _floppy_verify_emulated_a   ; if is not B then is A
-    clr.w 16(a0)                      ; Map B drive to physical A
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts 
-
-_floppy_verify_emulated_a:
-    clr.l d0                           ; If SidecarT, always verified successfully
-    move.l  d0, 8(a0)                  ; Set the error code to 0 in buff
-    rte
-
-    ;
-    ; Trapped XBIOS call 10 with the floppy disk drive format function
-    ; Return always formatted with errors
-_floppy_format:
-;    movem.l d0-d7/a0-a6,-(sp)
-;    send_sync CMD_DEBUG, 16             ; Send the command to the Sidecart. 2 bytes of payload
-;    movem.l (sp)+, d0-d7/a0-a6
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
     rts
 
-    cmp.w #1,16(a0)
-    bne.s _floppy_format_emulated_a   ; if is not B then is A
-    clr.w 16(a0)                      ; Map B drive to physical A
-    move.l old_XBIOS_trap, -(sp)      ; continue with XBIOS call
-    rts
-_floppy_format_emulated_a:
-    moveq #-1, d0                     ; If SidecarT, always formatted with errors
-    clr.l 8(a0)                       ; Set the error code to 0 in the buff
-    rte
-
     ;
-    ; Trapped XBIOS calls 9 with the floppy disk drive write functions
+    ; Floprd, Flopwr and Flopver take the same arguments: buf, filler, devno,
+    ; sectno, trackno, sideno, count; Flopfmt has devno in the same place. d0
+    ; says which of the four this is.
     ;
-_floppy_write:
-    moveq #1, d0                       ; d0 = write flag
-    tst.w 16(a0)
-    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
-    bra.s _floppy_xbios_emulated_b
-
-    ;
-    ; Trapped XBIOS calls 8 with the floppy disk drive read functions
-    ;
-_floppy_read:
-    moveq #0, d0                       ; d0 = read flag
-    tst.w 16(a0)
-    beq.s _floppy_xbios_emulated_a     ; if is not B then is A
-
-_floppy_xbios_emulated_b:
+_floppy_xbios_call:
+    move.w 16(a0), d1               ; devno
+    beq _floppy_xbios_a
+    cmp.w #1, d1
+    bne.s _floppy_xbios_not_ours    ; neither A: nor B:
+    btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_B, d2      ; Sector size of the emulated drive B
-    moveq #1, d4               ; Use B:
+    move.w #SECTOR_SIZE, d2         ; Sector size
+    move.l #$10001, d4              ; B:, and d4.h 1: a sector of the disk as it is
     moveq #0, d6
-    move.w 20(a0),d6           ; track number
-    mulu secpcyl_B,d6          ; calculate sectors per cylinder
-    move.w 22(a0),d4           ; Get the side number
-    mulu secptrack_B,d4        ; calculate sectors per track
-    bra.s _floppy_xbios_emulated
+    move.w 20(a0),d6                ; track number
+    mulu secpcyl_B,d6               ; times the sectors per cylinder
+    moveq #0, d3
+    move.w 22(a0),d3                ; side number
+    mulu secptrack_B,d3             ; times the sectors per track
+    bra _floppy_xbios_emulated
 
-_floppy_xbios_emulated_a:
+_floppy_xbios_a:
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
+    beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
     movem.l d3-d7/a3-a6, -(sp)
-    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
-    moveq #0, d4               ; Use A:
+    move.w #SECTOR_SIZE, d2         ; Sector size
+    move.l #$10000, d4              ; A:, and d4.h 1: a sector of the disk as it is
     moveq #0, d6
-    move.w 20(a0),d6           ; track number
-    mulu secpcyl_A,d6          ; calculate sectors per cylinder
-    move.w 22(a0),d4           ; Get the side number
-    mulu secptrack_A,d4        ; calculate sectors per track
+    move.w 20(a0),d6                ; track number
+    mulu secpcyl_A,d6               ; times the sectors per cylinder
+    moveq #0, d3
+    move.w 22(a0),d3                ; side number
+    mulu secptrack_A,d3             ; times the sectors per track
 
+; d4 is the drive number do_transfer_sidecart sends, so the side goes through
+; d3. It used to go through d4, which sent every side-1 transfer to B:. Its
+; high word 1 tells the RP this is a sector of the disk as it physically is,
+; placed with the image's geometry (secpcyl, secptrack); Rwabs sends 0 there,
+; a record, which the RP places with the boot sector's own geometry as TOS's
+; floprw does.
 _floppy_xbios_emulated:
-    add.l d4, d6               ; d6 = track number * sec/cyl + side number * sec/track
-    add.w 18(a0),d6            ; d6 = side no * sec/cyl + track no * sec/track + start sect no
-    subq.w #1,d6               ; d6 = logical sector number to start the transfer
-    
+    cmp.w #Flopfmt, d0
+    beq.s _floppy_xbios_format
+    add.l d3, d6               ; d6 = track number * sec/cyl + side number * sec/track
+    add.w 18(a0),d6            ; + the sector number
+    subq.w #1,d6               ; sectors are numbered from 1: d6 = logical sector
     move.w 24(a0),d1           ; number of sectors to read/write
     move.l 8(a0),a4            ; buffer address
-    move.l d0, d5              ; rwflag
-    bsr do_transfer_sidecart
-
+    cmp.w #Flopver, d0
+    beq.s _floppy_xbios_verify
+    moveq #0, d5               ; Floprd reads
+    cmp.w #Flopwr, d0
+    bne.s _floppy_xbios_transfer
+    moveq #1, d5               ; Flopwr writes
+_floppy_xbios_transfer:
+    bsr do_transfer_sidecart   ; d0: 0, or the error, which Floprd and Flopwr
+                               ; return as TOS's do, without etv_critic
     movem.l (sp)+,d3-d7/a3-a6
-    clr.l d0
+    rte
+
+; Flopver reads each sector into the start of the caller's buffer and then
+; leaves there the list of the sectors that failed, ended by a zero word, as
+; TOS does. One sector per transfer: the buffer need only hold 1024 bytes,
+; whatever the count, and is never written past its first sector.
+_floppy_xbios_verify:
+    move.l a4, a5              ; where each sector is read, and the list goes
+    move.w 18(a0), -(sp)       ; the sector being verified, as the caller counts
+    move.w d1, -(sp)           ; and how many are left
+_floppy_xbios_verify_next:
+    tst.w (sp)
+    beq.s _floppy_xbios_verified
+    moveq #1, d1               ; one sector
+    moveq #0, d5               ; read
+    move.l a5, a4
+    bsr do_transfer_sidecart   ; moves d6 on to the next sector when it succeeds
+    tst.w d0
+    bne.s _floppy_xbios_verify_failed
+    subq.w #1, (sp)
+    addq.w #1, 2(sp)
+    bra.s _floppy_xbios_verify_next
+_floppy_xbios_verified:
+    addq.l #4, sp
+    clr.w (a5)                 ; no bad sector
+    moveq #0, d0
+    movem.l (sp)+,d3-d7/a3-a6
+    rte
+_floppy_xbios_verify_failed:
+    move.w 2(sp), (a5)+        ; the sector that failed
+    clr.w (a5)                 ; and the end of the list
+    addq.l #4, sp
+    movem.l (sp)+,d3-d7/a3-a6
+    rte                        ; with the error in d0
+
+
+; Flopfmt on an emulated drive formats nothing. Handed to the ROM it formatted
+; whatever disk was in the physical drive, and the desktop's writes that follow
+; it landed on the image. The RP answers as TOS answers a disk it cannot
+; format: write protected for a read-only image, the general error otherwise.
+_floppy_xbios_format:
+    moveq #0, d3
+    move.w d4, d3              ; the drive
+    send_sync CMD_FORMAT_TRACK, 4
+    tst.w d0
+    beq.s _floppy_xbios_format_answered
+    moveq #-1, d0              ; no answer: the general error
+    bra.s _floppy_xbios_format_done
+_floppy_xbios_format_answered:
+    move.l transfer_status, d0
+_floppy_xbios_format_done:
+    movem.l (sp)+,d3-d7/a3-a6
     rte
 
 
+    ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
+    dc.l 'XBRA'
+    dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
+old_bios_handler:
+    dc.l 0                              ; written by the RP (read-only window)
+; The BIOS trap, while the boot sector runs: Getbpb, Mediach and Rwabs of an
+; emulated drive go to the handlers the disk vectors get later, with a0 on the
+; call as they expect it and their rts brought back to an rte; every other call
+; goes on to TOS.
 bios_trap:
-    btst #5, (sp)                         ; Check if called from user mode
-    beq.s _bios_trap_user_mode            ; if so, do correct stack pointer
-_bios_trap_not_user_mode:
-    move.l sp,a0                          ; Move stack pointer to a0
-    bra.s _bios_trap_check_cpu
-_bios_trap_user_mode:
-    move.l usp,a0                         ; if user mode, correct stack pointer
-    subq.l #6,a0
-;
-; This code checks if the CPU is a 68000 or not
-;
-_bios_trap_check_cpu:
-    tst.w _longframe                          ; Check if the CPU is a 68000 or not
-    beq.s _bios_trap_notlong
-_bios_trap_long:
-    addq.w #2, a0                             ; Correct the stack pointer parameters for long frames
-_bios_trap_notlong:
-
-;
-; Handler goes here
-;
-
-;    movem.l d0-d7/a0-a6,-(sp)
-;    move.w 6(a0), d3                     ; get BIOS call number
-;    send_sync CMD_DEBUG, 2    ; Send the command to the Sidecart. 2 bytes of payload
-;    movem.l (sp)+, d0-d7/a0-a6
-
-    cmp.w #Getbpb,6(a0)                  ; is it BIOS call Getbpb?
-    beq.s bios_getbpb                    ; if yes, go to getbpb
-    cmp.w #Mediach,6(a0)                 ; is it BIOS call Mediach?
-    beq.s bios_mediach                   ; if yes, go to media change
-    cmp.w #Rwabs,6(a0)                   ; is it BIOS call Rwabs?
-    beq bios_rwabs                       ; if yes, go to rwabs
-
-
-    move.l old_bios_handler, -(sp) ; Save the old BIOS handler
+    move.l sp, a0
+    btst #5, (sp)                       ; called from supervisor mode?
+    bne.s .bt_cpu
+    move.l usp, a0
+    subq.l #6, a0
+.bt_cpu:
+    tst.w _longframe.w
+    beq.s .bt_call
+    addq.w #2, a0
+.bt_call:
+    moveq #8, d1                        ; Getbpb and Mediach: the drive at 8(a0)
+    cmp.w #Getbpb, 6(a0)
+    beq.s .bt_drive
+    cmp.w #Mediach, 6(a0)
+    beq.s .bt_drive
+    moveq #18, d1                       ; Rwabs: at 18(a0)
+    cmp.w #Rwabs, 6(a0)
+    bne.s .bt_pass
+.bt_drive:
+    move.w 0(a0, d1.w), d0
+    cmp.w #1, d0
+    bhi.s .bt_pass                      ; not A: or B:
+    btst d0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3)
+    beq.s .bt_pass                      ; not emulated
+    pea .bt_done(pc)
+    cmp.w #Getbpb, 6(a0)
+    beq floppy_getbpb
+    cmp.w #Mediach, 6(a0)
+    beq floppy_mediach
+    bra floppy_rwabs
+.bt_done:
+    rte
+.bt_pass:
+    move.l old_bios_handler, -(sp)
     rts
 
-
-bios_getbpb:
+    ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
+    dc.l 'XBRA'
+    dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
+old_hdv_bpb:
+    dc.l 0                              ; written by the RP (read-only window)
+; hdv_bpb is called with its arguments at 4(sp); with a0 4 bytes below them they
+; are at the offsets the BIOS trap's frame gave this code.
+floppy_hdv_bpb:
+    lea -4(sp), a0
+floppy_getbpb:
     cmp.w #0,8(a0)              ; Is this the disk_number we are emulating? 
     beq.s _bios_get_bpb_load_emul_bpp_A      ; If is the disk A to emulate, load the BPB A built 
     cmp.w #1,8(a0)              ; Is it the Drive B?
     beq.s _bios_get_bpb_load_emul_bpp_B      ; If is the disk B to emulate, load the BPB B built 
 _bios_get_bpb_not_emul_bpp:
-    move.l old_bios_handler,-(sp)
+    move.l old_hdv_bpb, -(sp)         ; not ours: the vector it replaced
     rts
 
 _bios_get_bpb_load_emul_bpp_A:
@@ -418,22 +521,59 @@ _bios_get_bpb_load_emul_bpp_A:
     beq.s _bios_get_bpb_not_emul_bpp
     ; Emulate A
     move.l #BPB_data_A,d0         ; Load the emulated BPP A
-    rte  
+    bra.s _bios_get_bpb_check
 
 _bios_get_bpb_load_emul_bpp_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_get_bpb_not_emul_bpp
     move.l #BPB_data_B,d0         ; Load the emulated BPP B
-    rte
+; No BPB, as TOS answers, for a boot sector whose sector size is not positive
+; or whose cluster size is 0: a disk with no file system on it, whose numbers
+; GEMDOS would otherwise divide by.
+_bios_get_bpb_check:
+    move.l d0, a1
+    tst.w (a1)                    ; recsiz, as a signed word
+    ble.s _bios_get_bpb_none
+    tst.w 2(a1)                   ; clsiz
+    beq.s _bios_get_bpb_none
+    ; As TOS's getbpb: answering a BPB ends a media change on that drive.
+    ; GEMDOS asks for it right after Mediach or Rwabs told it of the change.
+    moveq #0, d2
+    move.w 8(a0), d2              ; the drive
+    move.w d2, d1
+    lsl.w #2, d1                  ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a1
+    cmp.l #MED_CHANGED, 0(a1, d1.w)
+    bne.s _bios_get_bpb_done
+    move.l d0, -(sp)              ; the BPB, which the send does not keep
+    move.l d4, -(sp)
+    moveq #MED_NOCHANGE, d4
+    bsr set_media_change
+    move.l (sp)+, d4
+    move.l (sp)+, d0
+    rts
+_bios_get_bpb_none:
+    moveq #0, d0
+_bios_get_bpb_done:
+    rts
 
-bios_mediach:
+    ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
+    dc.l 'XBRA'
+    dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
+old_hdv_mediach:
+    dc.l 0                              ; written by the RP (read-only window)
+; hdv_mediach is called with its arguments at 4(sp); with a0 4 bytes below them they
+; are at the offsets the BIOS trap's frame gave this code.
+floppy_hdv_mediach:
+    lea -4(sp), a0
+floppy_mediach:
     cmp.w #0,8(a0)              ; Is this the disk_number we are emulating? 
     beq.s _bios_mediach_changed_A      ; If is the disk A to emulate, media changed A
     cmp.w #1,8(a0)              ; Is it the Drive B?
     beq.s _bios_mediach_changed_B      ; If is the disk B to emulate, media changed B
 _bios_mediach_continue:
-    move.l old_bios_handler, -(sp) ; Save the old BIOS handler
+    move.l old_hdv_mediach, -(sp)         ; not ours: the vector it replaced
     rts
 
 _bios_mediach_changed_A:
@@ -441,70 +581,124 @@ _bios_mediach_changed_A:
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_mediach_continue
     move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)),d0
-    rte
+    rts
 
 _bios_mediach_changed_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_mediach_continue
     move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_B * 4)),d0
-    rte
+    rts
 
 
-bios_rwabs:
+    ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
+    dc.l 'XBRA'
+    dc.l 'SDFE'                         ; SidecarTridge Floppy Emulator
+old_hdv_rw:
+    dc.l 0                              ; written by the RP (read-only window)
+; hdv_rw is called with its arguments at 4(sp); with a0 4 bytes below them they
+; are at the offsets the BIOS trap's frame gave this code.
+floppy_hdv_rw:
+    lea -4(sp), a0
+floppy_rwabs:
     cmp.w #0, 18(a0)         ; Is this the disk_number we are emulating?
     beq.s _bios_rwabs_a      ; If is the disk A to emulate, load the BPB A built
     cmp.w #1, 18(a0)         ; Is it the Drive B?
     beq.s _bios_rwabs_b      ; If is the disk B to emulate, load the BPB B built
 _bios_rwabs_continue:
-    move.l old_bios_handler, -(sp) ; Save the old BIOS handler
+    move.l old_hdv_rw, -(sp)         ; not ours: the vector it replaced
     rts
 _bios_rwabs_a:
     ; Test Drive A
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_rwabs_continue
-    ; Emulate A
-    tst.l 10(a0)             ; Check if buffer address is 0
-    bne.s _bios_rwabs_a_continue
-    moveq #0, d0               ; return ok  
-    rte
-_bios_rwabs_a_continue:
-    movem.l d3-d7/a3-a6, -(sp)
-    moveq #0, d4               ; Use A:
-    move.w BPB_data_A, d2      ; Sector size of the emulated drive A
-    move.w 16(a0),d6           ; start sect no
-    move.w 14(a0),d1           ; number of sectors to read/write
-    move.l 10(a0),a4           ; buffer address
-    move.w 8(a0), d5           ; rwflag
-    and.l #%1, d5              ; only rw bit
-    bsr.s do_transfer_sidecart
-    movem.l (sp)+,d3-d7/a3-a6
-    rte
+    moveq #0, d2               ; Use A:
+    bra.s _bios_rwabs_emulated
 _bios_rwabs_b:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_rwabs_continue
-    ; Emulate B
-    tst.l 10(a0)             ; Check if buffer address is 0
-    bne.s _bios_rwabs_b_continue
-    moveq #0, d0               ; return ok
-    rte
-_bios_rwabs_b_continue:
+    moveq #1, d2               ; Use B:
+; As TOS's floppy Rwabs: a NULL buffer sets the drive's media-change state to
+; the count, and modes 0 and 1 answer E_CHNG on a changed disk without a
+; transfer, so that GEMDOS logs the drive in again - its Getbpb ends the change.
+_bios_rwabs_emulated:
+    tst.l 10(a0)               ; buffer
+    bne.s _bios_rwabs_check_change
+    move.l d4, -(sp)
+    moveq #MED_NOCHANGE, d4    ; a count of 1, "may have changed", is not
+    cmp.w #MED_CHANGED, 14(a0) ; changed here: TOS would find the same serial
+    bne.s _bios_rwabs_set_change
+    moveq #MED_CHANGED, d4
+_bios_rwabs_set_change:
+    bsr set_media_change
+    move.l (sp)+, d4
+    moveq #0, d0
+    rts
+_bios_rwabs_check_change:
+    cmp.w #2, 8(a0)            ; TOS asks only in modes 0 and 1
+    bge.s _bios_rwabs_go
+    move.w d2, d1
+    lsl.w #2, d1               ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a1
+    cmp.l #MED_CHANGED, 0(a1, d1.w)
+    bne.s _bios_rwabs_go
+    moveq #E_CHNG, d0
+    rts
+_bios_rwabs_go:
     movem.l d3-d7/a3-a6, -(sp)
-    moveq #1, d4               ; Use B:
-    move.w BPB_data_B, d2      ; Sector size of the emulated drive B
-    move.w 16(a0),d6           ; start sect no
-    move.w 14(a0),d1           ; number of sectors to read/write
-    move.l 10(a0),a4           ; buffer address
-    move.w 8(a0), d5           ; rwflag
+    move.l d2, d4              ; the drive
+    move.w #SECTOR_SIZE, d2    ; Sector size
+    move.l a0, a5              ; the arguments: a send does not keep a0
+_bios_rwabs_transfer:
+    move.w 16(a5),d6           ; start sect no
+    move.w 14(a5),d1           ; number of sectors to read/write
+    move.l 10(a5),a4           ; buffer address
+    move.w 8(a5), d5           ; rwflag
     and.l #%1, d5              ; only rw bit
-    bsr.s do_transfer_sidecart
+    bsr do_transfer_sidecart
+    tst.l d0
+    beq.s _bios_rwabs_done
+    ; A failure goes to the critical error handler, as TOS's floppy driver
+    ; sends it: that is the desktop's alert. Its answer is what Rwabs returns,
+    ; unless it is $10000, Retry, and the transfer is made again.
+    move.l d2, -(sp)           ; the handler may use d0-d2 and a0-a2
+    move.w d4, -(sp)           ; 6(sp) for the handler: the drive
+    move.w d0, -(sp)           ; 4(sp): the error
+    move.l etv_critic.w, a0
+    jsr (a0)
+    addq.l #4, sp
+    move.l (sp)+, d2
+    cmp.l #$10000, d0
+    bne.s _bios_rwabs_done
+    ; Retry on a disk that was changed meanwhile - a slot cycled - is E_CHNG,
+    ; as in TOS, so GEMDOS rereads the new disk instead of having the old one's
+    ; sectors written on it. TOS asks only in modes 0 and 1.
+    cmp.w #2, 8(a5)
+    bge.s _bios_rwabs_transfer
+    move.w d4, d0
+    lsl.w #2, d0               ; SVAR_MEDIA_CHANGED_B follows A's
+    lea (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)), a0
+    cmp.l #MED_CHANGED, 0(a0, d0.w)
+    bne.s _bios_rwabs_transfer
+    moveq #E_CHNG, d0
+_bios_rwabs_done:
     movem.l (sp)+,d3-d7/a3-a6
-    clr.l d0
-    rte
+    rts
 
 
 
+
+; Set drive d2's media-change state to d4. The RP owns the state: it raises
+; it when drive A's slot is cycled, and is told here when TOS's rules end or
+; set it. Keeps every register but d0.
+set_media_change:
+    movem.l d3/d7/a0-a3, -(sp)         ; a send uses a0-a3, and send_sync d7
+    move.l #SVAR_MEDIA_CHANGED_A, d3
+    add.l d2, d3                       ; SVAR_MEDIA_CHANGED_B follows A's
+    send_sync CMD_SET_SHARED_VAR, 8
+    movem.l (sp)+, d3/d7/a0-a3
+    rts
 
 ; Perform the transference of the data from/to the emulated disk in RP2040 
 ; to the computer
@@ -548,6 +742,9 @@ exit_transfer_sidecart:
 ;  d0: error code, 0 if no error
 ;  a4: next address in the computer memory to store the data
 read_sectors_from_sidecart:
+    moveq #0, d0                ; a count of zero is answered with 0 at once, as
+    tst.w d1                    ; TOS does: subq then dbf made it 65536 sectors
+    beq.s _read_sectors_from_sidecart_done
     subq.w #1,d1                ; one less
 _sectors_to_read:
     bsr.s read_sector_from_sidecart
@@ -556,6 +753,7 @@ _sectors_to_read:
     addq #1,d6
     dbf d1, _sectors_to_read
 _read_sectors_from_sidecart_error:
+_read_sectors_from_sidecart_done:
     rts
 
 ; Write sectors from the sidecart
@@ -569,6 +767,9 @@ _read_sectors_from_sidecart_error:
 ;  d0: error code, 0 if no error
 ;  a4: next address in the computer memory to retrieve the data
 write_sectors_from_sidecart:
+    moveq #0, d0                ; a count of zero is answered with 0 at once, as
+    tst.w d1                    ; TOS does: subq then dbf made it 65536 sectors
+    beq.s _no_sectors_to_write
     subq.w #1,d1                ; one less
 _sectors_to_write:
     bsr.s write_sector_to_sidecart
@@ -577,6 +778,7 @@ _sectors_to_write:
     addq #1,d6
     dbf d1, _sectors_to_write
 _error_sectors_to_write:
+_no_sectors_to_write:
     rts
 
 ; Read a sector from the sidecart
@@ -608,10 +810,11 @@ read_sector_from_sidecart:
 .read_sector_from_sidecart_ok:
     tst.w d0
     bne.s _error_reading_sector
-    clr.l d0                            ; Clear the error code
+    move.l transfer_status, d0          ; the RP's answer: 0, or the error
+    bne.s _read_sector_failed           ; and the buffer is not this sector
     move.w d2, d5                       ; Save in d5 the number of bytes to copy
     move.l #sidecart_read_buf, a1
-    lsr.w #2, d5
+    lsr.w #2, d5                        ; four bytes a turn: d2 is SECTOR_SIZE
     subq.w #1,d5                        ; one less
     move.l a4, d3
     btst #0,d3                          ; If it's even, take the fast lane. If it's odd, take the slow lane
@@ -623,6 +826,7 @@ _copy_sector_byte_even:
     rts
 _error_reading_sector:
     moveq #-1, d0
+_read_sector_failed:
     rts
 _copy_sector_byte_odd:
     move.b (a1)+, (a4)+
@@ -664,7 +868,8 @@ _write_sector_to_sidecart_retry:
 _error_writing_sector:
     rts
 _write_sector_to_sidecart_once_ok:
-    clr.l d0                                ; Clear the error code
+    move.l transfer_status, d0              ; the RP's answer: 0, or the error
+    bne.s _error_writing_sector
     and.l #$0000FFFF,d2                     ; limit the size of the sectors to 65535
     add.l d2, a4                            ; Move the address to the next sector
     rts

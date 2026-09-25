@@ -81,6 +81,7 @@ python3 tools/dev/swd.py app countdown_stop                      # stop the setu
 python3 tools/dev/swd.py app gemdrive_stall 2 100                # stall 2 write answers 10 s each
 python3 tools/dev/swd.py app gemdrive_fail_write 1               # the next write chunk fails
 python3 tools/dev/swd.py app heap_hold 16                        # hold 16 KB more heap (0 releases)
+python3 tools/dev/swd.py app floppy_fail_read 1320               # the next read of that sector fails
 python3 tools/dev/swd.py inject 0x0001 0x0067 0                  # any protocol command
 python3 tools/dev/swd.py crash                                   # why did it last reboot?
 python3 tools/dev/swd.py postmortem                              # halt, backtraces, resume
@@ -137,6 +138,10 @@ GEMDRIVE/floppy/RTC/ACSI handlers during emulation. `app NAME` runs the app comm
   through the real error path. The ST's `Fwrite` must then return promptly (a short count, or
   the error when nothing was written) instead of looping; the console shows `failing this chunk
   on purpose`.
+- `floppy_fail_read SECTOR` — make the next floppy read of logical sector SECTOR, on either drive,
+  fail as an SD error, through the real error path: the image is closed and opened again on the
+  next access. FLOPTEST reads sector 1320 for this: armed before the run, the read must fail with
+  -11 through `etv_critic` and leave the caller's buffer alone; not armed, that case is skipped.
 
 `crash` prints the watchdog reason and scratch registers of the last reboot without stopping the
 RP, with code addresses resolved to source lines by `addr2line`.
@@ -161,6 +166,63 @@ OpenOCD is `$OPENOCD`, `openocd` on `PATH`, or `../pico/openocd/src/openocd`; it
 from `$PICO_OPENOCD_PATH`, the variable `.vscode/launch.json` uses. A command that fails on a
 momentary debug-port drop (common while the firmware changes its clock early in boot) is retried.
 Close a VS Code debug session first: only one program can use the probe.
+
+## Test harnesses under Hatari: `hatari_tests.py`
+
+Runs a harness from `tests/atarist/dist/` under Hatari on TOS 1.04, 1.06, 1.62, 2.06 and EmuTOS,
+headless, and writes a Markdown matrix to `tools/dev/logs/<harness>-matrix.md`: one row per test,
+one column per platform and TOS. Hardware logs from the card go in as extra columns.
+
+```bash
+tools/dev/hatari_tests.py                                   # FSTESTS, Hatari's GEMDOS drive
+tools/dev/hatari_tests.py --harness floptest                # FLOPTEST, both disks
+tools/dev/hatari_tests.py --harness floptest --hardware "2.06 rw=FLOPTEST.TXT"
+```
+
+Hatari is the reference for what correct means. For FSTESTS that is its GEMDOS drive standing in
+for GEMDRIVE; for FLOPTEST it is its emulated WD1772 read by TOS's own floppy driver, which is what
+our floppy emulation replaces. FLOPTEST runs twice per TOS, on a writable and a write-protected
+disk made fresh by `make_floppy_image.py`, and after the writable run the image is checked for the
+sector the test leaves written. On a machine with a high-density drive (TOS 2.06 runs as a Mega
+STE) it runs on the 1.44 MB pair as well. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
+hardware-only for both harnesses. `--keep DIR` keeps each run's drive and log.
+
+`make_floppy_image.py ro|rw|ro-hd|rw-hd|ro-ss FILE` builds FLOPTEST's disk - 720 KB, 1.44 MB,
+or a one-sided file system on a two-sided disk, the shape of many menu disks - and
+`check-rw FILE` checks one after a
+run; the rules for what every sector holds are in its docstring and in `floppy_tests.c`, and the
+two must agree.
+
+## Test harnesses on the hardware: `hardware_tests.py`
+
+Makes a whole FLOPTEST or FSTESTS run on the ST, with the device in its setup menu and the card
+on USB, and keeps the run's log:
+
+```bash
+tools/dev/hardware_tests.py --harness floptest --disk rw     # rw, ro, rw-hd, ro-hd, ro-ss
+tools/dev/hardware_tests.py --harness fstests
+```
+
+It reads the GEMDRIVE and floppy folders from the setup screen, puts the harness in the GEMDRIVE
+folder's `AUTO` as `<HARNESS>.PRG` and takes the other one out (whichever finishes first restarts
+the device), strips the `._` files macOS leaves, and for FLOPTEST makes the disk pair fresh with
+`make_floppy_image.py`, puts the disk in drive A and the other one of the pair in slot 2, and arms
+the read failure the harness checks (`swd.py app floppy_fail_read 1320`). Then it ejects the card
+and checks it is gone, presses `[E]`, presses SELECT when the console shows FLOPTEST reading the
+sector that asks for it, and waits for the harness to restart the device and the card to come
+back. The run's section of the log goes to `tools/dev/logs/<harness>-hw-<name>.txt` (`--name`,
+default the TOS the run reports and the disk), with a summary, and a writable disk is checked with
+`check-rw`. The harness also reboots the ST into the setup menu, so runs follow each other with no
+hands. It needs a debug build, `console.py watch` running, GEMDRIVE on as C:, and harnesses built
+with file logging.
+
+`--release` runs on a release build, which has no devhooks mailbox and no console: the menu is not
+driven, so drive A must already hold `FLOPTEST.ST.RW` (for `rw`, `rw-hd`) or `FLOPTEST.ST` (for
+`ro`, `ro-hd`) with the other in slot 2 - set it on a debug build before flashing the release one,
+the settings survive a flash. The disk images are written under those names, and once the card is
+ejected someone presses `[E]` on the ST's keyboard: the menu's countdown stays stopped once the
+card has been on USB, and a release build takes no keys over SWD. FLOPTEST's read-failure and
+cycle cases skip.
 
 ## SELECT regression checks: `select_harness.py`
 
