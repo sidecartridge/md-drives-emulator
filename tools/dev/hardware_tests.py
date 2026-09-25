@@ -193,7 +193,7 @@ def main():
     args = parser.parse_args()
     harness = HARNESSES[args.harness]
 
-    if not wait_for_card(10):
+    if not wait_for_card(60):
         sys.exit("the card is not mounted: is the device in its setup menu?")
     if not args.release:
         swd("app", "countdown_stop")
