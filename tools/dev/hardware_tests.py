@@ -137,10 +137,23 @@ def clean_card_files(*folders):
 
 
 def md5(path):
-    if not os.path.exists(path):
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.md5(handle.read()).hexdigest()
+    except OSError:
         return None
-    with open(path, "rb") as handle:
-        return hashlib.md5(handle.read()).hexdigest()
+
+
+def mount_card():
+    """macOS does not always mount the card again when the device comes back
+    in its setup menu: mount the IMG volume if its disk is there."""
+    listing = subprocess.run(["diskutil", "list", "external"], capture_output=True,
+                             text=True).stdout
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) > 2 and "IMG" in fields and fields[-1].startswith("disk"):
+            subprocess.run(["diskutil", "mount", fields[-1]], capture_output=True)
+            return
 
 
 def wait_for_card(timeout):
@@ -148,6 +161,7 @@ def wait_for_card(timeout):
     while time.time() < deadline:
         if os.path.isdir(CARD):
             return True
+        mount_card()
         time.sleep(1)
     return False
 
@@ -255,12 +269,17 @@ def main():
     text = ""
     while time.time() < deadline:
         time.sleep(5)
-        if not os.path.exists(log):
+        if not os.path.isdir(CARD):
+            mount_card()
             continue
         time.sleep(3)  # the card has only just come back
-        if md5(log) != before:
-            with open(log, "r", errors="replace") as handle:
-                text = last_run(handle.read(), harness["banner"])
+        now = md5(log)
+        if now is not None and now != before:
+            try:
+                with open(log, "r", errors="replace") as handle:
+                    text = last_run(handle.read(), harness["banner"])
+            except OSError:
+                text = ""  # the card went away again while it was read
             if "All tests completed." in text:
                 break
         text = ""
