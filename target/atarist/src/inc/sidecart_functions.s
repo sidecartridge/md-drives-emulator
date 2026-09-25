@@ -4,6 +4,7 @@
 _p_cookies                              equ $5a0    ; pointer to the system Cookie-Jar
 
 COOKIE_JAR_MEGASTE                      equ $00010010 ; Mega STE computer
+COOKIE_JAR_TT                           equ $00020000 ; TT; the Falcon is $00030000: both a 68030
 MEGASTE_SPEED_CACHE_REG                 equ $FFFF8E21 ; Mega STE: bit 0 the cache, bit 1 16 MHz (no cache at 8 MHz)
 SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE   equ 16      ; Size of the shared variables for the shared functions
 SHARED_VARIABLE_HARDWARE_TYPE           equ 0       ; Hardware type of the Atari ST computer
@@ -90,6 +91,22 @@ get_tos_version:
     tst.w d0
     rts
 
+; A TT's or a Falcon's 68030 runs the wait loop from its instruction cache,
+; which does not see the copy a sender has just made: it may still hold the
+; loop another module left at the same place, with that module's timeout. A
+; command then gave up early and was sent again - on the Falcon every other
+; GEMDRIVE Fopen and Fcreate reached the RP twice. Clear it, as TOS's own
+; clrcache does. The machine is detect_hw's; before it has run, and on every
+; other machine, nothing is done (below the 68020 there is no CACR). Uses d7.
+clear_icache_after_copy:
+    cmp.l #COOKIE_JAR_TT, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+    bcs.s .clear_icache_done
+    dc.w $4e7a, $7002                   ; movec cacr, d7
+    or.w #$0008, d7                     ; CI: clear the instruction cache
+    dc.w $4e7b, $7002                   ; movec d7, cacr
+.clear_icache_done:
+    rts
+
 ; Send an sync command to the Sidecart
 ; Wait until the command sets a response in the memory with a random number used as a token
 ; Input registers:
@@ -123,6 +140,7 @@ send_sync_command_to_sidecart:
 _copy_sync_code:
         move.w (a1)+, (a2)+
         dbf d7, _copy_sync_code
+        bsr clear_icache_after_copy
     endif
 
     ; The sync command synchronize with a random token
@@ -294,6 +312,7 @@ send_sync_write_command_to_sidecart:
 _copy_sync_code_write:
         move.w (a1)+, (a2)+
         dbf d7, _copy_sync_code_write
+        bsr clear_icache_after_copy
     endif
 
 ; Adjust the payload size to include the buffer
