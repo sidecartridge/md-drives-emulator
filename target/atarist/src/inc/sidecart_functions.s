@@ -92,11 +92,12 @@ get_tos_version:
     rts
 
 ; A TT's or a Falcon's 68030 runs the wait loop from its instruction cache,
-; which does not see the copy a sender has just made: it may still hold the
-; loop another module left at the same place, with that module's timeout. A
-; command then gave up early and was sent again - on the Falcon every other
-; GEMDRIVE Fopen and Fcreate reached the RP twice. Clear it, as TOS's own
-; clrcache does. The machine is detect_hw's; before it has run, and on every
+; which does not see the copy a sender has just made: it may still hold, line
+; by line, a loop left at the same place before - the other sender's, which
+; counts in another register, or another module's, with its own timeout - and
+; run a mix of them. A command then gave up early and was sent again: on the
+; Falcon every other GEMDRIVE Fopen and Fcreate reached the RP twice, and
+; reads came back from the wrong place. Clear it, as TOS's own clrcache does. The machine is detect_hw's; before it has run, and on every
 ; other machine, nothing is done (below the 68020 there is no CACR). Uses d7.
 clear_icache_after_copy:
     cmp.l #COOKIE_JAR_TT, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
