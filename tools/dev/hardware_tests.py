@@ -300,8 +300,7 @@ def main():
             with open(log, "r", errors="replace") as handle:
                 text = last_run(handle.read(), harness["banner"])
         except OSError:
-            away = False  # the card went away again while it was read
-            continue
+            continue  # a card just mounted can refuse a read for a moment
         break
     if not text:
         sys.exit("no new run in the log within %d s" % args.timeout)
