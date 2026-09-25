@@ -177,13 +177,17 @@ _getdatetime:
     subq.l #2, sp                    ; a Mega STE's setting while the RP is told
     megaste_cache_off (sp)
     move.l #SVAR_GET_TIME_ADDR, d3   ; D3 Variable index
-    move.l 2(a0), d4                   ; D4 Variable value
+    ; D4: where the call returns to. The frame is on the supervisor stack, its
+    ; PC at 2(sp) on entry whatever the CPU and the caller's mode - a0 points
+    ; at the call, which is elsewhere from user mode or with a long frame.
+    move.l 20(sp), d4                ; past the 16 bytes saved and the word
     send_sync CMD_SET_SHARED_VAR, 8
     megaste_cache_back (sp)
     addq.l #2, sp
     movem.l (sp)+, d3-d4/a0/a3
 _bypass_command:
-    move.l #_getdatetime_fix, 2(a0)
+    move.l #_getdatetime_fix, 2(sp)  ; the fix runs in the caller's mode: it
+                                     ; only reads the cartridge window
     move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
     rts 
 _getdatetime_fix:

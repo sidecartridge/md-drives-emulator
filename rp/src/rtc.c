@@ -378,10 +378,14 @@ static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
                                  uint16_t rtcemul_datetime_bcd_idx,
                                  uint16_t rtcemul_y2k_patch_idx,
                                  uint16_t rtcemul_datetime_msdos_idx,
-                                 uint16_t gemdos_version, bool y2k_patch) {
+                                 uint32_t sversion, bool y2k_patch) {
   uint8_t *rtc_time_ptr =
       (uint8_t *)(mem_shared_addr + rtcemul_datetime_bcd_idx);
-  DPRINTF("GEMDOS version: %x\n", gemdos_version);
+  // SVERSION: the TOS version in the high word, GEMDOS's in the low one. It is
+  // 0 until the ST has sent it.
+  uint16_t tos_version = (uint16_t)(sversion >> 16);
+  DPRINTF("TOS version: %x, GEMDOS version: %x\n", (unsigned int)tos_version,
+          (unsigned int)(sversion & 0xFFFF));
   rtc_get_datetime(&rtcTime);
 
   DPRINTF("RP2040 RTC set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
@@ -400,17 +404,20 @@ static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
   // Change order for the endianess
   rtc_time_ptr[1] = 0x1b;
 
-  // If negative number, it is EmuTOS
-  if ((gemdos_version >= 0) && (y2k_patch)) {
+  // The patch is for TOS below 2.00, whose keyboard-processor clock has a
+  // two-digit year: 30 years are taken off what it holds and added back on
+  // Gettime. From TOS 2.00 on it is not applied: on a Mega STE, a TT or a
+  // Falcon TOS reads a clock of its own, where it made Gettime answer 30 years
+  // ahead and set that clock 30 years back.
+  if (y2k_patch && (tos_version < 0x0200)) {
     DPRINTF("Applying Y2K fix in the date\n");
     rtc_time_ptr[0] =
         add_bcd(to_bcd((rtcTime.year % 100)),
                 to_bcd((2000 - 1980) + (80 - 30)));  // Fix Y2K issue
   } else {
     DPRINTF("Not applying Y2K fix in the date\n");
-    rtc_time_ptr[0] =
-        to_bcd(rtcTime.year % 100);  // EmuTOS already handles the Y2K issue
-    // If the TOS is EmuTOS, then we disable the Y2K fix
+    rtc_time_ptr[0] = to_bcd(rtcTime.year % 100);
+    // And the ST installs no Gettime/Settime patch
     WRITE_LONGWORD_RAW(mem_shared_addr, rtcemul_y2k_patch_idx, 0);
   }
   rtc_time_ptr[3] = to_bcd(rtcTime.month);
@@ -513,7 +520,7 @@ void rtc_initf() {
   DPRINTF("Shared variable SVERSION: %x\n", gemdos_version);
   set_ikb_datetime_msg(memorySharedAddress, RTCEMUL_DATETIME_BCD,
                        RTCEMUL_Y2K_PATCH, RTCEMUL_DATETIME_MSDOS,
-                       (int16_t)gemdos_version, y2kPatchEnabled);
+                       gemdos_version, y2kPatchEnabled);
 
   if (memoryRandomTokenAddress != 0) {
     uint32_t randomToken = rand();  // Generate a random 32-bit value
@@ -560,7 +567,7 @@ void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
       DPRINTF("Shared variable SVERSION: %x\n", gemdos_version);
       set_ikb_datetime_msg(memorySharedAddress, RTCEMUL_DATETIME_BCD,
                            RTCEMUL_Y2K_PATCH, RTCEMUL_DATETIME_MSDOS,
-                           (int16_t)gemdos_version, y2kPatchEnabled);
+                           gemdos_version, y2kPatchEnabled);
       DPRINTF("RTCEMUL_READ_TIME received. Setting the time\n");
       break;
     }
