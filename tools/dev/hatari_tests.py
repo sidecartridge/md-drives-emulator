@@ -71,6 +71,7 @@ TOS_IMAGES = OrderedDict([
     ("1.06", ("tos106us.img", "ste")),
     ("1.62", ("TOS v1.62 (1990)(Atari Corp)(STE)(US)[b].img", "ste")),
     ("2.06", ("TOS v2.06 (1991)(Atari Corp)(Mega-STE)(US).img", "megaste")),
+    ("4.04", ("TOS v4.04 (19xx)(Atari Corp)(Falcon).img", "falcon")),
     ("EmuTOS", ("etos512us.img", "st")),
 ])
 
