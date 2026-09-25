@@ -170,7 +170,9 @@ _getdatetime:
 ;    tst.l (RTCEMUL_SHARED_VARIABLES + (SVAR_GET_TIME_ADDR * 4)) ; If SVAR_GET_TIME_ADDR is set, we can directly use it
 ;    bne.s _bypass_command
     ; We need to save the current get time function address
-    movem.l d3-d4/a0, -(sp)
+    ; The XBIOS gives a caller everything but d0-d2/a0-a2 back, and a send
+    ; destroys a0-a3: a3 is the caller's. a0 is the frame, needed after.
+    movem.l d3-d4/a0/a3, -(sp)
     subq.l #2, sp                    ; a Mega STE's setting while the RP is told
     megaste_cache_off (sp)
     move.l #SVAR_GET_TIME_ADDR, d3   ; D3 Variable index
@@ -178,7 +180,7 @@ _getdatetime:
     send_sync CMD_SET_SHARED_VAR, 8
     megaste_cache_back (sp)
     addq.l #2, sp
-    movem.l (sp)+, d3-d4/a0
+    movem.l (sp)+, d3-d4/a0/a3
 _bypass_command:
     move.l #_getdatetime_fix, 2(a0)
     move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
