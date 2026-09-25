@@ -59,6 +59,8 @@ static int run() {
         running_from_auto() ? "the AUTO folder" : "the desktop",
         'A' + booted_from_drive());
   print_tos_version();
+  mega_ste_setup();
+  print_clock();
 
   // Show the current drive
   print("Current drive: %c:\r\n", 'A' + Dgetdrv());

@@ -57,6 +57,15 @@ void state_restore(const BorrowedState* state, const char* who);
 /* One line naming the TOS and GEMDOS the run is on. Supervisor mode. */
 void print_tos_version(void);
 
+/* On a Mega STE, the CPU speed and cache the run asks for in \MSTE.INF on
+   the current drive - "8", "16" or "16C" - and a line with what the machine
+   runs at. Supervisor mode. end_of_run() logs it again. */
+void mega_ste_setup(void);
+
+/* The date and time XBIOS Gettime answers, which the RTC emulation hooks.
+   Supervisor mode. */
+void print_clock(void);
+
 /* How every harness ends: "All tests completed.", and then, when it runs from
    the AUTO folder, the device restarts and the computer reboots with it;
    otherwise it waits for a key. */

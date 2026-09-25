@@ -34,6 +34,11 @@ release one (the settings survive a flash). The images are written under those
 names, and once the card is ejected someone presses [E] on the ST's keyboard:
 the menu's countdown stays stopped once the card has been on USB, and a
 release build takes no keys over SWD. The read-failure and cycle cases skip.
+
+--mste 8, 16 or 16c sets a Mega STE's CPU speed and cache for the run: the
+setting goes in MSTE.INF at the root of the GEMDRIVE folder, where the harness
+reads it at its start, and it logs the register at its start and its end.
+Without --mste the file is removed and the machine runs as it booted.
 """
 
 import argparse
@@ -190,6 +195,8 @@ def main():
                         help="seconds to wait for the run (default 1800)")
     parser.add_argument("--release", action="store_true",
                         help="a release build: the menu is not driven (see above)")
+    parser.add_argument("--mste", choices=("8", "16", "16c"),
+                        help="a Mega STE's speed and cache for the run (see above)")
     args = parser.parse_args()
     harness = HARNESSES[args.harness]
 
@@ -215,6 +222,12 @@ def main():
             if os.path.exists(stale):
                 os.remove(stale)
     folders = [auto]
+    setting = os.path.join(CARD, gemdrive.strip("/"), "MSTE.INF")
+    if args.mste:
+        with open(setting, "w") as handle:
+            handle.write(args.mste.upper() + "\r\n")
+    elif os.path.exists(setting):
+        os.remove(setting)
 
     image = None
     if args.harness == "floptest":

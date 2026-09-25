@@ -128,6 +128,67 @@ void print_tos_version(void) {
         (int)Sversion());
 }
 
+/* The Mega STE's speed and cache register: bit 0 the cache, bit 1 16 MHz.
+   The hardware keeps the cache off at 8 MHz. It exists on no other machine,
+   where reading it is a bus error, so the machine cookie decides first. */
+#define MEGA_STE_CONTROL ((volatile unsigned char*)0xFFFF8E21L)
+#define MCH_MEGA_STE 0x00010010L
+static int mega_ste = 0;
+
+static long machine_cookie(void) {
+  const long* jar = *(const long**)0x5A0L; /* _p_cookies */
+  if (jar == NULL) return 0;
+  for (; jar[0] != 0; jar += 2) {
+    if (jar[0] == 0x5F4D4348L) return jar[1]; /* '_MCH' */
+  }
+  return 0;
+}
+
+static void print_mega_ste(const char* when) {
+  unsigned char control = *MEGA_STE_CONTROL;
+  print("Mega STE %s: %s MHz, cache %s ($%02x)\r\n", when,
+        (control & 2) ? "16" : "8", (control & 1) ? "on" : "off", control);
+}
+
+void mega_ste_setup(void) {
+  char asked[8] = {0};
+  int handle;
+
+  mega_ste = (machine_cookie() == MCH_MEGA_STE);
+  if (!mega_ste) return;
+  /* A run asks for its setting in a file, so one harness binary measures
+     every setting: tools/dev/hardware_tests.py --mste writes it. */
+  handle = Fopen("\\MSTE.INF", 0);
+  if (handle >= 0) {
+    Fread(handle, sizeof(asked) - 1, asked);
+    Fclose(handle);
+    if (strncmp(asked, "16C", 3) == 0) {
+      *MEGA_STE_CONTROL |= 2; /* the speed first: no cache at 8 MHz */
+      *MEGA_STE_CONTROL |= 1;
+    } else if (strncmp(asked, "16", 2) == 0) {
+      *MEGA_STE_CONTROL &= ~1;
+      *MEGA_STE_CONTROL |= 2;
+    } else if (asked[0] == '8') {
+      *MEGA_STE_CONTROL &= ~3;
+    } else {
+      print("MSTE.INF asks for \"%s\": not 8, 16 or 16C\r\n", asked);
+    }
+  }
+  print_mega_ste("at the start");
+}
+
+void print_clock(void) {
+  unsigned long clock = Gettime(); /* the DOS layout, from 1980 */
+  print("Gettime: %04d-%02d-%02d %02d:%02d:%02d\r\n", 1980 + (int)(clock >> 25),
+        (int)(clock >> 21) & 15, (int)(clock >> 16) & 31,
+        (int)(clock >> 11) & 31, (int)(clock >> 5) & 63, (int)(clock & 31) * 2);
+}
+
+static long print_mega_ste_at_end(void) {
+  print_mega_ste("at the end");
+  return 0;
+}
+
 // Ask the device to restart and take the computer with it. The device comes
 // back in the setup menu, where the card is on USB; the computer has to reboot
 // too, because the cartridge it booted from goes away for a moment and comes
@@ -138,6 +199,10 @@ static int restart_device_and_reboot(void) {
   const volatile long* hz200 = (const volatile long*)0x4BAL;
   long deadline;
 
+  /* A Mega STE's cache answers the cartridge's reads from copies it made
+     before, which breaks a command: off, and not put back, since the computer
+     reboots. */
+  if (mega_ste) *MEGA_STE_CONTROL &= ~1;
   if (sidecart_restart_device() != 0) return -1;
 
   deadline = *hz200 + (6L * 200L); /* the device needs about two seconds */
@@ -148,6 +213,8 @@ static int restart_device_and_reboot(void) {
 }
 
 void end_of_run(void) {
+  /* A driver that changed the setting and did not put it back shows here. */
+  if (mega_ste) Supexec(&print_mega_ste_at_end);
   print("All tests completed.\r\n");
   if (running_from_auto()) {
     // Nobody is watching a boot: ask the device to restart, so it comes back

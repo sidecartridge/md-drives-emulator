@@ -224,6 +224,12 @@ ejected someone presses `[E]` on the ST's keyboard: the menu's countdown stays s
 card has been on USB, and a release build takes no keys over SWD. FLOPTEST's read-failure and
 cycle cases skip.
 
+`--mste 8`, `16` or `16c` sets a Mega STE's CPU speed and cache for the run: the tool writes
+`MSTE.INF` at the root of the GEMDRIVE folder, the harness reads it at its start and sets
+`$FFFF8E21`, and logs the register at its start and its end (`Mega STE at the start: 16 MHz, cache
+on ($ff)`), so a driver that leaves the setting changed shows. Without `--mste` the file is
+removed and the machine runs as it booted. On other machines the harness does nothing with it.
+
 ## SELECT regression checks: `select_harness.py`
 
 Presses SELECT through `swd.py select` and reads the firmware's own state over SWD (app state,
