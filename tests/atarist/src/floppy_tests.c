@@ -342,6 +342,86 @@ static void test_flopver(void) {
   assert_result("It lists no bad sector", buffer_words[0], 0);
 }
 
+/* The emulation answers Getbpb with a BPB in the cartridge's window; TOS's
+   own driver with one in RAM. */
+static int drive_a_is_emulated(void) {
+  return ((long)Getbpb(DRIVE_A) & 0xFF0000L) == 0xFA0000L;
+}
+
+/* EmuTOS signs its ROM header with 'ETOS' at +$2C, where Atari's TOS has 0.
+   The ROM is found as print_tos_version finds it; the run is in supervisor
+   mode. */
+static int running_emutos(void) {
+  const long* rom = (*(const unsigned short*)0x4L == 0x00FC)
+                        ? (const long*)0xFC0000L
+                        : (const long*)0xE00000L;
+  return rom[0x2C / 4] == 0x45544F53L;
+}
+
+/* A write to the boot sector is a media change, as TOS's own driver has it:
+   its flopwrt marks the drive changed whenever it writes track 0, side 0,
+   sector 1, whatever the data, and its getbpb reads the boot sector each time
+   it is called. On the read-only disk the write is refused and nothing
+   changes. The boot sector is put back as it was, and Getbpb called, so the
+   run goes on with no change pending. EmuTOS's own driver has a rule of its
+   own - it answers an Rwabs write of the boot sector with E_CHNG, and a
+   Flopwr of it is no change - so under it the case is skipped. */
+static void test_boot_sector_write(void) {
+  static unsigned short original_words[SECTOR / 2];
+  unsigned char* const original = (unsigned char*)original_words;
+  const short* bpb;
+  long result;
+  short xresult;
+  int entries;
+  /* Its Getbpb also ends whatever the cases before left pending. */
+  if (!drive_a_is_emulated() && running_emutos()) {
+    print("[SKIP] Boot sector writes: EmuTOS's own driver does not follow "
+          "TOS's rule\r\n");
+    return;
+  }
+  Rwabs(0, original, 1, 0, DRIVE_A);
+  if (!disk_is_rw) {
+    result = Rwabs(1, original, 1, 0, DRIVE_A);
+    assert_result("A write to the read-only disk's boot sector is refused",
+                  (int)result, EWRPRO);
+    result = Rwabs(0, buffer, 1, 0, DRIVE_A);
+    assert_result("And the disk has not changed", (int)result, 0);
+    return;
+  }
+  result = Rwabs(1, original, 1, 0, DRIVE_A);
+  assert_result("Rwabs writes the boot sector back as it was", (int)result, 0);
+  assert_result("Mediach then says changed", (int)Mediach(DRIVE_A),
+                MEDIA_CHANGED);
+  result = Rwabs(0, buffer, 1, 0, DRIVE_A);
+  assert_result("And Rwabs answers E_CHNG", (int)result, E_CHNG);
+  Getbpb(DRIVE_A);
+  result = Rwabs(0, buffer, 1, 0, DRIVE_A);
+  assert_result("Until Getbpb", (int)result, 0);
+
+  xresult = Flopwr(original, 0L, DRIVE_A, 1, 0, 0, 1);
+  assert_result("Flopwr writes the boot sector back as it was", xresult, 0);
+  assert_result("Mediach then says changed, too", (int)Mediach(DRIVE_A),
+                MEDIA_CHANGED);
+  Getbpb(DRIVE_A);
+
+  memcpy(buffer, original, SECTOR);
+  entries = buffer[17] | (buffer[18] << 8);
+  entries += SECTOR / 32; /* one more root directory sector */
+  buffer[17] = entries & 0xFF;
+  buffer[18] = entries >> 8;
+  Rwabs(1, buffer, 1, 0, DRIVE_A);
+  bpb = (const short*)Getbpb(DRIVE_A);
+  assert_result("Getbpb answers the boot sector just written: 8 root sectors",
+                bpb != NULL && bpb[3] == 8 && bpb[6] == disk->datrec + 1, TRUE);
+  Rwabs(1, original, 1, 0, DRIVE_A);
+  bpb = (const short*)Getbpb(DRIVE_A);
+  assert_result("And the old one once it is put back",
+                bpb != NULL && bpb[3] == 7 && bpb[6] == disk->datrec, TRUE);
+  result = Rwabs(0, buffer, 1, 0, DRIVE_A);
+  assert_result("With no change left pending", result == 0 &&
+                memcmp(buffer, original, SECTOR) == 0, TRUE);
+}
+
 /* TOS's Flopfmt formats the track, or answers E_WRPRO on a write-protected
    disk. An emulated drive formats nothing - the ROM would format the disk in
    the physical drive instead: a read-only image answers E_WRPRO as TOS does,
@@ -352,8 +432,7 @@ static void test_flopfmt(void) {
   short result;
   int good = 0;
   int first = lba_of(FORMAT_TRACK, 1, 1);
-  int emulated = ((long)Getbpb(DRIVE_A) & 0xFF0000L) == 0xFA0000L;
-  if (disk_is_rw && !emulated) {
+  if (disk_is_rw && !drive_a_is_emulated()) {
     print("[SKIP] Flopfmt on the writable disk: TOS's driver would format "
           "it\r\n");
     return;
@@ -733,6 +812,7 @@ int run_floppy_tests(void) {
     test_rwabs_write();
     test_flopwr();
     test_flopfmt();
+    test_boot_sector_write();
     test_create_file();
     test_leave_a_sector_written();
 

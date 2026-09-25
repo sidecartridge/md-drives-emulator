@@ -440,9 +440,9 @@ static inline uint16_t floppyReadLe16(const BYTE *buffer, size_t offset) {
 // tracks of 9 to 12 sectors make the file of, else the boot sector's if 5 to
 // 48, else what 80 tracks leave. Menu disks with a one-sided file system on a
 // two-sided disk are why: their boot sector says one side.
-static void floppyPhysicalGeometry(uint16_t bootSpt, uint16_t bootSides,
-                                   uint16_t bootTotal, uint32_t imageBytes,
-                                   uint16_t *spt, uint16_t *sides) {
+static void __not_in_flash_func(floppyPhysicalGeometry)(
+    uint16_t bootSpt, uint16_t bootSides, uint16_t bootTotal,
+    uint32_t imageBytes, uint16_t *spt, uint16_t *sides) {
   uint32_t total = imageBytes / FLOPPY_SECTOR_SIZE;
   *spt = bootSpt;
   *sides = bootSides;
@@ -1455,6 +1455,24 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       floppyMarkWriteDirty((uint8_t)diskNum);
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);
+      // A new boot sector is a new disk, as TOS's own driver has it: its
+      // flopwrt marks the drive changed when it writes track 0, side 0,
+      // sector 1, and its getbpb reads the boot sector on every call. The BPB
+      // is rebuilt from what was written and the change raised before the
+      // answer, so the ST's next Mediach or Rwabs tells GEMDOS to read the
+      // disk again - after a Disk Copy onto this drive it kept the old disk's
+      // FAT and wrote it over the copy.
+      if (imageSector == 0) {
+        FloppyDrive drive = (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B;
+        BPBData *bpb = floppyGetBPBData(drive);
+        if (createBPB(fobjTmp, bpb) == FR_OK) {
+          memcpy((void *)(memorySharedAddress + ((drive == FLOPPY_DRIVE_A)
+                                                     ? FLOPPYEMUL_BPB_DATA_A
+                                                     : FLOPPYEMUL_BPB_DATA_B)),
+                 bpb, sizeof(BPBData));
+        }
+        floppySetMediaChange(drive, FLOPPY_MEDIA_CHANGED);
+      }
       floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
