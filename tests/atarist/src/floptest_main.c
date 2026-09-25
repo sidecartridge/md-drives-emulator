@@ -27,6 +27,10 @@ static int run(void) {
         running_from_auto() ? "the AUTO folder" : "the desktop",
         'A' + booted_from_drive());
   print_tos_version();
+  /* The physical drives TOS counted at boot (its hdv_boot recounts them after
+     the cartridge has started): with one, TOS itself serves B: from it. */
+  print("_nflops %d, _drvbits %08lx\r\n", *(const short*)0x4A6L,
+        *(const long*)0x4C2L);
 
   BorrowedState borrowed;
   state_save(&borrowed);

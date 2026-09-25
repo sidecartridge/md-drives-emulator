@@ -145,6 +145,8 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 
 Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks. The desktop's **Format** does not work on an emulated drive either: the emulator answers that the disk cannot be formatted (write protected, for a read-only `.ST` image), and the disk in the computer's own drive is never touched.
 
+On a computer with a single floppy drive, that drive stays usable as **B:** while **A:** is emulated: TOS treats a single drive as both A: and B: (it may ask you to insert disk B the first time), and A: is now the emulated one. The desktop's **Disk Copy** can then copy a real disk from B: onto an emulated A: whose image has the same shape: a 360 KB image for a single-sided disk, 720 KB for a double-sided one.
+
 #### Runtime floppy A image cycling
 
 Floppy drive **A:** can keep a persistent list of up to **10 images**:
