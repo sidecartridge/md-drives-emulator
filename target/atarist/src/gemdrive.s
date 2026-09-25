@@ -406,13 +406,10 @@ gemdrive_trap:
 exec_trapped_handler:
     btst #5, (sp)                         ; Check if called from user mode
     bne.s .gd_super
-    move.l usp, a0                        ; user mode: the call is on its stack
-    subq.l #6, a0                         ; where the handlers expect it
-    tst.w _longframe.w
-    beq.s .gd_user_call
-    addq.w #2, a0
-.gd_user_call:
-    move.w 6(a0), d0                      ; get GEMDOS opcode number
+    ; User mode: the call is on the user stack as the caller left it. A 68010
+    ; or later puts its longer frame on the supervisor stack only.
+    move.l usp, a0
+    move.w (a0), d0                       ; get GEMDOS opcode number
     bra.s .gd_lookup
 .gd_super:
     move.w 6(sp), d0                      ; the opcode, after SR and PC
@@ -533,7 +530,8 @@ exec_trapped_handler:
     btst #5, (a0)
     bne.s .gd_args
     move.l usp, a0                        ; user mode: the call on its own stack,
-    subq.l #6, a0                         ; where the handlers expect it
+    subq.l #6, a0                         ; where the handlers expect it; no frame
+    bra.s .gd_go                          ; word there, whatever the CPU
 .gd_args:
     tst.w _longframe.w
     beq.s .gd_go

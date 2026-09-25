@@ -303,6 +303,7 @@ _not_user_mode:
 _user_mode:
     move.l usp,a0                          ; if user mode, correct stack pointer
     subq.l #6,a0
+    bra.s _notlong                         ; a longer frame is on the supervisor stack only
 ;
 ; This code checks if the CPU is a 68000 or not
 ;
@@ -473,6 +474,7 @@ bios_trap:
     bne.s .bt_cpu
     move.l usp, a0
     subq.l #6, a0
+    bra.s .bt_call                      ; no frame word on the user stack
 .bt_cpu:
     tst.w _longframe.w
     beq.s .bt_call
