@@ -193,6 +193,29 @@ or a one-sided file system on a two-sided disk, the shape of many menu disks - a
 run; the rules for what every sector holds are in its docstring and in `floppy_tests.c`, and the
 two must agree.
 
+## Test harnesses on the hardware: `hardware_tests.py`
+
+Makes a whole FLOPTEST or FSTESTS run on the ST, with the device in its setup menu and the card
+on USB, and keeps the run's log:
+
+```bash
+tools/dev/hardware_tests.py --harness floptest --disk rw     # rw, ro, rw-hd, ro-hd, ro-ss
+tools/dev/hardware_tests.py --harness fstests
+```
+
+It reads the GEMDRIVE and floppy folders from the setup screen, puts the harness in the GEMDRIVE
+folder's `AUTO` as `<HARNESS>.PRG` and takes the other one out (whichever finishes first restarts
+the device), strips the `._` files macOS leaves, and for FLOPTEST makes the disk pair fresh with
+`make_floppy_image.py`, puts the disk in drive A and the other one of the pair in slot 2, and arms
+the read failure the harness checks (`swd.py app floppy_fail_read 1320`). Then it ejects the card
+and checks it is gone, presses `[E]`, presses SELECT when the console shows FLOPTEST reading the
+sector that asks for it, and waits for the harness to restart the device and the card to come
+back. The run's section of the log goes to `tools/dev/logs/<harness>-hw-<name>.txt` (`--name`,
+default the TOS the run reports and the disk), with a summary, and a writable disk is checked with
+`check-rw`. The harness also reboots the ST into the setup menu, so runs follow each other with no
+hands. It needs a debug build, `console.py watch` running, GEMDRIVE on as C:, and harnesses built
+with file logging.
+
 ## SELECT regression checks: `select_harness.py`
 
 Presses SELECT through `swd.py select` and reads the firmware's own state over SWD (app state,
