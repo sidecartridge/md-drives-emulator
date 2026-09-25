@@ -210,6 +210,7 @@ trace_rebind_decision macro
 acsi_start:
     cmp.l #$FFFFFFFF, (ACSIEMUL_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     bne acsi_exit_graciously
+    bsr detect_hw                   ; the machine, for the Mega STE entries below
 
     move.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_PUN_INFO_PTR * 4)), d0
     beq.s .acsi_start_skip_pun_ptr
@@ -239,16 +240,16 @@ install_hdv_hooks:
     cmp.l #acsi_hdv_init, d0
     bne.s .check_saved_vectors
     move.l _hdv_bpb.w, d0
-    cmp.l #acsi_hdv_bpb, d0
+    cmp.l #acsi_bpb_entry, d0
     bne.s .check_saved_vectors
     move.l _hdv_rw.w, d0
-    cmp.l #acsi_hdv_rw, d0
+    cmp.l #acsi_rw_entry, d0
     bne.s .check_saved_vectors
     move.l _hdv_boot.w, d0
     cmp.l #acsi_hdv_boot, d0
     bne.s .check_saved_vectors
     move.l _hdv_mediach.w, d0
-    cmp.l #acsi_hdv_mediach, d0
+    cmp.l #acsi_mediach_entry, d0
     bne.s .check_saved_vectors
     set_shared_var_long SVAR_HOOKS_INSTALLED, #1
     rts
@@ -264,12 +265,12 @@ install_hdv_hooks:
     set_shared_var_long SVAR_OLD_HDV_INIT, d0
 .saved_init:
     move.l _hdv_bpb.w, d0
-    cmp.l #acsi_hdv_bpb, d0
+    cmp.l #acsi_bpb_entry, d0
     beq.s .saved_bpb
     set_shared_var_long SVAR_OLD_HDV_BPB, d0
 .saved_bpb:
     move.l _hdv_rw.w, d0
-    cmp.l #acsi_hdv_rw, d0
+    cmp.l #acsi_rw_entry, d0
     beq.s .saved_rw
     set_shared_var_long SVAR_OLD_HDV_RW, d0
 .saved_rw:
@@ -279,19 +280,52 @@ install_hdv_hooks:
     set_shared_var_long SVAR_OLD_HDV_BOOT, d0
 .saved_boot:
     move.l _hdv_mediach.w, d0
-    cmp.l #acsi_hdv_mediach, d0
+    cmp.l #acsi_mediach_entry, d0
     beq.s .patch_vectors
     set_shared_var_long SVAR_OLD_HDV_MEDIACH, d0
 
 .patch_vectors:
     move.l #acsi_hdv_init, _hdv_init.w
-    move.l #acsi_hdv_bpb, _hdv_bpb.w
-    move.l #acsi_hdv_rw, _hdv_rw.w
+    move.l #acsi_bpb_entry, _hdv_bpb.w
+    move.l #acsi_rw_entry, _hdv_rw.w
     move.l #acsi_hdv_boot, _hdv_boot.w
-    move.l #acsi_hdv_mediach, _hdv_mediach.w
+    move.l #acsi_mediach_entry, _hdv_mediach.w
 
     set_shared_var_long SVAR_HOOKS_INSTALLED, #1
     rts
+
+; A Mega STE's cache must be off while a disk vector talks to the cartridge
+; (megaste_cache_off in sidecart_macros.s). The ACSI hooks read their arguments
+; from the stack, so on a Mega STE the vector goes to an entry that keeps the
+; setting in a word, pushes the 16 bytes of arguments again - Rwabs's, the
+; longest - and calls the hook, which finds the call as it came. A hook that
+; passes a call on calls the vector before it the same way, and it comes back
+; here. Every register goes through as it was. hdv_init and hdv_boot run while
+; the cartridge starts, when the cache is off already.
+; \1: the hook
+acsi_megaste_entry  macro
+                    cmp.l #COOKIE_JAR_MEGASTE, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+                    bne \1
+                    subq.l #2, sp
+                    move.b MEGASTE_SPEED_CACHE_REG.w, (sp)
+                    bclr #0, MEGASTE_SPEED_CACHE_REG.w
+                    move.l 18(sp), -(sp)            ; four times: the next long up
+                    move.l 18(sp), -(sp)            ; is at 18(sp) again after each
+                    move.l 18(sp), -(sp)
+                    move.l 18(sp), -(sp)
+                    jsr \1
+                    lea 16(sp), sp
+                    move.b (sp), MEGASTE_SPEED_CACHE_REG.w
+                    addq.l #2, sp
+                    rts
+                    endm
+
+acsi_bpb_entry:
+    acsi_megaste_entry acsi_hdv_bpb
+acsi_rw_entry:
+    acsi_megaste_entry acsi_hdv_rw
+acsi_mediach_entry:
+    acsi_megaste_entry acsi_hdv_mediach
 
 acsi_hdv_init:
     trace_hook_none DEBUG_HDV_INIT

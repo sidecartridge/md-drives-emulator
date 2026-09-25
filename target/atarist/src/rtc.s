@@ -60,9 +60,6 @@ rom_function:
     tst.l (RTCEMUL_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     beq _exit_graciouslly ; If the RTC emulation is not enabled
 
-; Disable the MegaSTE cache and 16Mhz
-    jsr set_8mhz_megaste
-
 ; A little delay to let the rp2040 breathe
 ;	wait_sec
 
@@ -161,7 +158,7 @@ _notlong:
     cmp.w #23,6(a0)                 ; is it XBIOS call 23 / getdatetime?
     beq.s _getdatetime              ; if yes, go to our own routine
     cmp.w #22,6(a0)                 ; is it XBIOS call 22 / setdatetime?
-    beq.s _setdatetime              ; if yes, go to our own routine:
+    beq _setdatetime                ; if yes, go to our own routine:
     move.l RTCEMUL_OLD_XBIOS, -(sp) ; if not, continue with XBIOS call
     rts 
 
@@ -174,9 +171,13 @@ _getdatetime:
 ;    bne.s _bypass_command
     ; We need to save the current get time function address
     movem.l d3-d4/a0, -(sp)
+    subq.l #2, sp                    ; a Mega STE's setting while the RP is told
+    megaste_cache_off (sp)
     move.l #SVAR_GET_TIME_ADDR, d3   ; D3 Variable index
     move.l 2(a0), d4                   ; D4 Variable value
     send_sync CMD_SET_SHARED_VAR, 8
+    megaste_cache_back (sp)
+    addq.l #2, sp
     movem.l (sp)+, d3-d4/a0
 _bypass_command:
     move.l #_getdatetime_fix, 2(a0)

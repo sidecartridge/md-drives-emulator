@@ -151,6 +151,16 @@ check_keys			macro
 
 					endm
 
+; The Mega STE's setting as megaste_take found it, and its word off the stack.
+; This runs from the copy in RAM: nothing PC-relative outside it.
+megaste_hand_back	macro
+					tst.b (sp)
+					beq.s .\@megaste_none
+					move.b 1(sp), MEGASTE_SPEED_CACHE_REG.w
+.\@megaste_none:
+					addq.l #2, sp
+					endm
+
 check_commands		macro
 					move.l (FRAMEBUFFER_ADDR + FRAMEBUFFER_SIZE), d6	; Store in the D6 register the remote command value
 					cmp.l #CMD_RESET, d6		; Check if the command is a reset
@@ -189,8 +199,11 @@ pre_auto:
 	wait_sec
 	wait_sec
 
-; Disable the MegaSTE cache and 16Mhz
-    jsr set_8mhz_megaste
+; On a Mega STE, the cache off until the cartridge hands over to TOS: the setup
+; menu and the drivers' start talk to the cartridge all along. The word under
+; the return address keeps the setting (megaste_take, megaste_hand_back).
+	clr.w -(sp)
+	bsr megaste_take
 
 ; Get the screen memory address to display
 	get_screen_base
@@ -207,6 +220,29 @@ pre_auto:
     move.l (a1)+, (a2)+
     dbf d6, .copy_rom_code
 	jmp (a3)
+
+; The word the caller pushed takes a flag and the Mega STE's speed and cache
+; register, and the cache is turned off; the speed stays. Nothing has written
+; the machine type into the shared variables yet, so the cookie says.
+megaste_take:
+	move.l _p_cookies.w, d0
+	beq.s .megaste_take_done
+	move.l d0, a0
+.megaste_take_next:
+	move.l (a0)+, d0
+	beq.s .megaste_take_done
+	cmp.l #'_MCH', d0
+	beq.s .megaste_take_mch
+	addq.w #4, a0
+	bra.s .megaste_take_next
+.megaste_take_mch:
+	cmp.l #COOKIE_JAR_MEGASTE, (a0)
+	bne.s .megaste_take_done
+	st 4(sp)							; a setting to put back
+	move.b MEGASTE_SPEED_CACHE_REG.w, 5(sp)
+	bclr #0, MEGASTE_SPEED_CACHE_REG.w
+.megaste_take_done:
+	rts
 
 start_rom_code:
 ; We assume the screen memory address is in D0 after the get_screen_base call
@@ -315,6 +351,7 @@ start_rom_code:
 
 boot_gem:
 	; If we get here, continue loading GEM
+	megaste_hand_back
     rts
 
 rom_function:
@@ -350,7 +387,9 @@ rom_function:
 	jsr FLOPPYEMUL		; Call the floppy emulation code
 	jsr GEMDRIVE		; Jump to the GEMDRIVE code
 	jsr ACSIEMUL		; Call the ACSI placeholder code
-	jmp RTCEMUL 		; Call the RTC emulation code
+	jsr RTCEMUL 		; Call the RTC emulation code
+	megaste_hand_back
+	rts
 
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file

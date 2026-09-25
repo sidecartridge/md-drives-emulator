@@ -12,6 +12,30 @@
 ; Take what you need into a kept register before the send, and reload address
 ; registers after it.
 
+; A Mega STE's cache answers the cartridge's reads from copies it made before,
+; and the command channel breaks with it on; the CPU speed does not matter (all
+; measured at 16 MHz). So a driver turns the cache off, which empties it, once
+; it knows a call is its own, and puts the user's setting back when it is done.
+; What it reads to decide - its settings, the reentry lock - does not change
+; while the cache could hold a copy. The machine is the one detect_hw wrote in
+; the first shared variable; on every other machine the register is not there.
+; \1: where the setting is kept, a byte
+megaste_cache_off   macro
+                    cmp.l #COOKIE_JAR_MEGASTE, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+                    bne.s .\@megaste_cache_off_done
+                    move.b MEGASTE_SPEED_CACHE_REG.w, \1
+                    bclr #0, MEGASTE_SPEED_CACHE_REG.w
+.\@megaste_cache_off_done:
+                    endm
+
+; \1: where megaste_cache_off kept the setting
+megaste_cache_back  macro
+                    cmp.l #COOKIE_JAR_MEGASTE, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+                    bne.s .\@megaste_cache_back_done
+                    move.b \1, MEGASTE_SPEED_CACHE_REG.w
+.\@megaste_cache_back_done:
+                    endm
+
 ; Send a synchronous command to the Multi-device passing arguments in the Dx registers
 ; /1 : The command code
 ; /2 : The payload size (even number always)

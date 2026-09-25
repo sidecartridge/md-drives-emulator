@@ -102,9 +102,6 @@ floppy_start:
     tst.l (FLOPPY_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     beq .exit_graciouslly ; If the Floppy emulation is not enabled
 
-; Disable the MegaSTE cache and 16Mhz
-    jsr set_8mhz_megaste
-
 ; A little delay to let the rp2040 breathe
 ;	wait_sec
 
@@ -285,8 +282,8 @@ _dont_boot:
 detect_ms16:
     bsr detect_hw
     move.l d0, d3                       ; hardware type
-    move.l #do_transfer_sidecart, d4    ; Address of the start function to overwrite the speed change
-    move.l #exit_transfer_sidecart, d5  ; Address of the end function to overwrite the speed change
+    move.l #floppy_serve, d4            ; The Mega STE code the RP makes NOPs
+    move.l #floppy_serve_back, d5       ; on every other machine
     send_sync CMD_SAVE_HARDWARE, 12
     rts
 
@@ -348,6 +345,18 @@ _floppy_xbios_call:
     bne.s _floppy_xbios_not_ours    ; neither A: nor B:
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
+    lea _floppy_xbios_b(pc), a1
+    bra.s _floppy_xbios_serve
+
+_floppy_xbios_a:
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
+    beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
+    lea _floppy_xbios_a_go(pc), a1
+_floppy_xbios_serve:
+    bsr floppy_serve
+    rte
+
+_floppy_xbios_b:
     movem.l d3-d7/a3-a6, -(sp)
     move.w #SECTOR_SIZE, d2         ; Sector size
     move.l #$10001, d4              ; B:, and d4.h 1: a sector of the disk as it is
@@ -359,9 +368,7 @@ _floppy_xbios_call:
     mulu secptrack_B,d3             ; times the sectors per track
     bra _floppy_xbios_emulated
 
-_floppy_xbios_a:
-    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
-    beq _floppy_xbios_not_ours      ; an A: that is not emulated is TOS's
+_floppy_xbios_a_go:
     movem.l d3-d7/a3-a6, -(sp)
     move.w #SECTOR_SIZE, d2         ; Sector size
     move.l #$10000, d4              ; A:, and d4.h 1: a sector of the disk as it is
@@ -396,7 +403,7 @@ _floppy_xbios_transfer:
     bsr do_transfer_sidecart   ; d0: 0, or the error, which Floprd and Flopwr
                                ; return as TOS's do, without etv_critic
     movem.l (sp)+,d3-d7/a3-a6
-    rte
+    rts
 
 ; Flopver reads each sector into the start of the caller's buffer and then
 ; leaves there the list of the sectors that failed, ended by a zero word, as
@@ -423,13 +430,13 @@ _floppy_xbios_verified:
     clr.w (a5)                 ; no bad sector
     moveq #0, d0
     movem.l (sp)+,d3-d7/a3-a6
-    rte
+    rts
 _floppy_xbios_verify_failed:
     move.w 2(sp), (a5)+        ; the sector that failed
     clr.w (a5)                 ; and the end of the list
     addq.l #4, sp
     movem.l (sp)+,d3-d7/a3-a6
-    rte                        ; with the error in d0
+    rts                        ; with the error in d0
 
 
 ; Flopfmt on an emulated drive formats nothing. Handed to the ROM it formatted
@@ -448,7 +455,7 @@ _floppy_xbios_format_answered:
     move.l transfer_status, d0
 _floppy_xbios_format_done:
     movem.l (sp)+,d3-d7/a3-a6
-    rte
+    rts
 
 
     ds.b ((4 - (* & 3)) & 3)            ; the XBRA header on a long boundary
@@ -521,13 +528,16 @@ _bios_get_bpb_load_emul_bpp_A:
     beq.s _bios_get_bpb_not_emul_bpp
     ; Emulate A
     move.l #BPB_data_A,d0         ; Load the emulated BPP A
-    bra.s _bios_get_bpb_check
+    bra.s _bios_get_bpb_serve
 
 _bios_get_bpb_load_emul_bpp_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_get_bpb_not_emul_bpp
     move.l #BPB_data_B,d0         ; Load the emulated BPP B
+_bios_get_bpb_serve:
+    lea _bios_get_bpb_check(pc), a1
+    bra floppy_serve
 ; No BPB, as TOS answers, for a boot sector whose sector size is not positive
 ; or whose cluster size is 0: a disk with no file system on it, whose numbers
 ; GEMDOS would otherwise divide by.
@@ -580,13 +590,19 @@ _bios_mediach_changed_A:
     ; Test Drive A
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_mediach_continue
-    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)),d0
-    rts
+    lea _bios_mediach_read_A(pc), a1
+    bra floppy_serve
 
 _bios_mediach_changed_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_mediach_continue
+    lea _bios_mediach_read_B(pc), a1
+    bra floppy_serve
+_bios_mediach_read_A:
+    move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_A * 4)),d0
+    rts
+_bios_mediach_read_B:
     move.l (FLOPPY_SHARED_VARIABLES + (SVAR_MEDIA_CHANGED_B * 4)),d0
     rts
 
@@ -613,12 +629,15 @@ _bios_rwabs_a:
     btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_rwabs_continue
     moveq #0, d2               ; Use A:
-    bra.s _bios_rwabs_emulated
+    bra.s _bios_rwabs_serve
 _bios_rwabs_b:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
     beq.s _bios_rwabs_continue
     moveq #1, d2               ; Use B:
+_bios_rwabs_serve:
+    lea _bios_rwabs_emulated(pc), a1
+    bra floppy_serve
 ; As TOS's floppy Rwabs: a NULL buffer sets the drive's media-change state to
 ; the count, and modes 0 and 1 answer E_CHNG on a changed disk without a
 ; transfer, so that GEMDOS logs the drive in again - its Getbpb ends the change.
@@ -712,11 +731,6 @@ set_media_change:
 ; Output registers:
 ;  none
 do_transfer_sidecart:
-    ; START: WE MUST 'NOP' 16 BYTES HERE
-    move.b MEGASTE_SPEED_CACHE_REG.w, -(sp)        ; Save the old value of cpu speed. 4 BYTES
-	and.b #%00000001,MEGASTE_SPEED_CACHE_REG.w     ; disable MSTe cache. 6 BYTES
-	bclr.b #0,MEGASTE_SPEED_CACHE_REG.w            ; set CPU speed at 8mhz. 6 BYTES
-    ; END: WE MUST 'NOP' 16 BYTES HERE
     tst.w d5                    ; test rwflag
     bne write_sidecart          ; if not, write
 read_sidecart:
@@ -726,9 +740,22 @@ write_sidecart:
     bsr.s write_sectors_from_sidecart
 
 exit_transfer_sidecart:
-    ; START: WE MUST 'NOP' 4 BYTES HERE
-    move.b (sp)+, MEGASTE_SPEED_CACHE_REG.w   ; Restore the old value of cpu speed. 4 BYTES
-    ; END: WE MUST 'NOP' 4 BYTES HERE
+    rts
+
+; Serves a call - the code at a1, which returns with rts - with the Mega STE's
+; cache off, and puts the user's setting back after; the speed stays (see
+; megaste_cache_off in sidecart_macros.s). a0 and the data registers reach it as
+; they are. On every other machine, where the register is not there, the RP
+; makes the first 16 bytes and the 4 at floppy_serve_back NOPs (detect_ms16).
+floppy_serve:
+    move.b MEGASTE_SPEED_CACHE_REG.w, -(sp)     ; 4 bytes
+    bclr #0, MEGASTE_SPEED_CACHE_REG.w          ; 6 bytes
+    nop                                         ; 6 bytes
+    nop
+    nop
+    jsr (a1)
+floppy_serve_back:
+    move.b (sp)+, MEGASTE_SPEED_CACHE_REG.w     ; 4 bytes
     rts
 
 ; Read sectors from the sidecart

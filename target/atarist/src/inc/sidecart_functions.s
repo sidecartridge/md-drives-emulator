@@ -4,7 +4,7 @@
 _p_cookies                              equ $5a0    ; pointer to the system Cookie-Jar
 
 COOKIE_JAR_MEGASTE                      equ $00010010 ; Mega STE computer
-MEGASTE_SPEED_CACHE_REG                 equ $FFFF8E21 ; Address of the registry to change speed and cache in the MegaSTE
+MEGASTE_SPEED_CACHE_REG                 equ $FFFF8E21 ; Mega STE: bit 0 the cache, bit 1 16 MHz (no cache at 8 MHz)
 SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE   equ 16      ; Size of the shared variables for the shared functions
 SHARED_VARIABLE_HARDWARE_TYPE           equ 0       ; Hardware type of the Atari ST computer
 SHARED_VARIABLE_SVERSION                equ 1       ; TOS version from Sversion
@@ -88,38 +88,6 @@ get_tos_version:
     ; GEMDRIVE's Pexec reads as an old GEMDOS and handles with PE_GO + Mfree,
     ; calls that exist on every TOS version. d0 carries the error code.
     tst.w d0
-    rts
-
-; Set the 8Mhz-no cache mode if Mega STE found
-;
-; Inputs:
-;   None
-;
-; Outputs:
-;   d4.l contains the hardware type as stored in the shared variable SHARED_VARIABLE_HARDWARE_TYPE
-set_8mhz_megaste:
-	move.l _p_cookies.w,d0      ; Check the cookie-jar to know what type of machine we are running on
-	beq _old_mch_hardware           ; No cookie-jar, so it's a TOS <= 1.04
-	movea.l d0,a0               ; Get the address of the cookie-jar
-_loop_mch_cookie:
-	move.l (a0)+,d0             ; The cookie jar value is zero, so old hardware again
-	beq _old_mch_hardware
-	cmp.l #'_MCH',d0            ; Is it the _MCH cookie?
-	beq.s _found_mch_cookie         ; Yes, so we found the machine type
-	addq.w #4,a0                ; No, so skip the cookie name
-	bra.s _loop_mch_cookie      ; And try the next cookie
-_found_mch_cookie:
-	move.l	(a0)+,d4            ; Get the cookie value
-	bra.s	_check_megaste
-_old_mch_hardware:
-    clr.l d4                    ; 0x0000	0x0000	Atari ST (260 ST,520 ST,1040 ST,Mega ST,...)
-_check_megaste:
-    cmp.l #COOKIE_JAR_MEGASTE, d4
-    beq.s _set_8mhz_megaste
-    rts
-_set_8mhz_megaste:
-	and.b #%00000001,MEGASTE_SPEED_CACHE_REG.w     ; disable MSTe cache.
-	bclr.b #0,MEGASTE_SPEED_CACHE_REG.w            ; set CPU speed at 8mhz.
     rts
 
 ; Send an sync command to the Sidecart
