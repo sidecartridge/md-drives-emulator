@@ -36,7 +36,7 @@ static int run(void) {
 
   BorrowedState borrowed;
   state_save(&borrowed);
-  run_floppy_tests();
+  run_floppy_tests(FALSE);
   state_restore(&borrowed, "the floppy tests");
 
 #ifdef _LOG
@@ -48,6 +48,17 @@ static int run(void) {
 int main(void) {
   Supexec(&run);
   print_clock("user mode");
+
+  // The floppy tests again from user mode, where programs call from: a hook
+  // that reads a call from the wrong place only there passes the first run.
+  // Their names carry "(user)".
+  print("=== The floppy tests again, from user mode ===\r\n");
+  set_result_prefix("(user) ");
+  BorrowedState borrowed;
+  state_save(&borrowed);
+  run_floppy_tests(TRUE);
+  state_restore(&borrowed, "the floppy tests from user mode");
+  set_result_prefix("");
   end_of_run();
   Pterm(0);
   return 0;

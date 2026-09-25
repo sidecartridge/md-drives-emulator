@@ -114,6 +114,8 @@ void state_restore(const BorrowedState* state, const char* who) {
   Fsetdta(state->dta);
 }
 
+static void print_machine(void);
+
 void print_tos_version(void) {
   /* Which TOS ran this, so a log says on its own where it comes from. The
      version word is at ROM+2, and the ROM is at $FC0000 on a 192 KB machine or
@@ -126,6 +128,7 @@ void print_tos_version(void) {
                                   : (const unsigned short*)0xE00002L;
   print("TOS %x.%02x, GEMDOS %x\r\n", *rom >> 8, *rom & 0xFF,
         (int)Sversion());
+  print_machine();
 }
 
 /* The Mega STE's speed and cache register: bit 0 the cache, bit 1 16 MHz.
@@ -148,6 +151,19 @@ static void print_mega_ste(const char* when) {
   unsigned char control = *MEGA_STE_CONTROL;
   print("Mega STE %s: %s MHz, cache %s ($%02x)\r\n", when,
         (control & 2) ? "16" : "8", (control & 1) ? "on" : "off", control);
+}
+
+/* The machine, from the _MCH cookie: 0 without a cookie jar, as TOS 1.04 and
+   earlier have none. */
+static void print_machine(void) {
+  long mch = machine_cookie();
+  const char* name = mch == 0L            ? "ST"
+                     : mch == 0x00010000L ? "STE"
+                     : mch == 0x00010010L ? "Mega STE"
+                     : mch == 0x00020000L ? "TT"
+                     : mch == 0x00030000L ? "Falcon"
+                                          : "other";
+  print("Machine: %s (_MCH $%08lx)\r\n", name, mch);
 }
 
 void mega_ste_setup(void) {
@@ -230,11 +246,16 @@ void end_of_run(void) {
   }
 }
 
+static const char* result_prefix = "";
+
+void set_result_prefix(const char* prefix) { result_prefix = prefix; }
+
 void assert_result(const char* test, int result, int expected) {
   if (result == expected) {
-    print("[ OK ] %s\r\n", test);
+    print("[ OK ] %s%s\r\n", result_prefix, test);
   } else {
-    print("[FAIL] %s (R: %d, E: %d)\r\n", test, result, expected);
+    print("[FAIL] %s%s (R: %d, E: %d)\r\n", result_prefix, test, result,
+          expected);
   }
 }
 

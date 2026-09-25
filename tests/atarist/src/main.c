@@ -37,6 +37,8 @@ static int suite_selected(const char *name) {
   return FALSE;
 }
 
+static void run_suites(void);
+
 //================================================================
 // Main program
 static int run() {
@@ -75,6 +77,18 @@ static int run() {
   print("Standard handles: %d %d %d %d %d %d\r\n\r\n", uft[0], uft[1], uft[2],
         uft[3], uft[4], uft[5]);
 
+  run_suites();
+
+#ifdef _LOG
+  close_log();
+#endif
+
+  return 0;
+}
+
+// The suites, from whichever mode the caller is in: run() makes them from
+// supervisor mode, main() again from user mode.
+static void run_suites(void) {
   static const struct {
     const char *name;
     void (*fn)(void);
@@ -103,12 +117,6 @@ static int run() {
   if (suite_selected("workdir"))
     run_suite(run_workdir_tests, "the workdir suite");
   if (suite_selected("chksum")) run_suite(run_chksum_tests, "the chksum suite");
-
-#ifdef _LOG
-  close_log();
-#endif
-
-  return 0;
 }
 
 //================================================================
@@ -136,6 +144,15 @@ int main(int argc, char *argv[]) {
   // needed because of direct memory access for reading/writing the palette
   Supexec(&run);
   print_clock("user mode");
+
+  // The suites again from user mode, where programs and the desktop call
+  // from: a hook that reads a call from the wrong place only there - a
+  // 68030's longer exception frame is on the supervisor stack alone - passes
+  // everything above. Their names carry "(user)".
+  print("=== The suites again, from user mode ===\r\n");
+  set_result_prefix("(user) ");
+  run_suites();
+  set_result_prefix("");
 
   // Starts child programs, so it runs here in user mode, not under Supexec.
   if (suite_selected("files") || suite_selected("pterm"))

@@ -424,12 +424,36 @@ void test_file_handle_exhaustion() {
     count++;
   }
   assert_result("Open many file handles", count >= 8, 1);
-  for (int i = 0; i < count; ++i) {
-    Fclose(handles[i]);
+  for (int i = 0; i < count; ++i) Fclose(handles[i]);
+  /* Every name: an Fcreate that fails for want of a handle can leave its file
+     behind (TOS 4.04's own file system does). */
+  for (int i = 0; i < 32; ++i) {
     char fname[16];
     sprintf(fname, "TEMP%02d.TXT", i);
     Fdelete(fname);
   }
+}
+
+/* A command the ST gives up on too early is sent again, and runs twice: an
+   Fopen then leaves a second handle that nothing closes, and a few dozen of
+   them fill the table of open files. On a Falcon every other Fopen ran twice
+   that way, and the run failed from then on with "no more handles". So one
+   file is opened and closed many times, and every open has to succeed. */
+void test_opens_answered_once(void) {
+  int handle = Fcreate("ROUNDTRP.TMP", 0);
+  int failed_at = 0;
+  if (handle >= 0) Fclose(handle);
+  for (int i = 0; i < 200; i++) {
+    handle = Fopen("ROUNDTRP.TMP", 0);
+    if (handle < 0) {
+      failed_at = i + 1;
+      break;
+    }
+    Fclose(handle);
+  }
+  assert_result("200 opens and closes of one file, none left open", failed_at,
+                0);
+  Fdelete("ROUNDTRP.TMP");
 }
 
 void test_fseek_overwrite_middle() {
@@ -1151,6 +1175,8 @@ int run_files_tests(int presskey) {
   test_truncation_on_recreate();
   if (presskey) press_key("");
   test_file_handle_exhaustion();
+  if (presskey) press_key("");
+  test_opens_answered_once();
   if (presskey) press_key("");
   test_partial_read();
   if (presskey) press_key("");

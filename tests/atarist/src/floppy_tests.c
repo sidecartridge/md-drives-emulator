@@ -423,10 +423,20 @@ static int drive_a_is_emulated(void) {
   return ((long)Getbpb(DRIVE_A) & 0xFF0000L) == 0xFA0000L;
 }
 
+static int rom_is_emutos(void);
+
+/* Read once, from supervisor mode: the reset vector is not readable from
+   user mode, and the second pass asks again. */
+static int running_emutos(void) {
+  static int emutos = -1;
+  if (emutos < 0) emutos = rom_is_emutos();
+  return emutos;
+}
+
 /* EmuTOS signs its ROM header with 'ETOS' at +$2C, where Atari's TOS has 0.
    The ROM is found as print_tos_version finds it; the run is in supervisor
    mode. */
-static int running_emutos(void) {
+static int rom_is_emutos(void) {
   const long* rom = (*(const unsigned short*)0x4L == 0x00FC)
                         ? (const long*)0xFC0000L
                         : (const long*)0xE00000L;
@@ -841,11 +851,16 @@ static void test_slot_cycle(void) {
                 TRUE);
 }
 
-int run_floppy_tests(void) {
+int run_floppy_tests(int from_user_mode) {
   long old_critic = (long)Setexc(0x101, (long)critic_returns_error);
 
-  print("=== Floppy: calls that are not floppy calls ===\r\n");
-  test_mfpint_passes_through();
+  /* From user mode: not the cases that read supervisor memory (the MFP and
+     disk vectors), nor the ones the host triggers once (the read failure, the
+     slot cycle), nor the sector left for the host. */
+  if (!from_user_mode) {
+    print("=== Floppy: calls that are not floppy calls ===\r\n");
+    test_mfpint_passes_through();
+  }
 
   print("=== Floppy: the test disk ===\r\n");
   if (!find_the_test_disk()) {
@@ -867,7 +882,7 @@ int run_floppy_tests(void) {
     test_rwabs_across_sides();
     test_rwabs_file_sector();
     test_forced_media_change();
-    test_desktop_esc();
+    if (!from_user_mode) test_desktop_esc();
 
     print("=== Floppy: XBIOS ===\r\n");
     test_floprd_side(0);
@@ -875,7 +890,7 @@ int run_floppy_tests(void) {
     test_floprd_track();
     test_flopver();
     test_count_of_zero();
-    test_read_failure();
+    if (!from_user_mode) test_read_failure();
 
     print("=== Floppy: GEMDOS ===\r\n");
     test_listing();
@@ -890,10 +905,12 @@ int run_floppy_tests(void) {
     test_flopfmt();
     test_boot_sector_write();
     test_create_file();
-    test_leave_a_sector_written();
+    if (!from_user_mode) {
+      test_leave_a_sector_written();
 
-    print("=== Floppy: media change ===\r\n");
-    test_slot_cycle();
+      print("=== Floppy: media change ===\r\n");
+      test_slot_cycle();
+    }
   }
 
   Setexc(0x101, old_critic);

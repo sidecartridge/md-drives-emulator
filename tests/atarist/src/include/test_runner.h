@@ -20,6 +20,11 @@ void close_log(void);
 
 void assert_result(const char* test, int result, int expected);
 
+/* Put before every result's name from now on, so a second pass of the same
+   tests - from user mode - has names of its own in a log and in the matrix.
+   "" for none. */
+void set_result_prefix(const char* prefix);
+
 /* A handle from the drive under test. Which numbers it hands out is its own
    business: GEMDRIVE starts at 16384, Hatari's GEMDOS drive at 64, TOS at 6.
    A test cares that the handle is usable, not what it is called. */
