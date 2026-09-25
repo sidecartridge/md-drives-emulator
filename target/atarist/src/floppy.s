@@ -274,6 +274,7 @@ _checksum_loop:             ; Calculate checksum
 .boot_sector_enabled:
     cmp.w #$1234,d2         ; Compare to the magic numnber
     bne.s _dont_boot        ; If equal, boot at $2000
+    bsr clear_icache_after_copy ; the boot sector has just been read there
     jmp (a0)                
 
 _dont_boot:
@@ -737,6 +738,7 @@ do_transfer_sidecart:
     bne write_sidecart          ; if not, write
 read_sidecart:
     bsr.s read_sectors_from_sidecart
+    bsr clear_icache_after_copy ; what was read may be code
     bra.s exit_transfer_sidecart
 write_sidecart:
     bsr.s write_sectors_from_sidecart

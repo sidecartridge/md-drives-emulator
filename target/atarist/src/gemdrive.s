@@ -965,6 +965,7 @@ exec_trapped_handler:
     move.l d6, d0                        ; Return the number of bytes read
 
 .fread_exit:
+    bsr clear_icache_after_copy          ; what was read may be code: a program's load too
     rts
 
 

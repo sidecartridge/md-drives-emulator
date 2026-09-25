@@ -101,19 +101,23 @@ get_tos_version:
 ; run a mix of them. A command then gave up early and was sent again: on the
 ; Falcon every other GEMDRIVE Fopen and Fcreate reached the RP twice, and
 ; reads came back from the wrong place. Clear it, as TOS's own clrcache does.
-; The machine is detect_hw's; before it has run, and on every other machine,
+; The drivers call it after a read into memory too, where code may have just
+; arrived, as TOS's floppy driver clears its caches after every Rwabs read. The
+; machine is detect_hw's; before it has run, and on every other machine,
 ; nothing is done. A 68000 has no CACR, and is told by _longframe before any
 ; variable is read: the setup menu, in main.s, sends before any driver has
 ; written the machine, and reading the wrong place put a Mega STE into four
-; bombs. Uses d7.
+; bombs. Keeps every register.
 clear_icache_after_copy:
     tst.w $59e.w                        ; _longframe: 0 on a 68000
     beq.s .clear_icache_done
     cmp.l #COOKIE_JAR_TT, DRIVERS_HARDWARE_TYPE_ADDR
     bcs.s .clear_icache_done
+    move.l d7, -(sp)
     dc.w $4e7a, $7002                   ; movec cacr, d7
     or.w #$0008, d7                     ; CI: clear the instruction cache
     dc.w $4e7b, $7002                   ; movec d7, cacr
+    move.l (sp)+, d7
 .clear_icache_done:
     rts
 

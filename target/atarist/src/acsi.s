@@ -618,6 +618,7 @@ acsi_hdv_rw:
     ; Read path
     clr.w d5
     bsr.s acsi_do_transfer_sidecart
+    bsr clear_icache_after_copy              ; what was read may be code
     bra.s .acsi_hdv_rw_done
 .acsi_hdv_rw_write:
     ifne USE_BATCH_WRITE
