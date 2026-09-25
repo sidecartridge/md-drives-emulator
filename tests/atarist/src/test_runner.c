@@ -177,9 +177,10 @@ void mega_ste_setup(void) {
   print_mega_ste("at the start");
 }
 
-void print_clock(void) {
+void print_clock(const char* mode) {
   unsigned long clock = Gettime(); /* the DOS layout, from 1980 */
-  print("Gettime: %04d-%02d-%02d %02d:%02d:%02d\r\n", 1980 + (int)(clock >> 25),
+  print("Gettime from %s: %04d-%02d-%02d %02d:%02d:%02d\r\n", mode,
+        1980 + (int)(clock >> 25),
         (int)(clock >> 21) & 15, (int)(clock >> 16) & 31,
         (int)(clock >> 11) & 31, (int)(clock >> 5) & 63, (int)(clock & 31) * 2);
 }

@@ -60,7 +60,7 @@ static int run() {
         'A' + booted_from_drive());
   print_tos_version();
   mega_ste_setup();
-  print_clock();
+  print_clock("supervisor mode");
 
   // Show the current drive
   print("Current drive: %c:\r\n", 'A' + Dgetdrv());
@@ -135,6 +135,7 @@ int main(int argc, char *argv[]) {
   // switching to supervisor mode and execute run()
   // needed because of direct memory access for reading/writing the palette
   Supexec(&run);
+  print_clock("user mode");
 
   // Starts child programs, so it runs here in user mode, not under Supexec.
   if (suite_selected("files") || suite_selected("pterm"))

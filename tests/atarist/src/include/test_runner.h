@@ -62,9 +62,9 @@ void print_tos_version(void);
    runs at. Supervisor mode. end_of_run() logs it again. */
 void mega_ste_setup(void);
 
-/* The date and time XBIOS Gettime answers, which the RTC emulation hooks.
-   Supervisor mode. */
-void print_clock(void);
+/* The date and time XBIOS Gettime answers, which the RTC emulation hooks,
+   called from the mode the caller is in, which it names. */
+void print_clock(const char* mode);
 
 /* How every harness ends: "All tests completed.", and then, when it runs from
    the AUTO folder, the device restarts and the computer reboots with it;

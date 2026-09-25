@@ -28,7 +28,7 @@ static int run(void) {
         'A' + booted_from_drive());
   print_tos_version();
   mega_ste_setup();
-  print_clock();
+  print_clock("supervisor mode");
   /* The physical drives TOS counted at boot (its hdv_boot recounts them after
      the cartridge has started): with one, TOS itself serves B: from it. */
   print("_nflops %d, _drvbits %08lx\r\n", *(const short*)0x4A6L,
@@ -47,6 +47,7 @@ static int run(void) {
 
 int main(void) {
   Supexec(&run);
+  print_clock("user mode");
   end_of_run();
   Pterm(0);
   return 0;
