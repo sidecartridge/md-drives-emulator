@@ -4,6 +4,7 @@
     tools/dev/hardware_tests.py --harness floptest --disk rw
     tools/dev/hardware_tests.py --harness floptest --disk ro-hd --name 2.06-ro-hd
     tools/dev/hardware_tests.py --harness fstests
+    tools/dev/hardware_tests.py --harness rtctest
 
 One command makes a whole run, with the device in its setup menu and the card
 on USB. The harness goes into the AUTO folder of the GEMDRIVE folder, as
@@ -34,9 +35,21 @@ release one (the settings survive a flash). The images are written under those
 names, and once the card is ejected someone presses [E] on the ST's keyboard:
 the menu's countdown stays stopped once the card has been on USB, and a
 release build takes no keys over SWD. The read-failure and cycle cases skip.
+
+RTCTEST with the RTC on in the menu is also a check of the cartridge's clock:
+the date the harness finds at its start, from supervisor and from user mode,
+Gettime's and GEMDOS's, must be the host's UTC plus the menu's offset, between
+[E] and the card's return, give or take two minutes; a run where it is not
+fails.
+
+--mste 8, 16 or 16c sets a Mega STE's CPU speed and cache for the run: the
+setting goes in MSTE.INF at the root of the GEMDRIVE folder, where the harness
+reads it at its start, and it logs the register at its start and its end.
+Without --mste the file is removed and the machine runs as it booted.
 """
 
 import argparse
+import calendar
 import glob
 import hashlib
 import os
@@ -60,6 +73,8 @@ HARNESSES = {
                  "banner": "Atari ST floppy test suite"},
     "fstests": {"program": "FSTESTS", "log": "LOG.TXT",
                 "banner": "Atari ST GEMDRIVE Test Suite"},
+    "rtctest": {"program": "RTCTEST", "log": "RTCTEST.TXT",
+                "banner": "Atari ST RTC test suite"},
 }
 
 # FLOPTEST's disks: what make_floppy_image.py makes, the file it goes in, and
@@ -178,6 +193,40 @@ def last_run(text, banner):
     return text[start:] if start >= 0 else ""
 
 
+def rtc_setting():
+    """Whether the menu has the RTC on, and its UTC offset in seconds."""
+    lines = screen_lines()
+    on = any(l.startswith("[R]TC Enabled? Yes") for l in lines)
+    offset = 0.0
+    for line in lines:
+        found = re.search(r"\[U\] Offset:(\S+)", line)
+        if found:
+            try:
+                offset = float(found.group(1))
+            except ValueError:
+                pass
+    return on, int(offset * 3600)
+
+
+def check_rtc(text, offset, started, ended):
+    """RTCTEST's dates at its start against the host's clock: lines that fail."""
+    failed = []
+    low, high = started + offset - 120, ended + offset + 120
+    for mode, gettime, tgetdate in re.findall(
+            r"^Gettime at the start from (.+?): (\S+ \S+) .*Tgetdate (\S+ \S+)",
+            text, re.M):
+        for what, value in (("Gettime", gettime), ("Tgetdate", tgetdate)):
+            try:
+                when = calendar.timegm(time.strptime(value, "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                when = None
+            if when is None or not low <= when <= high:
+                failed.append("%s at the start from %s is %s, not the host's %s"
+                              % (what, mode, value, time.strftime(
+                                  "%Y-%m-%d %H:%M", time.gmtime(started + offset))))
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -190,6 +239,8 @@ def main():
                         help="seconds to wait for the run (default 1800)")
     parser.add_argument("--release", action="store_true",
                         help="a release build: the menu is not driven (see above)")
+    parser.add_argument("--mste", choices=("8", "16", "16c"),
+                        help="a Mega STE's speed and cache for the run (see above)")
     args = parser.parse_args()
     harness = HARNESSES[args.harness]
 
@@ -198,6 +249,7 @@ def main():
     if not args.release:
         swd("app", "countdown_stop")
     gemdrive, drive, floppy = menu_folders()
+    rtc_on, rtc_offset = rtc_setting()
     if gemdrive is None or drive != "C":
         sys.exit("GEMDRIVE must be on as C: to start the harness from C:\\AUTO")
 
@@ -215,6 +267,12 @@ def main():
             if os.path.exists(stale):
                 os.remove(stale)
     folders = [auto]
+    setting = os.path.join(CARD, gemdrive.strip("/"), "MSTE.INF")
+    if args.mste:
+        with open(setting, "w") as handle:
+            handle.write(args.mste.upper() + "\r\n")
+    elif os.path.exists(setting):
+        os.remove(setting)
 
     image = None
     if args.harness == "floptest":
@@ -254,10 +312,11 @@ def main():
     before = md5(log)
     os.sync()
     subprocess.run(["diskutil", "eject", CARD], capture_output=True)
-    time.sleep(2)
+    time.sleep(1)
     if os.path.isdir(CARD):
         sys.exit("the card is still mounted: [E] would do nothing")
 
+    started = time.time()
     if args.release:
         print("card ejected: press [E] on the ST's keyboard to start the run")
     else:
@@ -265,26 +324,34 @@ def main():
             threading.Thread(target=press_select_on_cue, daemon=True).start()
         print(swd("key", "e").strip())
 
+    # The card is off USB for the whole run, so once it is back the run is
+    # over, whether the harness finished it or not: take the log then, and say
+    # when it has no end, instead of waiting for one that is not coming.
     deadline = time.time() + args.timeout
     text = ""
+    away = False
     while time.time() < deadline:
-        time.sleep(5)
+        time.sleep(1)
         if not os.path.isdir(CARD):
+            away = True
             mount_card()
             continue
-        time.sleep(3)  # the card has only just come back
-        now = md5(log)
-        if now is not None and now != before:
-            try:
-                with open(log, "r", errors="replace") as handle:
-                    text = last_run(handle.read(), harness["banner"])
-            except OSError:
-                text = ""  # the card went away again while it was read
-            if "All tests completed." in text:
-                break
-        text = ""
+        if not away:
+            continue  # the emulation has not taken the card yet
+        time.sleep(1)  # the card has only just come back
+        if md5(log) == before:
+            sys.exit("the device is back in its setup menu, but the log has "
+                     "no new run")
+        try:
+            with open(log, "r", errors="replace") as handle:
+                text = last_run(handle.read(), harness["banner"])
+        except OSError:
+            continue  # a card just mounted can refuse a read for a moment
+        break
     if not text:
         sys.exit("no new run in the log within %d s" % args.timeout)
+    ended = time.time()
+    finished = "All tests completed." in text
     if not args.release:
         swd("app", "countdown_stop")
 
@@ -302,14 +369,23 @@ def main():
         if line.startswith("TOS ") or line.startswith("Test disk"):
             print(line)
     print("OK %d FAIL %d SKIP %d" % tuple(counts))
+    if not finished:
+        print("the run did not finish: no \"All tests completed.\" in the log")
     for line in text.splitlines():
         if line.startswith("[FAIL]") or line.startswith("[SKIP]"):
             print(line)
+    rtc_failed = []
+    if args.harness == "rtctest" and rtc_on:
+        rtc_failed = check_rtc(text, rtc_offset, started, ended)
+        for line in rtc_failed:
+            print("[FAIL] the RTC: " + line)
+        if not rtc_failed and "Gettime at the start from" in text:
+            print("the RTC: Gettime and Tgetdate at the start are the host's date")
     if image and args.disk.startswith("rw"):
         print(subprocess.run(MAKE_IMAGE + ["check-rw", image], capture_output=True,
                              text=True).stdout.strip())
     print("log: %s" % os.path.relpath(kept, REPO))
-    return 1 if counts[1] else 0
+    return 1 if counts[1] or not finished or rtc_failed else 0
 
 
 if __name__ == "__main__":

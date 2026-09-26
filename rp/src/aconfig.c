@@ -9,6 +9,9 @@ static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_DRIVES_RTC_NTP_PORT, SETTINGS_TYPE_INT, "123"},
     {ACONFIG_PARAM_DRIVES_RTC_TYPE, SETTINGS_TYPE_STRING, "SIDECART"},
     {ACONFIG_PARAM_DRIVES_RTC_UTC_OFFSET, SETTINGS_TYPE_STRING, "0"},
+    // Nothing reads RTC_Y2K_PATCH any more: the RTC decides by itself where
+    // TOS's clock needs its help. It stays here for the same reason as
+    // ACSI_ID below.
     {ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH, SETTINGS_TYPE_BOOL, "true"},
     {ACONFIG_PARAM_DRIVES_RTC_ENABLED, SETTINGS_TYPE_BOOL, "true"},
 

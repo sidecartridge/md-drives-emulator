@@ -32,9 +32,6 @@ static long utcOffsetSeconds = 0;
 static char ntpServerHost[SETTINGS_MAX_VALUE_LENGTH] = {0};
 static int ntpServerPort = NTP_DEFAULT_PORT;
 
-// Y2K patch
-static bool y2kPatchEnabled = false;
-
 static void setUtcOffsetSeconds(long offset) { utcOffsetSeconds = offset; }
 
 static long getUtcOffsetSeconds() { return utcOffsetSeconds; }
@@ -356,33 +353,35 @@ int rtc_queryNTPTime() {
 // Function to convert a binary number to BCD format
 static uint8_t to_bcd(uint8_t val) { return ((val / 10) << 4) | (val % 10); }
 
-// Function to add two BCD values
-static uint8_t add_bcd(uint8_t bcd1, uint8_t bcd2) {
-  uint8_t low_nibble = (bcd1 & 0x0F) + (bcd2 & 0x0F);
-  uint8_t high_nibble = (bcd1 & 0xF0) + (bcd2 & 0xF0);
-
-  if (low_nibble > 9) {
-    low_nibble += 6;
-  }
-
-  high_nibble += (low_nibble & 0xF0);  // Add carry to high nibble
-  low_nibble &= 0x0F;                  // Keep only the low nibble
-
-  if ((high_nibble & 0x1F0) > 0x90) {
-    high_nibble += 0x60;
-  }
-
-  return (high_nibble & 0xF0) | (low_nibble & 0x0F);
+// Day of the week, Sunday 0, as the RP2040's RTC wants it
+static int8_t day_of_week(int year, int month, int day) {
+  static const int offsets[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+  if (month < 3) year -= 1;
+  return (int8_t)((year + year / 4 - year / 100 + year / 400 +
+                   offsets[month - 1] + day) %
+                  7);
 }
+
+// The RP's clock, for the ST: the IKBD's six bytes and the DOS date and time,
+// and whether the clock has been set at all. The IKBD gets the plain two-digit
+// year, as EmuTOS keeps it: TOS 1.00-2.06 write a year from 2000 as a byte the
+// IKBD refuses, so where TOS reads the IKBD the ST answers Gettime from this
+// clock instead (rtc.s).
 static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
                                  uint16_t rtcemul_datetime_bcd_idx,
-                                 uint16_t rtcemul_y2k_patch_idx,
-                                 uint16_t rtcemul_datetime_msdos_idx,
-                                 uint16_t gemdos_version, bool y2k_patch) {
+                                 uint16_t rtcemul_clock_set_idx,
+                                 uint16_t rtcemul_datetime_msdos_idx) {
   uint8_t *rtc_time_ptr =
       (uint8_t *)(mem_shared_addr + rtcemul_datetime_bcd_idx);
-  DPRINTF("GEMDOS version: %x\n", gemdos_version);
-  rtc_get_datetime(&rtcTime);
+  // Not running: NTP did not answer, and rtc_queryNTPTime() starts the clock
+  // afresh on every try.
+  bool clockSet = rtc_running() && rtc_get_datetime(&rtcTime);
+  WRITE_LONGWORD_RAW(mem_shared_addr, rtcemul_clock_set_idx,
+                     clockSet ? 0xFFFFFFFF : 0);
+  if (!clockSet) {
+    DPRINTF("RP2040 RTC not set\n");
+    return;
+  }
 
   DPRINTF("RP2040 RTC set to: %02d/%02d/%04d %02d:%02d:%02d UTC+0\n",
           rtcTime.day, rtcTime.month, rtcTime.year, rtcTime.hour, rtcTime.min,
@@ -399,20 +398,7 @@ static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
 
   // Change order for the endianess
   rtc_time_ptr[1] = 0x1b;
-
-  // If negative number, it is EmuTOS
-  if ((gemdos_version >= 0) && (y2k_patch)) {
-    DPRINTF("Applying Y2K fix in the date\n");
-    rtc_time_ptr[0] =
-        add_bcd(to_bcd((rtcTime.year % 100)),
-                to_bcd((2000 - 1980) + (80 - 30)));  // Fix Y2K issue
-  } else {
-    DPRINTF("Not applying Y2K fix in the date\n");
-    rtc_time_ptr[0] =
-        to_bcd(rtcTime.year % 100);  // EmuTOS already handles the Y2K issue
-    // If the TOS is EmuTOS, then we disable the Y2K fix
-    WRITE_LONGWORD_RAW(mem_shared_addr, rtcemul_y2k_patch_idx, 0);
-  }
+  rtc_time_ptr[0] = to_bcd(rtcTime.year % 100);
   rtc_time_ptr[3] = to_bcd(rtcTime.month);
   rtc_time_ptr[2] = to_bcd(rtcTime.day);
   rtc_time_ptr[5] = to_bcd(rtcTime.hour);
@@ -441,8 +427,6 @@ void rtc_initf() {
       memorySharedAddress + RTCEMUL_RANDOM_TOKEN_SEED_OFFSET;
 
   SET_SHARED_PRIVATE_VAR(RTCEMUL_SVAR_ENABLED, 0, memorySharedAddress,
-                         RTCEMUL_SHARED_VARIABLES_OFFSET);
-  SET_SHARED_PRIVATE_VAR(RTCEMUL_SVAR_GET_TIME_ADDR, 0, memorySharedAddress,
                          RTCEMUL_SHARED_VARIABLES_OFFSET);
 
   // RTC type
@@ -487,33 +471,9 @@ void rtc_initf() {
   DPRINTF("RTC type: %d\n", rtcTypeVar);
   // Set the RTC type in the shared memory
 
-  // Y2K patch command
-  SettingsConfigEntry *y2kPatch = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
-
-  if (y2kPatch != NULL && y2kPatch->value != NULL &&
-      y2kPatch->value[0] != '\0') {
-    DPRINTF("Y2K patch value: %s\n", y2kPatch->value);
-    char firstChar = y2kPatch->value[0];
-    y2kPatchEnabled =
-        (firstChar == 't' || firstChar == 'T' || firstChar == 'y' ||
-         firstChar == 'Y' || firstChar == '1');
-
-    WRITE_LONGWORD_RAW(memorySharedAddress, RTCEMUL_Y2K_PATCH,
-                       y2kPatchEnabled ? 0xFFFFFFFF : 0);
-  } else {
-    DPRINTF("Y2K patch not found in the settings or is empty.\n");
-    WRITE_LONGWORD_RAW(memorySharedAddress, RTCEMUL_Y2K_PATCH, 0);
-  }
-
   // Set the RTC time for the Atari ST to read
-  uint32_t gemdos_version = 0;
-  GET_SHARED_VAR(RTCEMUL_SVERSION, &gemdos_version, memorySharedAddress,
-                 RTCEMUL_SHARED_VARIABLES_OFFSET);
-  DPRINTF("Shared variable SVERSION: %x\n", gemdos_version);
   set_ikb_datetime_msg(memorySharedAddress, RTCEMUL_DATETIME_BCD,
-                       RTCEMUL_Y2K_PATCH, RTCEMUL_DATETIME_MSDOS,
-                       (int16_t)gemdos_version, y2kPatchEnabled);
+                       RTCEMUL_CLOCK_SET, RTCEMUL_DATETIME_MSDOS);
 
   if (memoryRandomTokenAddress != 0) {
     uint32_t randomToken = rand();  // Generate a random 32-bit value
@@ -554,13 +514,8 @@ void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
   switch (lastProtocol->command_id) {
     case RTCEMUL_READ_TIME: {
       // Set the RTC time for the Atari ST to read
-      uint32_t gemdos_version = 0;
-      GET_SHARED_VAR(RTCEMUL_SVERSION, &gemdos_version, memorySharedAddress,
-                     RTCEMUL_SHARED_VARIABLES_OFFSET);
-      DPRINTF("Shared variable SVERSION: %x\n", gemdos_version);
       set_ikb_datetime_msg(memorySharedAddress, RTCEMUL_DATETIME_BCD,
-                           RTCEMUL_Y2K_PATCH, RTCEMUL_DATETIME_MSDOS,
-                           (int16_t)gemdos_version, y2kPatchEnabled);
+                           RTCEMUL_CLOCK_SET, RTCEMUL_DATETIME_MSDOS);
       DPRINTF("RTCEMUL_READ_TIME received. Setting the time\n");
       break;
     }
@@ -590,6 +545,30 @@ void __not_in_flash_func(rtc_loop)(TransmissionProtocol *lastProtocol,
                      RTCEMUL_SHARED_VARIABLES_OFFSET);
       DPRINTF("RTCEMUL_SET_SHARED_VAR received. Setting %d to %x\n",
               sharedVarIdx, sharedVarValue);
+      break;
+    }
+    case RTCEMUL_SET_TIME: {
+      // A Settime where the ST answers Gettime from this clock: the date and
+      // time in the XBIOS's DOS layout, date in the high word
+      uint16_t *payload = ((uint16_t *)(lastProtocol)->payload);
+      // Jump the random token
+      TPROTO_NEXT32_PAYLOAD_PTR(payload);
+      uint32_t dos = TPROTO_GET_PAYLOAD_PARAM32(payload);
+      datetime_t newTime = {
+          .year = (int16_t)(1980 + (dos >> 25)),
+          .month = (int8_t)((dos >> 21) & 0x0F),
+          .day = (int8_t)((dos >> 16) & 0x1F),
+          .hour = (int8_t)((dos >> 11) & 0x1F),
+          .min = (int8_t)((dos >> 5) & 0x3F),
+          .sec = (int8_t)((dos & 0x1F) * 2),
+      };
+      if (newTime.month >= 1 && newTime.month <= 12) {
+        newTime.dotw = day_of_week(newTime.year, newTime.month, newTime.day);
+      }
+      // rtc_set_datetime refuses what is not a date: the clock stays as it was
+      bool set = rtc_set_datetime(&newTime);
+      DPRINTF("RTCEMUL_SET_TIME received: %08lx, %s\n", (unsigned long)dos,
+              set ? "RP2040 RTC set" : "not a date, RP2040 RTC kept");
       break;
     }
     default:

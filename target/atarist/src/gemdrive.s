@@ -32,9 +32,10 @@ PRG_STRUCT_SIZE         equ 28         ; Size of the GEMDOS structure in the exe
                                        ; 2 bytes: g_absflg
 PRG_MAGIC_NUMBER        equ $601A      ; Magic number of the PRG file
 GD_STACK_SIZE           equ 1024       ; GEMDRIVE's own stack, for the calls it takes
-GD_CALLER_SP            equ 52         ; Where, on it, a handler finds the caller's stack pointer: above
-                                       ; d1-d7/a0-a5 (52 bytes); that stack holds the caller's a6, then its
-                                       ; exception frame
+GD_CALLER_SP            equ 54         ; Where, on it, a handler finds the caller's stack pointer: above
+                                       ; d1-d7/a0-a5 (52 bytes) and GD_MEGASTE's word; that stack holds the
+                                       ; caller's a6, then its exception frame
+GD_MEGASTE              equ 52         ; The Mega STE's speed and cache while the call is served
 
 ROM4_START_ADDR         equ $FA0000 ; ROM4 start address
 ROM3_START_ADDR         equ $FB0000 ; ROM3 start address
@@ -199,7 +200,7 @@ DTA_MAGIC_OFFSET        equ     2
 ; own (see exec_trapped_handler). Don't forget GD_CALLER_SP if you change them
 restore_regs        macro
                     movem.l (sp)+, d1-d7/a0-a5
-                    move.l (sp), sp                      ; the caller's stack, at its a6
+                    move.l 2(sp), sp                     ; past GD_MEGASTE: the caller's stack, at its a6
                     move.l (sp)+, a6
                     endm
 
@@ -219,15 +220,6 @@ return_interrupt_w  macro
 return_interrupt_l  macro
                     move.l \1, d0                        ; Return the error code from the Sidecart
                     return_rte
-                    endm
-
-; Restore the CPU speed and cache in the MegaSTE
-; in d7.b the previous value always
-restore_cpu_cache   macro
-                    cmp.l #COOKIE_JAR_MEGASTE, (GEMDRVEMUL_SHARED_VARIABLES + SHARED_VARIABLE_HARDWARE_TYPE)    ; Check if the computer is a MegaSTE
-                    bne.s .\@restore_cpu_cache_continue
-                    move.b d1, MEGASTE_SPEED_CACHE_REG.w
-.\@restore_cpu_cache_continue:
                     endm
 
 ; Send a synchronous command to the Sidecart setting the reentry flag for the next GEMDOS calls
@@ -285,9 +277,6 @@ detect_emulated_file_handler   macro
 gemdrive_start:
     tst.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_ENABLED * 4))
     beq .exit_graciouslly ; If the GEMDRIVE is not enabled
-
-; Disable the MegaSTE cache and 16Mhz
-    jsr set_8mhz_megaste
 
 ; A little delay to let the rp2040 breathe
 ;	wait_sec
@@ -371,13 +360,7 @@ hdv_default:
 
 ; Get the cookie jar from d0.l as parameter
 save_vectors:
-    cmp.l #COOKIE_JAR_MEGASTE, (GEMDRVEMUL_SHARED_VARIABLES + SHARED_VARIABLE_HARDWARE_TYPE)    ; Check if the computer is a MegaSTE
-    beq.s .save_vectors_megaste      ; If it is a MegaSTE, use the trap with speed and cache change
-    move.l #gemdrive_trap,-(sp)      ; Otherwise, use the standard entry point
-    bra.s .save_vectors_continue
-.save_vectors_megaste:
-    move.l #gemdrive_trap_megaste16,-(sp)
-.save_vectors_continue:
+    move.l #gemdrive_trap,-(sp)
     move.w #VEC_GEMDOS,-(sp)
     move.w #5,-(sp)                     ; Setexc() modify GEMDOS vector and add our trap
     trap #13
@@ -395,21 +378,6 @@ old_handler:
     dc.l 0                                  ; We can't modify this address because it's in ROM, but we can modify it in the RP2040 memory
 
     even
-
-gemdrive_trap_megaste16:
-; Disable the CPU 16Mhz and Cache 
-
-    move.b MEGASTE_SPEED_CACHE_REG.w, d1           ; Save the old value of cpu speed
-    and.b #%00000001,MEGASTE_SPEED_CACHE_REG.w     ; disable MSTe cache
-; 
-; Shortcut in case of reentry (Code repeated for performance reasons)
-;
-    btst #0, GEMDRVEMUL_REENTRY_TRAP    ; Check if the reentry is locked
-    beq.s exec_trapped_handler         ; If the bit is active, we are in a reentry call. We need to exec_old_handler the code
-
-    restore_cpu_cache
-    move.l old_handler,-(sp)            ; Fake a return
-    rts                                 ; to old code.
 
 gemdrive_trap:
 ; 
@@ -438,13 +406,10 @@ gemdrive_trap:
 exec_trapped_handler:
     btst #5, (sp)                         ; Check if called from user mode
     bne.s .gd_super
-    move.l usp, a0                        ; user mode: the call is on its stack
-    subq.l #6, a0                         ; where the handlers expect it
-    tst.w _longframe.w
-    beq.s .gd_user_call
-    addq.w #2, a0
-.gd_user_call:
-    move.w 6(a0), d0                      ; get GEMDOS opcode number
+    ; User mode: the call is on the user stack as the caller left it. A 68010
+    ; or later puts its longer frame on the supervisor stack only.
+    move.l usp, a0
+    move.w (a0), d0                       ; get GEMDOS opcode number
     bra.s .gd_lookup
 .gd_super:
     move.w 6(sp), d0                      ; the opcode, after SR and PC
@@ -556,14 +521,17 @@ exec_trapped_handler:
     move.l (GEMDRVEMUL_SHARED_VARIABLES + (SHARED_VARIABLE_STACK * 4)), a6
     move.l sp, -(a6)                      ; the caller's stack pointer, on ours
     move.l a6, sp
+    subq.l #2, sp                         ; GD_MEGASTE
     movem.l d1-d7/a0-a5, -(sp)
+    megaste_cache_off GD_MEGASTE(sp)      ; a call GEMDRIVE serves: the cache off
     move.l d0, a1                         ; the handler
     move.l GD_CALLER_SP(sp), a0           ; the caller's stack, at its a6
     addq.l #4, a0                         ; its exception frame
     btst #5, (a0)
     bne.s .gd_args
     move.l usp, a0                        ; user mode: the call on its own stack,
-    subq.l #6, a0                         ; where the handlers expect it
+    subq.l #6, a0                         ; where the handlers expect it; no frame
+    bra.s .gd_go                          ; word there, whatever the CPU
 .gd_args:
     tst.w _longframe.w
     beq.s .gd_go
@@ -572,7 +540,6 @@ exec_trapped_handler:
 	jmp (a1)
 
 .exec_old_handler_unsaved:
-	restore_cpu_cache
 	move.l old_handler,-(sp)            ; Fake a return
 	rts                                 ; to old code.
 
@@ -581,14 +548,14 @@ exec_trapped_handler:
 ;    send_sync CMD_SHOW_VECTOR_CALL, 2    ; Send the command to the Sidecart. 2 bytes of payload
 
 .exec_old_handler:
+	megaste_cache_back GD_MEGASTE(sp)
 	restore_regs
-	restore_cpu_cache
 	move.l old_handler,-(sp)            ; Fake a return
 	rts                                 ; to old code.
 
 .gd_return:
+	megaste_cache_back GD_MEGASTE(sp)
 	restore_regs
-	restore_cpu_cache
 	rte
 
 
@@ -998,6 +965,7 @@ exec_trapped_handler:
     move.l d6, d0                        ; Return the number of bytes read
 
 .fread_exit:
+    bsr clear_icache_after_copy          ; what was read may be code: a program's load too
     rts
 
 

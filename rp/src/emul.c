@@ -38,7 +38,6 @@ static void cmdFloppyDriveBEject(const char *arg);
 static void cmdBootEnabled(const char *arg);
 static void cmdXbiosEnabled(const char *arg);
 static void cmdRTCEnabled(const char *arg);
-static void cmdY2KPatch(const char *arg);
 static void cmdPoolfixEnabled(const char *arg);
 static void cmdUTCOffset(const char *arg);
 static void cmdHost(const char *arg);
@@ -66,7 +65,6 @@ static const Command commands[] = {
     {"t", cmdBootEnabled},
     {"s", cmdXbiosEnabled},
     {"r", cmdRTCEnabled},
-    {"y", cmdY2KPatch},
     {"k", cmdPoolfixEnabled},
     {"u", cmdUTCOffset},
     {"h", cmdHost},
@@ -947,15 +945,6 @@ static void __not_in_flash_func(menu)(void) {
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_UTC_OFFSET);
     if (utcOffset != NULL) {
       term_printString(utcOffset->value);
-    } else {
-      term_printString("Not set");
-    }
-    term_printString(" [Y]2K Patch?");
-    // Print the Y2K patch
-    SettingsConfigEntry *y2kPatch = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
-    if (y2kPatch != NULL) {
-      term_printString(isTrue(y2kPatch->value) ? "Y" : "N");
     } else {
       term_printString("Not set");
     }
@@ -1986,22 +1975,6 @@ void cmdPoolfixEnabled(const char *arg) {
   haltCountdown = true;
   menu();
   display_refresh();
-}
-
-void cmdY2KPatch(const char *arg) {
-  SettingsConfigEntry *rtc = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
-  if (isTrue(rtc->value)) {
-    // Y2K patch command
-    SettingsConfigEntry *y2kPatch = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
-    settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH,
-                      !isTrue(y2kPatch->value));
-    settings_save(aconfig_getContext(), true);
-    haltCountdown = true;
-    menu();
-    display_refresh();
-  }
 }
 
 void cmdUTCOffset(const char *arg) {
