@@ -25,13 +25,11 @@ static int run(void) {
         running_from_auto() ? "the AUTO folder" : "the desktop",
         'A' + booted_from_drive());
   print_tos_version();
-  run_rtc_tests();
-
-#ifdef _LOG
-  close_log();
-#endif
+  rtc_report_start("supervisor mode");
   return 0;
 }
+
+static int tests(void) { return run_rtc_tests(); }
 
 // The program itself, as the program-end test starts it.
 static const char* rtctest_program(void) {
@@ -51,6 +49,9 @@ int main(int argc, char* argv[]) {
   if (argc >= 2 && strcasecmp(argv[1], "child") == 0) Pterm(0);
 
   Supexec(&run);
+  // From user mode, where programs call: a hook finds the call elsewhere.
+  rtc_report_start("user mode");
+  Supexec(&tests);
 
   // Starts a program, so it runs here in user mode, not under Supexec.
   print("=== RTC: a program's end ===\r\n");

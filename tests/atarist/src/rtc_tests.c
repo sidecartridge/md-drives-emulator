@@ -225,6 +225,25 @@ long rtc_before_program_end(void) {
 }
 
 static unsigned long start;
+static int start_taken = 0;
+
+/* What the clock says before the probe touches it: with the RTC on, the date
+   the cartridge's module left, from the mode given. The first call keeps it
+   for the end. */
+void rtc_report_start(const char* mode) {
+  unsigned long t = (unsigned long)Gettime();
+  char date[24], dos[24];
+  if (!start_taken) {
+    start = t;
+    start_taken = 1;
+  }
+  format_dos(t, date);
+  format_dos(((unsigned long)(unsigned short)Tgetdate() << 16) |
+                 (unsigned short)Tgettime(),
+             dos);
+  print("Gettime at the start from %s: %s ($%08lx), Tgetdate %s\r\n", mode,
+        date, t, dos);
+}
 
 long rtc_after_program_end(void) {
   report("After a program ended");
@@ -235,11 +254,6 @@ long rtc_after_program_end(void) {
 }
 
 int run_rtc_tests(void) {
-  char date[24];
-  start = (unsigned long)Gettime();
-  format_dos(start, date);
-  print("Gettime at the start: %s ($%08lx)\r\n", date, start);
-
   print("=== RTC: which clock ===\r\n");
   test_which_clock();
   print("=== RTC: Settime and Gettime ===\r\n");

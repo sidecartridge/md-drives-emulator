@@ -36,6 +36,12 @@ names, and once the card is ejected someone presses [E] on the ST's keyboard:
 the menu's countdown stays stopped once the card has been on USB, and a
 release build takes no keys over SWD. The read-failure and cycle cases skip.
 
+RTCTEST with the RTC on in the menu is also a check of the cartridge's clock:
+the date the harness finds at its start, from supervisor and from user mode,
+Gettime's and GEMDOS's, must be the host's UTC plus the menu's offset, between
+[E] and the card's return, give or take two minutes; a run where it is not
+fails.
+
 --mste 8, 16 or 16c sets a Mega STE's CPU speed and cache for the run: the
 setting goes in MSTE.INF at the root of the GEMDRIVE folder, where the harness
 reads it at its start, and it logs the register at its start and its end.
@@ -43,6 +49,7 @@ Without --mste the file is removed and the machine runs as it booted.
 """
 
 import argparse
+import calendar
 import glob
 import hashlib
 import os
@@ -186,6 +193,40 @@ def last_run(text, banner):
     return text[start:] if start >= 0 else ""
 
 
+def rtc_setting():
+    """Whether the menu has the RTC on, and its UTC offset in seconds."""
+    lines = screen_lines()
+    on = any(l.startswith("[R]TC Enabled? Yes") for l in lines)
+    offset = 0.0
+    for line in lines:
+        found = re.search(r"\[U\] Offset:(\S+)", line)
+        if found:
+            try:
+                offset = float(found.group(1))
+            except ValueError:
+                pass
+    return on, int(offset * 3600)
+
+
+def check_rtc(text, offset, started, ended):
+    """RTCTEST's dates at its start against the host's clock: lines that fail."""
+    failed = []
+    low, high = started + offset - 120, ended + offset + 120
+    for mode, gettime, tgetdate in re.findall(
+            r"^Gettime at the start from (.+?): (\S+ \S+) .*Tgetdate (\S+ \S+)",
+            text, re.M):
+        for what, value in (("Gettime", gettime), ("Tgetdate", tgetdate)):
+            try:
+                when = calendar.timegm(time.strptime(value, "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                when = None
+            if when is None or not low <= when <= high:
+                failed.append("%s at the start from %s is %s, not the host's %s"
+                              % (what, mode, value, time.strftime(
+                                  "%Y-%m-%d %H:%M", time.gmtime(started + offset))))
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -208,6 +249,7 @@ def main():
     if not args.release:
         swd("app", "countdown_stop")
     gemdrive, drive, floppy = menu_folders()
+    rtc_on, rtc_offset = rtc_setting()
     if gemdrive is None or drive != "C":
         sys.exit("GEMDRIVE must be on as C: to start the harness from C:\\AUTO")
 
@@ -274,6 +316,7 @@ def main():
     if os.path.isdir(CARD):
         sys.exit("the card is still mounted: [E] would do nothing")
 
+    started = time.time()
     if args.release:
         print("card ejected: press [E] on the ST's keyboard to start the run")
     else:
@@ -307,6 +350,7 @@ def main():
         break
     if not text:
         sys.exit("no new run in the log within %d s" % args.timeout)
+    ended = time.time()
     finished = "All tests completed." in text
     if not args.release:
         swd("app", "countdown_stop")
@@ -330,11 +374,18 @@ def main():
     for line in text.splitlines():
         if line.startswith("[FAIL]") or line.startswith("[SKIP]"):
             print(line)
+    rtc_failed = []
+    if args.harness == "rtctest" and rtc_on:
+        rtc_failed = check_rtc(text, rtc_offset, started, ended)
+        for line in rtc_failed:
+            print("[FAIL] the RTC: " + line)
+        if not rtc_failed and "Gettime at the start from" in text:
+            print("the RTC: Gettime and Tgetdate at the start are the host's date")
     if image and args.disk.startswith("rw"):
         print(subprocess.run(MAKE_IMAGE + ["check-rw", image], capture_output=True,
                              text=True).stdout.strip())
     print("log: %s" % os.path.relpath(kept, REPO))
-    return 1 if counts[1] or not finished else 0
+    return 1 if counts[1] or not finished or rtc_failed else 0
 
 
 if __name__ == "__main__":
