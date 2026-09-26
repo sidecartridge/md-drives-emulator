@@ -177,6 +177,7 @@ one column per platform and TOS. Hardware logs from the card go in as extra colu
 tools/dev/hatari_tests.py                                   # FSTESTS, Hatari's GEMDOS drive
 tools/dev/hatari_tests.py --harness floptest                # FLOPTEST, both disks
 tools/dev/hatari_tests.py --harness floptest --hardware "2.06 rw=FLOPTEST.TXT"
+tools/dev/hatari_tests.py --harness rtctest                 # RTCTEST, every TOS and machine
 ```
 
 Hatari is the reference for what correct means. For FSTESTS that is its GEMDOS drive standing in
@@ -187,6 +188,16 @@ sector the test leaves written. On a machine with a high-density drive (TOS 2.06
 STE) it runs on the 1.44 MB pair as well. Hatari's GEMDOS drive needs TOS 1.04 or later, so 1.00 and 1.02 are
 hardware-only for both harnesses. `--keep DIR` keeps each run's drive and log.
 
+RTCTEST boots from a floppy with the program in its AUTO folder, so it needs no GEMDOS drive and
+runs on TOS 1.00 and 1.02 as well, each TOS on the machines it runs on: a Mega ST, a Mega STE, a TT
+and a Falcon have a clock chip, an ST and an STE only the keyboard processor's clock, and which one
+TOS reads decides everything else. Hatari's keyboard processor keeps its clock as the real one's
+ROM does (it refuses a year byte that is not BCD), but Hatari answers a clock chip with the host's
+time and ignores `Settime`, so on those machines a column says only which clock TOS reads. A
+GEMDOS drive set in your own Hatari configuration is turned off for these runs (Hatari stops
+before TOS 1.04 with one), and TOS 1.00's output, which does not reach Hatari's console, is read
+from the log on the floppy.
+
 `make_floppy_image.py ro|rw|ro-hd|rw-hd|ro-ss FILE` builds FLOPTEST's disk - 720 KB, 1.44 MB,
 or a one-sided file system on a two-sided disk, the shape of many menu disks - and
 `check-rw FILE` checks one after a
@@ -195,12 +206,13 @@ two must agree.
 
 ## Test harnesses on the hardware: `hardware_tests.py`
 
-Makes a whole FLOPTEST or FSTESTS run on the ST, with the device in its setup menu and the card
-on USB, and keeps the run's log:
+Makes a whole FLOPTEST, FSTESTS or RTCTEST run on the ST, with the device in its setup menu and
+the card on USB, and keeps the run's log:
 
 ```bash
 tools/dev/hardware_tests.py --harness floptest --disk rw     # rw, ro, rw-hd, ro-hd, ro-ss
 tools/dev/hardware_tests.py --harness fstests
+tools/dev/hardware_tests.py --harness rtctest
 ```
 
 It reads the GEMDRIVE and floppy folders from the setup screen, puts the harness in the GEMDRIVE
@@ -226,7 +238,7 @@ cycle cases skip.
 
 The card is off USB for the whole run, so the tool takes the log as soon as the card is back -
 checking every second - and says when the run has no end ("the run did not finish") instead of
-waiting for one. Both harnesses run their cases twice, from supervisor mode and then again from
+waiting for one. FSTESTS and FLOPTEST run their cases twice, from supervisor mode and then again from
 user mode, where programs call from; the second pass's names carry `(user) `. FLOPTEST's second
 pass leaves out the cases that read supervisor memory and the ones the host triggers once.
 

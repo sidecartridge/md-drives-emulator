@@ -370,6 +370,19 @@ from the host when the case reads sector 1330 - and checks GEMDOS then reads the
 Its reference is TOS's own floppy driver: `tools/dev/hatari_tests.py --harness floptest` runs it
 under Hatari on both disks and every TOS Hatari can, and puts hardware logs beside those results.
 
+### Clock tests
+
+`RTCTEST.TOS`, built by the same command, measures what the TOS it runs on does with the date:
+which clock XBIOS `Gettime` reads (the keyboard processor's, or the clock chip of a Mega ST, Mega
+STE, TT or Falcon), whether `Settime` then `Gettime` gives each year back, which year bytes the
+keyboard processor keeps, whether `Tsetdate` reaches the clock, how the clock ticks into a new year
+and a leap day, and which date GEMDOS keeps when a program ends. It changes the clock and puts it
+back, near enough, at its end. Run it as `AUTO\RTCTEST.PRG` in the GEMDRIVE folder; it logs to
+`RTCTEST.TXT` on the boot drive. With the RTC off it measures TOS alone, with it on TOS and the
+cartridge's clock. `tools/dev/hatari_tests.py --harness rtctest` runs it under Hatari on every TOS
+from 1.00 to 4.04 and EmuTOS, on each machine that TOS runs on, and `tools/dev/hardware_tests.py
+--harness rtctest` on the hardware.
+
 ## Project docs
 
 - `CLAUDE.md` / `AGENTS.md`: build, architecture, and contributor playbook.

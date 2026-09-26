@@ -8,6 +8,7 @@ BUILD_DIR = ./build
 DIST_DIR = ./dist
 EXE = FSTESTS.TOS
 FLOPTEST_EXE = FLOPTEST.TOS
+RTCTEST_EXE = RTCTEST.TOS
 
 # VASM PARAMETERS
 VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac
@@ -88,11 +89,22 @@ floptest: floptest_main.o floppy_tests.o test_runner.o sidecart.o
 		  $(BUILD_DIR)/sidecart.o \
 		  -o $(BUILD_DIR)/$(FLOPTEST_EXE) $(LINKFLAGS)
 
+# The clock probe: what each TOS does with the date, with the IKBD's clock and
+# with the year bytes the RTC emulation sends.
+rtctest: rtctest_main.o rtc_tests.o test_runner.o sidecart.o
+	$(CC) $(LIBCMINI)/lib/crt0.o \
+		  $(BUILD_DIR)/rtctest_main.o \
+		  $(BUILD_DIR)/rtc_tests.o \
+		  $(BUILD_DIR)/test_runner.o \
+		  $(BUILD_DIR)/sidecart.o \
+		  -o $(BUILD_DIR)/$(RTCTEST_EXE) $(LINKFLAGS)
+
 .PHONY: dist
-dist: main floptest
+dist: main floptest rtctest
 	mkdir -p $(DIST_DIR)
 	cp $(BUILD_DIR)/$(EXE) $(DIST_DIR)
 	cp $(BUILD_DIR)/$(FLOPTEST_EXE) $(DIST_DIR)    
+	cp $(BUILD_DIR)/$(RTCTEST_EXE) $(DIST_DIR)
 
 .PHONY: clean
 clean:

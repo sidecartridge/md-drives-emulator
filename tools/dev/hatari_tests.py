@@ -3,6 +3,7 @@
 
     tools/dev/hatari_tests.py [--tos 1.04 --tos 2.06] [--hardware "1.04=path/LOG.TXT"]
     tools/dev/hatari_tests.py --harness floptest [--hardware "1.04 rw=path/FLOPTEST.TXT"]
+    tools/dev/hatari_tests.py --harness rtctest [--tos 1.00]
 
 Hatari is the reference for what correct means. For FSTESTS it is Hatari's
 GEMDOS drive (--harddrive) standing in for GEMDRIVE. For FLOPTEST it is
@@ -10,7 +11,9 @@ Hatari's floppy drive: an emulated WD1772 read by TOS's own floppy driver, the
 thing our floppy emulation replaces. Each floppy TOS is run twice, on the
 writable disk and on the read-only one, both made fresh by
 make_floppy_image.py, and after the writable run the image is checked for the
-sector the test leaves written.
+sector the test leaves written. RTCTEST is TOS's own clock: it boots from a
+floppy on every TOS, 1.00 and 1.02 included, as each machine TOS runs on, since
+the machine decides which clock TOS reads.
 
 A run needs no hands: the harness writes its log into the GEMDOS drive
 directory, which is a host directory, so the run ends as soon as the log says
@@ -54,7 +57,38 @@ HARNESSES = OrderedDict([
                   "banner": "Atari ST floppy test suite",
                   "disks": ("rw", "ro", "rw-hd", "ro-hd", "ro-ss"),
                   "report": "floptest-matrix.md"}),
+    # The clock: it boots from a floppy's AUTO folder, so it runs on every TOS,
+    # 1.00 and 1.02 included, and its output is read from Hatari's console or
+    # its log on the floppy. The machine decides which clock TOS reads, so it
+    # runs on each.
+    ("rtctest", {"program": "RTCTEST.TOS",
+                 "copies": ("RTCTEST.TOS",),
+                 "log": "RTCTEST.TXT",
+                 "banner": "Atari ST RTC test suite",
+                 "disks": (None,),
+                 "report": "rtctest-matrix.md",
+                 "boot": "floppy"}),
 ])
+
+# rtctest: TOS version, image, machine. A Mega ST, a Mega STE, a TT and a
+# Falcon have a clock chip, which Hatari always answers with the host's time;
+# the others have only the IKBD's clock, which Hatari emulates as the IKBD's ROM
+# keeps it.
+RTC_MACHINES = [
+    ("1.00", "tos100us.img", "st"),
+    ("1.02", "tos102us.img", "st"),
+    ("1.02", "tos102us.img", "megast"),
+    ("1.04", "tos104us.img", "st"),
+    ("1.04", "tos104us.img", "megast"),
+    ("1.06", "tos106us.img", "ste"),
+    ("1.62", "TOS v1.62 (1990)(Atari Corp)(STE)(US)[b].img", "ste"),
+    ("2.06", "TOS v2.06 (1991)(Atari Corp)(Mega-STE)(US).img", "ste"),
+    ("2.06", "TOS v2.06 (1991)(Atari Corp)(Mega-STE)(US).img", "megaste"),
+    ("3.06", "TOS v3.06 (1991)(Atari Corp)(UK)(TT).img", "tt"),
+    ("4.04", "TOS v4.04 (19xx)(Atari Corp)(Falcon).img", "falcon"),
+    ("EmuTOS", "etos512us.img", "st"),
+    ("EmuTOS", "etos512us.img", "megaste"),
+]
 
 # Machines with a high-density drive: only they get the 1.44 MB disks.
 HD_MACHINES = ("megaste", "tt", "falcon")
@@ -95,10 +129,66 @@ def parse_log(text, banner):
     return results
 
 
+def run_from_floppy(harness, tos_path, machine, timeout, work):
+    """Boot a floppy whose AUTO folder holds the harness, and read what it
+    prints from Hatari's console (--conout 2), or its log on the floppy: no
+    GEMDOS drive is needed, so every TOS runs it. Returns the output, or None."""
+    image = os.path.join(work, "BOOT.ST")
+    env_m = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    subprocess.run(["mformat", "-C", "-i", image, "-f", "720", "::"],
+                   check=True, capture_output=True, env=env_m)
+    subprocess.run(["mmd", "-i", image, "::AUTO"], check=True,
+                   capture_output=True, env=env_m)
+    subprocess.run(["mcopy", "-i", image, os.path.join(DIST, harness["program"]),
+                    "::AUTO/" + harness["program"].split(".")[0] + ".PRG"],
+                   check=True, capture_output=True, env=env_m)
+    # A GEMDOS drive from the user's own Hatari configuration would stop
+    # Hatari before TOS 1.04 starts: this run turns it off.
+    config = os.path.join(work, "no-gemdos-drive.cfg")
+    with open(config, "w") as handle:
+        handle.write("[HardDisk]\nbUseHardDiskDirectory = FALSE\n")
+    out_path = os.path.join(work, "console.txt")
+    env = dict(os.environ, SDL_VIDEODRIVER="dummy")
+    command = [
+        "hatari", "--configfile", config, "--tos", tos_path,
+        "--machine", machine, "--memsize", "1",
+        "--sound", "off", "--conout", "2", "--fast-forward", "on",
+        "--confirm-quit", "off", "--disk-a", image,
+    ]
+    with open(out_path, "w") as out:
+        process = subprocess.Popen(command, env=env, stdout=out,
+                                   stderr=subprocess.STDOUT)
+        deadline = time.time() + timeout
+        while time.time() < deadline and process.poll() is None:
+            with open(out_path, errors="replace") as handle:
+                if DONE_MARKER in handle.read():
+                    break
+            time.sleep(1)
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    with open(out_path, errors="replace") as handle:
+        text = handle.read()
+    if harness["banner"] not in text:
+        # TOS 1.00's console output does not reach --conout: the harness's
+        # own log, on the floppy, has the same lines.
+        text = subprocess.run(["mtype", "-i", image, "::/" + harness["log"]],
+                              capture_output=True, text=True, errors="replace",
+                              env=env_m).stdout
+    return text if harness["banner"] in text else None
+
+
 def run_hatari(harness, tos_path, machine, timeout, keep_dir=None, disk=None):
     """Run a harness under Hatari on one TOS. Returns its log, or None."""
     work = keep_dir or tempfile.mkdtemp(prefix="hatari-tests-")
     os.makedirs(work, exist_ok=True)
+    if harness.get("boot") == "floppy":
+        log = run_from_floppy(harness, tos_path, machine, timeout, work)
+        if keep_dir is None:
+            shutil.rmtree(work, ignore_errors=True)
+        return log
     drive = os.path.join(work, "c")
     os.makedirs(drive, exist_ok=True)
     for name in harness["copies"]:
@@ -173,9 +263,10 @@ def report(title, columns, results):
     lines.append("Rows are tests, columns are where they ran. Produced by "
                  "`tools/dev/hatari_tests.py`.")
     lines.append("")
-    lines.append("Hatari's GEMDOS drive needs TOS 1.04 or later, so TOS 1.00 and 1.02 "
-                 "appear only as hardware columns.")
-    lines.append("")
+    if title != "RTCTEST":
+        lines.append("Hatari's GEMDOS drive needs TOS 1.04 or later, so TOS 1.00 and "
+                     "1.02 appear only as hardware columns.")
+        lines.append("")
     if title == "FSTESTS":
         lines.append("On TOS 1.62 Hatari's GEMDOS drive is not TOS's loader: it asks TOS "
                      "for a bare basepage (Pexec mode 5 below TOS 2.00) and never writes "
@@ -232,7 +323,33 @@ def main():
                  "  ./tests/atarist/build.sh \"$PWD/tests/atarist\" release 1" % program)
 
     columns, results = [], OrderedDict()
-    for version in (args.tos or list(TOS_IMAGES)):
+    if harness.get("boot") == "floppy":
+        for version, image, machine in RTC_MACHINES:
+            if args.tos and version not in args.tos:
+                continue
+            path = os.path.join(args.tos_dir, image)
+            if not os.path.exists(path):
+                print("skipping TOS %s: no %s" % (version, path))
+                continue
+            column = "Hatari %s %s" % (version, machine)
+            print("running TOS %s (%s)..." % (version, machine), flush=True)
+            keep = (os.path.join(args.keep, column.replace(" ", "-"))
+                    if args.keep else None)
+            log = run_hatari(harness, path, machine, args.timeout, keep)
+            if not log:
+                print("  no output: did the program run?")
+                continue
+            results[column] = parse_log(log, harness["banner"])
+            if DONE_MARKER not in log:
+                print("  the run did not finish (timeout): partial results")
+            columns.append(column)
+            values = results[column].values()
+            print("  %d OK, %d FAIL, %d SKIP" % (
+                sum(1 for v in values if v == "OK"),
+                sum(1 for v in values if v == "FAIL"),
+                sum(1 for v in values if v == "SKIP")), flush=True)
+    for version in ([] if harness.get("boot") == "floppy"
+                    else (args.tos or list(TOS_IMAGES))):
         if version in UNSUPPORTED_BY_HATARI:
             print("TOS %s: Hatari's GEMDOS drive needs TOS 1.04 or later, so this "
                   "one is for hardware only" % version)

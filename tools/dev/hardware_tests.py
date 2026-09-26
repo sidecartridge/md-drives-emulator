@@ -4,6 +4,7 @@
     tools/dev/hardware_tests.py --harness floptest --disk rw
     tools/dev/hardware_tests.py --harness floptest --disk ro-hd --name 2.06-ro-hd
     tools/dev/hardware_tests.py --harness fstests
+    tools/dev/hardware_tests.py --harness rtctest
 
 One command makes a whole run, with the device in its setup menu and the card
 on USB. The harness goes into the AUTO folder of the GEMDRIVE folder, as
@@ -65,6 +66,8 @@ HARNESSES = {
                  "banner": "Atari ST floppy test suite"},
     "fstests": {"program": "FSTESTS", "log": "LOG.TXT",
                 "banner": "Atari ST GEMDRIVE Test Suite"},
+    "rtctest": {"program": "RTCTEST", "log": "RTCTEST.TXT",
+                "banner": "Atari ST RTC test suite"},
 }
 
 # FLOPTEST's disks: what make_floppy_image.py makes, the file it goes in, and
