@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
+#include "romemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"
@@ -72,5 +72,16 @@ void chandler_init();
 void __not_in_flash_func(chandler_loop)();
 
 void __not_in_flash_func(chandler_addCB)(CommandCallback cb);
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+/**
+ * @brief Debug-only: queue a protocol command as if the ST had sent it.
+ *
+ * Host side is tools/dev/swd.py through the devhooks mailbox. Returns false
+ * when another command is pending (retry later).
+ */
+bool chandler_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                             uint16_t payloadSize);
+#endif
 
 #endif  // CHANDLER_H

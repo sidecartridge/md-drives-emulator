@@ -24,7 +24,7 @@
 
 #define ROMEMUL_BUS_BITS 16
 
-#include "../../build/romemul.pio.h"
+#include "romemul.pio.h"
 
 // Function Prototypes
 int init_romemul(bool copyFlashToRAM);

@@ -14,7 +14,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "../../build/romemul.pio.h"
+#include "romemul.pio.h"
 #include "aconfig.h"
 #include "chandler.h"
 #include "constants.h"
@@ -42,6 +42,15 @@
 #define SHARED_VARIABLES_MAXSIZE 32
 #define SHARED_VARIABLES_SIZE 7
 #define DTA_SIZE_ON_ST 44
+
+// Written into the DTA GEMDRIVE fills, at offset 2 (inside the area TOS uses
+// for the search pattern, where no file name can produce these bytes). It is
+// what tells an Fsnext apart from a TOS search: TOS keeps "directory position |
+// drive" at offset 12, which a TOS search on a drive with our number, at
+// position 0, would leave looking exactly like the drive number GEMDRIVE used
+// to write there.
+#define GEMDRIVE_DTA_MAGIC 0xAA555344u
+#define GEMDRIVE_DTA_MAGIC_OFFSET 2
 
 #define GEMDRIVE_MAX_FOLDER_LENGTH \
   128  // Max length of the folder name in GEMDOS
@@ -103,6 +112,8 @@
   (GEMDRIVE_SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 4)
 #define GEMDRIVE_SHARED_VARIABLE_ENABLED \
   (GEMDRIVE_SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 5)  // enabled flag
+#define GEMDRIVE_SHARED_VARIABLE_STACK \
+  (GEMDRIVE_SHARED_VARIABLE_SHARED_FUNCTIONS_SIZE + 6)  // top of the ST's own stack
 
 #define GEMDRIVE_VARIABLES_OFFSET \
   (GEMDRIVE_RANDOM_TOKEN_OFFSET + \
@@ -137,6 +148,29 @@
   (GEMDRIVE_WRITE_BYTES + 4)  //  GEMDRIVE_WRITE_BYTES + 4 bytes
 #define GEMDRIVE_WRITE_CONFIRM_STATUS \
   (GEMDRIVE_WRITE_CHK + 4)  // write check + 4 bytes
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+/**
+ * @brief Debug-only: stall the answer to the next `chunks` write chunks.
+ *
+ * The data is committed first, so this reproduces a lost answer rather than a
+ * lost write. Used to validate the Fwrite chunk dedup on hardware
+ * (`swd.py app gemdrive_stall`).
+ */
+void gemdrive_setWriteStall(uint16_t chunks, uint16_t deciseconds);
+
+/**
+ * @brief Debug-only: make the next `chunks` write chunks fail as an SD error.
+ *
+ * The chunk takes the real error path and the ST receives GEMDOS_EINTRN, so
+ * the ST's handling of a failed write can be tested on demand
+ * (`swd.py app gemdrive_fail_write`).
+ */
+void gemdrive_setWriteFail(uint16_t chunks);
+
+// Debug builds report SD writes slower than this, in microseconds.
+#define GEMDRIVE_SLOW_WRITE_US 20000
+#endif
 
 #define GEMDRIVE_FCLOSE_STATUS \
   (GEMDRIVE_WRITE_CONFIRM_STATUS + 4)  // read buff + 4 bytes
@@ -178,7 +212,18 @@
 #define GEMDRIVE_PEXEC_ENVSTR \
   (GEMDRIVE_PEXEC_CMDLINE + 4)  // pexec cmd line + 4 bytes
 
+// The basepage of the program Pexec is starting: CMD_SAVE_BASEPAGE fills the
+// whole 256-byte structure here, not just a pointer.
 #define GEMDRIVE_EXEC_PD (GEMDRIVE_PEXEC_ENVSTR + 4)  // pexec envstr + 4 bytes
+#define GEMDRIVE_EXEC_PD_SIZE 256
+#define GEMDRIVE_FFORCE_STATUS \
+  (GEMDRIVE_EXEC_PD + GEMDRIVE_EXEC_PD_SIZE)  // exec pd + 256 bytes
+// Standard handles (0-5) forced onto GEMDRIVE files with Fforce: per standard
+// handle, the GEMDRIVE handle (0 = not forced) and the basepage of the process
+// that forced it. The ST reads it to route Fread/Fwrite/Fseek on a standard
+// handle without asking the RP.
+#define GEMDRIVE_FORCED (GEMDRIVE_FFORCE_STATUS + 4)  // fforce status + 4 bytes
+#define GEMDRIVE_FORCED_COUNT 6
 
 #define GEMDRIVE_ASSERT_ALIGNED_2(offset) \
   _Static_assert(((offset) & 0x1u) == 0u, #offset " must stay 2-byte aligned")
@@ -290,6 +335,10 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
 
 #define GEMDRVEMUL_PEXEC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x4B)  // Show the Pexec call
+#define GEMDRVEMUL_FFORCE_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x46)  // Fforce of a standard handle
+#define GEMDRVEMUL_PTERM_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x4C)  // A process ends: close the files it owns
 #define GEMDRVEMUL_MALLOC_CALL \
   (APP_GEMDRVEMUL << 8 | 0x48)  // Show the Malloc call
 
@@ -311,6 +360,8 @@ GEMDRIVE_ASSERT_ALIGNED_4(GEMDRIVE_PEXEC_STACK_ADDR);
   (APP_GEMDRVEMUL << 8 | 0x8A)  // Check if the DTA exists in the rp2040 memory
 #define GEMDRVEMUL_DTA_RELEASE_CALL \
   (APP_GEMDRVEMUL << 8 | 0x8B)  // Release the DTA from the rp2040 memory
+#define GEMDRVEMUL_RESTART_CALL \
+  (APP_GEMDRVEMUL << 8 | 0x8C)  // Restart the device
 
 // Atari ST FATTRIB flag
 #define FATTRIB_INQUIRE 0x00
@@ -388,6 +439,9 @@ typedef struct {
 
 typedef struct __attribute__((aligned(4))) DTANode {
   uint32_t key;
+  // The basepage of the process that started this search, so that a search
+  // abandoned half way is released when that process ends, as its files are.
+  uint32_t owner;
   uint32_t attribs;
   TCHAR fname[14];
   DTA data;
@@ -408,8 +462,17 @@ typedef struct __attribute__((aligned(4))) DTANode {
 typedef struct __attribute__((aligned(4))) FileDescriptors {
   char fpath[GEMDRIVE_MAX_FOLDER_LENGTH];
   int fd;
+  // Basepage of the process that opened the file. TOS closes a process's
+  // files when it ends (Pterm0, Ptermres, Pterm), and so does GEMDRIVE.
+  uint32_t owner;
   uint32_t offset;
   bool seek_dirty;
+  // Last write chunk accepted on this descriptor. The ST re-sends the same
+  // chunk with the same sequence when the answer is lost, so a repeat means
+  // "you did not hear my answer", not "here is more data". Writing it again
+  // is what duplicated a chunk and lost the tail of the file.
+  uint32_t last_write_seq;
+  uint32_t last_write_bytes;
   FIL fobject;
   struct FileDescriptors *next;
 } FileDescriptors;
@@ -471,6 +534,13 @@ typedef struct ExecHeader {
 
 // Function Prototypes
 void __not_in_flash_func(gemdrive_init)();
+/**
+ * @brief Whether the Atari asked the device to restart, with
+ *        GEMDRVEMUL_RESTART_CALL. The Atari gets its answer first, so the
+ *        restart happens from the main loop and not from inside the command.
+ */
+bool gemdrive_restartRequested(void);
+
 void __not_in_flash_func(gemdrive_loop)(TransmissionProtocol *protocol,
                                         uint16_t *payloadPtr);
 #endif  // GEMDRIVE_H

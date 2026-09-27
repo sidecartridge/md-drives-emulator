@@ -127,6 +127,34 @@ void test_relative_file_operations_in_current_directory() {
   cleanup_relative_file_ops_folder();
 }
 
+// Listing a folder on the GEMDRIVE drive must leave the caller's current drive
+// alone: the desktop does not expect opening a window to change it.
+void test_search_keeps_the_current_drive(void) {
+  int gem_drive = Dgetdrv();
+  char pattern[16];
+  sprintf(pattern, "%c:\\*.*", 'A' + gem_drive);
+
+  // A DTA of our own: the process one may still point wherever an earlier
+  // test left it.
+  static char own_dta[44];
+  void *old_dta = (void *)Fgetdta();
+  Fsetdta(own_dta);
+
+  Dsetdrv(0); /* A: */
+  int first = Fsfirst(pattern, 0x10);
+  int after_first = Dgetdrv();
+  int next = (first == 0) ? Fsnext() : -1;
+  int after_next = Dgetdrv();
+  Dsetdrv(gem_drive);
+  Fsetdta(old_dta);
+
+  assert_result("Fsfirst on the GEMDRIVE drive found something", first, 0);
+  assert_result("Fsfirst left the current drive alone", after_first, 0);
+  if (next == 0) {
+    assert_result("Fsnext left the current drive alone", after_next, 0);
+  }
+}
+
 int run_workdir_tests(int presskey) {
   print("=== GEMDOS Workdir Test Suite ===\n\r");
 
@@ -143,6 +171,8 @@ int run_workdir_tests(int presskey) {
   test_get_and_set_drive();
   if (presskey) press_key("");
   test_relative_file_operations_in_current_directory();
+  if (presskey) press_key("");
+  test_search_keeps_the_current_drive();
   if (presskey) press_key("");
 
   print("=== All Workdir tests completed ===\n\r");

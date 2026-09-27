@@ -66,7 +66,13 @@ void __not_in_flash_func(chandler_init)() {
 void __not_in_flash_func(chandler_addCB)(CommandCallback cb) {
   if (!cb) return;
   CommandCallbackNode *node = malloc(sizeof(*node));
-  if (!node) return;
+  if (!node) {
+    // Registered once while emulation starts, before anything else grows the
+    // heap, so this is not expected; but a driver whose callback is missing
+    // would ignore every command sent to it, so say so.
+    DPRINTF("ERROR: out of memory registering a command handler\n");
+    return;
+  }
   node->cb = cb;
   node->next = NULL;
   if (!callbackListHead) {
@@ -105,6 +111,27 @@ static inline void __not_in_flash_func(handle_protocol_command)(
   tprotocol_copy_safely(&pendingProtocol, protocol);
   protocolPending = true;
 }
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+// Debug-only entry point for tools/dev/swd.py: queue a protocol command as if
+// the ST had sent it, so the next chandler_loop() dispatches it normally.
+bool chandler_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                             uint16_t payloadSize) {
+  if (protocolPending) {
+    return false;
+  }
+  uint16_t size = tprotocol_clamp_payload_size(payloadSize);
+  pendingProtocol.command_id = commandId;
+  pendingProtocol.payload_size = size;
+  pendingProtocol.bytes_read = size;
+  pendingProtocol.final_checksum = 0;
+  memset(pendingProtocol.payload, 0, sizeof(pendingProtocol.payload));
+  memcpy(pendingProtocol.payload, payload, (size + 1u) & ~1u);
+  protocolPending = true;
+  DPRINTF("Injected command %04x (%u bytes)\n", commandId, (unsigned int)size);
+  return true;
+}
+#endif
 
 static inline void __not_in_flash_func(handle_protocol_checksum_error)(
     const TransmissionProtocol *protocol) {
@@ -191,17 +218,6 @@ void __not_in_flash_func(chandler_loop)() {
   for (CommandCallbackNode *cur = callbackListHead; cur; cur = cur->next) {
     if (cur->cb) cur->cb(&pendingProtocol, payloadPtr);
   }
-#if defined(CYW43_WL_GPIO_LED_PIN)
-  if (blink_isSequenceActive()) {
-    incrementalCmdCount++;
-    TPROTO_SET_RANDOM_TOKEN64(
-        memoryRandomTokenAddress,
-        (((uint64_t)incrementalCmdCount) << 32) | randomToken);
-    chandler_clear_pending_protocol();
-    return;
-  }
-  blink_activityPulse();
-#endif
   // DPRINTF("Command %x executed.IncrementalCmdCount: %x.",
   //         lastProtocol.command_id, incrementalCmdCount);
   incrementalCmdCount++;
@@ -210,4 +226,9 @@ void __not_in_flash_func(chandler_loop)() {
       (((uint64_t)incrementalCmdCount) << 32) | randomToken);
 
   chandler_clear_pending_protocol();
+#if defined(CYW43_WL_GPIO_LED_PIN)
+  // Only after the answer: on a Pico W the LED is a bus transaction to the
+  // Wi-Fi chip, and the ST is waiting for the token above.
+  blink_activityPulse();
+#endif
 }

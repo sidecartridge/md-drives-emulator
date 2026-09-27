@@ -50,6 +50,10 @@ static inline void print_memory_usage() {
   // Get current heap end via a dummy malloc (and immediately free)
   void *heap_cur = malloc(1);
   free(heap_cur);
+  if (heap_cur == NULL) {
+    DPRINTF("Heap exhausted: cannot measure memory usage\n");
+    return;
+  }
 
   size_t heap_used = (size_t)((char *)heap_cur - &__bss_end__);
   size_t stack_used = (size_t)((char *)&__StackTop - (char *)sp);

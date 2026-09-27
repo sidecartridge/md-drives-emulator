@@ -9,6 +9,7 @@
 #include "emul.h"
 
 #include "commemul.h"
+#include "devhooks.h"
 
 // inclusw in the C file to avoid multiple definitions
 #include "target_firmware.h"  // Include the target firmware binary
@@ -25,7 +26,6 @@ static void cmdGemdriveFolder(const char *arg);
 static void cmdGemdriveDrive(const char *arg);
 static void cmdAcsiEnabled(const char *arg);
 static void cmdAcsiImage(const char *arg);
-static void cmdAcsiId(const char *arg);
 static void cmdAcsiDrive(const char *arg);
 static void cmdToggleSdHealth(const char *arg);
 static void cmdFloppyEnabled(const char *arg);
@@ -38,7 +38,7 @@ static void cmdFloppyDriveBEject(const char *arg);
 static void cmdBootEnabled(const char *arg);
 static void cmdXbiosEnabled(const char *arg);
 static void cmdRTCEnabled(const char *arg);
-static void cmdY2KPatch(const char *arg);
+static void cmdPoolfixEnabled(const char *arg);
 static void cmdUTCOffset(const char *arg);
 static void cmdHost(const char *arg);
 static void cmdPort(const char *arg);
@@ -54,7 +54,6 @@ static const Command commands[] = {
     {"d", cmdGemdriveDrive},
     {"c", cmdAcsiEnabled},
     {"i", cmdAcsiImage},
-    {"n", cmdAcsiId},
     {"v", cmdAcsiDrive},
     {"f", cmdFloppyEnabled},
     {"l", cmdFloppiesFolder},
@@ -66,7 +65,7 @@ static const Command commands[] = {
     {"t", cmdBootEnabled},
     {"s", cmdXbiosEnabled},
     {"r", cmdRTCEnabled},
-    {"y", cmdY2KPatch},
+    {"k", cmdPoolfixEnabled},
     {"u", cmdUTCOffset},
     {"h", cmdHost},
     {"p", cmdPort},
@@ -110,6 +109,82 @@ static int appStatus = APP_MODE_SETUP;
 // USB Mass Storage ready
 static bool usbMassStorageReady = false;
 static volatile bool pendingDriveACycle = false;
+
+#if defined(_DEBUG) && (_DEBUG != 0)
+// Heap held on purpose by DEVHOOKS_APP_HEAP_HOLD, as a list of blocks.
+typedef struct DevhooksHeldBlock {
+  struct DevhooksHeldBlock *next;
+} DevhooksHeldBlock;
+static DevhooksHeldBlock *devhooksHeldHeap = NULL;
+
+// Debug-only app commands for tools/dev/swd.py (`swd.py app NAME`); the
+// DEVHOOKS_APP_* ids are defined in emul.h.
+static uint32_t emul_devhooksApp(uint16_t commandId, const uint16_t *payload,
+                                 uint16_t payloadSize) {
+  switch (commandId) {
+    case DEVHOOKS_APP_COUNTDOWN_STOP:
+      haltCountdown = true;
+      return 1;
+    case DEVHOOKS_APP_GEMDRIVE_STALL: {
+      uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
+      uint16_t deciseconds = (payloadSize >= 4u) ? payload[1] : 0u;
+      gemdrive_setWriteStall(chunks, deciseconds);
+      DPRINTF("devhooks: stalling the next %u write chunk(s)\n",
+              (unsigned int)chunks);
+      return 1;
+    }
+    case DEVHOOKS_APP_HEAP_HOLD: {
+      uint32_t kb = (payloadSize >= 2u) ? payload[0] : 0u;
+      if (kb == 0u) {
+        while (devhooksHeldHeap != NULL) {
+          DevhooksHeldBlock *next = devhooksHeldHeap->next;
+          free(devhooksHeldHeap);
+          devhooksHeldHeap = next;
+        }
+        DPRINTF("devhooks: heap hold released\n");
+        return 1;
+      }
+      DevhooksHeldBlock *block =
+          malloc(sizeof(DevhooksHeldBlock) + kb * 1024u);
+      if (block != NULL) {
+        block->next = devhooksHeldHeap;
+        devhooksHeldHeap = block;
+      }
+      DPRINTF("devhooks: holding %lu KB more heap: %s\n", (unsigned long)kb,
+              (block != NULL) ? "ok" : "refused");
+      return (block != NULL) ? 1u : 0u;
+    }
+    case DEVHOOKS_APP_GEMDRIVE_FAIL_WRITE: {
+      uint16_t chunks = (payloadSize >= 2u) ? payload[0] : 1u;
+      gemdrive_setWriteFail(chunks);
+      DPRINTF("devhooks: failing the next %u write chunk(s)\n",
+              (unsigned int)chunks);
+      return 1;
+    }
+    case DEVHOOKS_APP_FLOPPY_FAIL_READ: {
+      if (payloadSize < 2u) {
+        return 0;
+      }
+      floppy_setReadFail(payload[0]);
+      DPRINTF("devhooks: failing the next floppy read of sector %u\n",
+              (unsigned int)payload[0]);
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+
+// KIND_PROTOCOL mailbox requests land in whichever parser is active: the
+// setup terminal in APP_MODE_SETUP, the drives' command handler otherwise.
+bool emul_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                         uint16_t payloadSize) {
+  if (appStatus == APP_MODE_SETUP) {
+    return term_injectProtocol(commandId, payload, payloadSize);
+  }
+  return chandler_injectProtocol(commandId, payload, payloadSize);
+}
+#endif
 
 // Folder search
 #define NAV_LINES_PER_PAGE 16
@@ -196,6 +271,12 @@ static void ntpProgressPrintCurrentIp(void) {
   display_refresh();
 }
 
+// Runs between Wi-Fi connect attempts, which can take seconds.
+static void ntpConnectPoll(void) {
+  term_loop();
+  select_poll();
+}
+
 static int runOnDemandRtcNtpSync(void) {
   SettingsConfigEntry *wifiMode =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
@@ -223,7 +304,7 @@ static int runOnDemandRtcNtpSync(void) {
     return -1;
   }
 
-  network_setPollingCallback(term_loop);
+  network_setPollingCallback(ntpConnectPoll);
 
   int maxAttempts = 3;
   int attempt = 0;
@@ -275,7 +356,6 @@ static void finishAppLoop(void) {
   DPRINTF("Exiting the app loop...\n");
 
   if (jumpBooster) {
-    select_coreWaitPushDisable();
     sleep_ms(SLEEP_LOOP_MS);
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_RESET);
     sleep_ms(SLEEP_LOOP_MS);
@@ -365,31 +445,6 @@ static bool __not_in_flash_func(isValidDrive)(const char *drive) {
   return (c >= 'C' && c <= 'Z');
 }
 
-static bool parseAcsiId(const char *value, uint8_t *idOut) {
-  char *endptr = NULL;
-  long id = strtol((value != NULL) ? value : "", &endptr, 10);
-  if ((value == NULL) || (value == endptr) || (*endptr != '\0') || (id < 0) ||
-      (id > 7)) {
-    return false;
-  }
-
-  if (idOut != NULL) {
-    *idOut = (uint8_t)id;
-  }
-
-  return true;
-}
-
-static uint8_t getConfiguredAcsiId(void) {
-  SettingsConfigEntry *acsiId = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID);
-  uint8_t id = 7;
-  if ((acsiId != NULL) && parseAcsiId(acsiId->value, &id)) {
-    return id;
-  }
-  return 7;
-}
-
 static bool isGemdriveEnabledConfigured(void) {
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -426,10 +481,8 @@ static char getConfiguredAcsiDriveLetter(void) {
   return 'C';
 }
 
-// Conflict detection is now between the two configured drive letters
-// (GEMDRIVE's single slot vs ACSI's starting slot). ACSI_ID is the
-// physical ACSI ID and is independent of drive letters, so it does not
-// factor into overlap checking.
+// Conflict detection is between the two configured drive letters
+// (GEMDRIVE's single slot vs ACSI's starting slot).
 static bool wouldGemdriveAcsiConflict(bool gemdriveEnabled,
                                       char gemdriveDriveLetter,
                                       bool acsiEnabled,
@@ -594,6 +647,24 @@ static void drawSetupInfoLine(const char *message) {
   u8g2_SetFont(display_getU8g2Ref(), u8g2_font_amstrad_cpc_extended_8f);
 }
 
+// The last terminal row, drawn in the narrow font of the status bar below it.
+// The terminal cursor is parked in the first cell after the text: moving the
+// cursor erases its previous cell, which must never be part of this text.
+static void drawSetupCommandLine(const char *text) {
+  u8g2_t *u8g2 = display_getU8g2Ref();
+  int top = (TERM_SCREEN_SIZE_Y - 1) * DISPLAY_TERM_CHAR_HEIGHT;
+  u8g2_SetDrawColor(u8g2, 0);
+  u8g2_DrawBox(u8g2, 0, top, DISPLAY_WIDTH, DISPLAY_TERM_CHAR_HEIGHT);
+  u8g2_SetDrawColor(u8g2, 1);
+  u8g2_SetFont(u8g2, u8g2_font_squeezed_b7_tr);
+  u8g2_DrawStr(u8g2, 0, top + DISPLAY_TERM_CHAR_HEIGHT - 1, text);
+  int width = u8g2_GetStrWidth(u8g2, text);
+  u8g2_SetFont(u8g2, u8g2_font_amstrad_cpc_extended_8f);
+  int col = (width + DISPLAY_TERM_CHAR_WIDTH) / DISPLAY_TERM_CHAR_WIDTH;
+  if (col > TERM_SCREEN_SIZE_X - 1) col = TERM_SCREEN_SIZE_X - 1;
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, col);
+}
+
 static void refreshSetupInfoLine(void) {
   if (usbMassStorageReady) {
     drawSetupInfoLine("USB Mass Storage Connected");
@@ -720,7 +791,7 @@ static void __not_in_flash_func(menu)(void) {
   // Configurable options
   vt52Cursor(2, 0);
   // Display the ACSI options
-  term_printString("A[C]SI Enabled (EXPERIMENTAL)? ");
+  term_printString("A[C]SI Enabled? ");
   SettingsConfigEntry *acsiEnabled = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ENABLED);
   bool acsiIsEnabled = (acsiEnabled != NULL) && isTrue(acsiEnabled->value);
@@ -741,15 +812,13 @@ static void __not_in_flash_func(menu)(void) {
       free(acsiImageTail);
     }
 
-    uint8_t acsiId = getConfiguredAcsiId();
     char acsiDriveLetter = getConfiguredAcsiDriveLetter();
-    char acsiIdDriveLine[64];
-    snprintf(acsiIdDriveLine, sizeof(acsiIdDriveLine),
-             "\n  U[n]it (ACSI ID): %u  Dri[v]e: %c:\n\n", acsiId,
+    char acsiDriveLine[64];
+    snprintf(acsiDriveLine, sizeof(acsiDriveLine), "\n  Dri[v]e: %c:\n\n",
              acsiDriveLetter);
-    term_printString(acsiIdDriveLine);
+    term_printString(acsiDriveLine);
   } else {
-    term_printString("No\n\n\n\n\n");
+    term_printString("No\n\n\n\n");
   }
 
   // Display GEMDRIVE options
@@ -803,9 +872,11 @@ static void __not_in_flash_func(menu)(void) {
     SettingsConfigEntry *floppyDriveADrive = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A);
     char *driveAValue = right(floppyDriveADrive->value, 16);
-    DPRINTF("Drive A: %s\n", driveAValue);
+    const char *driveAShown =
+        (driveAValue != NULL) ? driveAValue : floppyDriveADrive->value;
+    DPRINTF("Drive A: %s\n", driveAShown);
     term_printString("\n  [(SHFT+)A] Drive: ");
-    term_printString(driveAValue);
+    term_printString(driveAShown);
     if (driveAValue != NULL) {
       free(driveAValue);  // Free the allocated memory for driveAValue
     }
@@ -814,9 +885,11 @@ static void __not_in_flash_func(menu)(void) {
     SettingsConfigEntry *floppyDriveBDrive = settings_find_entry(
         aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_B);
     char *driveBValue = right(floppyDriveBDrive->value, 16);
-    DPRINTF("Drive B: %s\n", driveBValue);
+    const char *driveBShown =
+        (driveBValue != NULL) ? driveBValue : floppyDriveBDrive->value;
+    DPRINTF("Drive B: %s\n", driveBShown);
     term_printString("\n  [(SHFT+)B] Drive: ");
-    term_printString(driveBValue);
+    term_printString(driveBShown);
     if (driveBValue != NULL) {
       free(driveBValue);  // Free the allocated memory for driveBValue
     }
@@ -875,27 +948,21 @@ static void __not_in_flash_func(menu)(void) {
     } else {
       term_printString("Not set");
     }
-    term_printString(" [Y]2K Patch?");
-    // Print the Y2K patch
-    SettingsConfigEntry *y2kPatch = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
-    if (y2kPatch != NULL) {
-      term_printString(isTrue(y2kPatch->value) ? "Y" : "N");
-    } else {
-      term_printString("Not set");
-    }
   } else {
     term_printString("No\n");
   }
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 2, 0);
-  if (!usbMassStorageReady) {
-    term_printString("[E]xit desktop    [X] Return to Booster");
-  } else {
-    term_printString("[X] Return to Booster");
-  }
 
-  vt52Cursor(TERM_SCREEN_SIZE_Y - 1, 0);
-  term_printString("Select an option: ");
+  // GEMDOS pool fix, right after the RTC block
+  vt52Cursor(TERM_SCREEN_SIZE_Y - 3, 0);
+  term_printString("TOS 1.04/1.06 pool fix [K]? ");
+  SettingsConfigEntry *poolfix = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED);
+  term_printString((poolfix == NULL || isTrue(poolfix->value)) ? "Yes" : "No");
+
+  drawSetupCommandLine(!usbMassStorageReady
+                           ? "[E]xit desktop    [X] Return to Booster    "
+                             "Select an option:"
+                           : "[X] Return to Booster    Select an option:");
   refreshSetupInfoLine();
 }
 
@@ -1124,7 +1191,22 @@ static void floppyDriveASetRenderBrowser(void) {
   display_refresh();
 }
 
+// The file browser's state is allocated once, when the setup menu starts.
+// If that allocation failed, the browser must not open: every browsing step
+// uses it. Each command that opens the browser checks here first.
+static bool navStateAvailable(void) {
+  if (navState != NULL) {
+    return true;
+  }
+  term_printString("\nNot enough memory for the file browser.\n");
+  display_refresh();
+  return false;
+}
+
 static void floppyDriveASetOpenBrowser(uint8_t slotIndex) {
+  if (!navStateAvailable()) {
+    return;
+  }
   SettingsConfigEntry *floppyDriveFolder = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_FOLDER);
 
@@ -1286,6 +1368,9 @@ static enum navStatus __not_in_flash_func(navigate_directory)(
 }
 
 void __not_in_flash_func(cmdGemdriveFolder)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the GEMDRIVE is enabled
   SettingsConfigEntry *gemDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_GEMDRIVE_ENABLED);
@@ -1443,6 +1528,9 @@ void cmdAcsiEnabled(const char *arg) {
 }
 
 void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   haltCountdown = true;
   enum navStatus status = NAV_DIR_ERROR;
 
@@ -1493,39 +1581,6 @@ void __not_in_flash_func(cmdAcsiImage)(const char *arg) {
     default:
       break;
   }
-}
-
-void cmdAcsiId(const char *arg) {
-  (void)arg;
-  if (term_getCommandLevel() == TERM_COMMAND_LEVEL_SINGLE_KEY) {
-    showTitle();
-    term_printString("\n\n");
-    term_printString("Enter the ACSI ID (0 to 7):\n");
-    term_setCommandLevel(TERM_COMMAND_LEVEL_DATA_INPUT);
-    haltCountdown = true;
-    display_refresh();
-    return;
-  }
-
-  term_setCommandLevel(TERM_COMMAND_LEVEL_SINGLE_KEY);
-
-  uint8_t acsiId = 0;
-  if (!parseAcsiId(term_getInputBuffer(), &acsiId)) {
-    showSetupMessageScreen("Invalid ACSI ID. Use a value from 0 to 7.");
-    return;
-  }
-
-  // ACSI ID is the physical-unit tag stored in pun_info; it is independent
-  // of the ACSI drive-letter slot, so no conflict check against GEMDRIVE
-  // is needed here — that check lives in cmdAcsiDrive.
-
-  char idBuffer[4];
-  snprintf(idBuffer, sizeof(idBuffer), "%u", acsiId);
-  settings_put_string(aconfig_getContext(), ACONFIG_PARAM_DRIVES_ACSI_ID,
-                      idBuffer);
-  settings_save(aconfig_getContext(), true);
-  menu();
-  display_refresh();
 }
 
 void cmdToggleSdHealth(const char *arg) {
@@ -1597,6 +1652,9 @@ void cmdFloppyEnabled(const char *arg) {
 }
 
 void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
@@ -1658,6 +1716,9 @@ void __not_in_flash_func(cmdFloppiesFolder)(const char *arg) {
 }
 
 static void selectFloppyDrive(const char *arg, bool driveA) {
+  if (!navStateAvailable()) {
+    return;
+  }
   // Check if the Floppy is enabled
   SettingsConfigEntry *floppyDrive = settings_find_entry(
       aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_ENABLED);
@@ -1903,20 +1964,17 @@ void cmdRTCEnabled(const char *arg) {
   display_refresh();
 }
 
-void cmdY2KPatch(const char *arg) {
-  SettingsConfigEntry *rtc = settings_find_entry(
-      aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_ENABLED);
-  if (isTrue(rtc->value)) {
-    // Y2K patch command
-    SettingsConfigEntry *y2kPatch = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH);
-    settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_DRIVES_RTC_Y2K_PATCH,
-                      !isTrue(y2kPatch->value));
-    settings_save(aconfig_getContext(), true);
-    haltCountdown = true;
-    menu();
-    display_refresh();
-  }
+void cmdPoolfixEnabled(const char *arg) {
+  (void)arg;
+  SettingsConfigEntry *poolfix = settings_find_entry(
+      aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED);
+  bool enabled = (poolfix == NULL) || isTrue(poolfix->value);
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_POOLFIX_ENABLED,
+                    !enabled);
+  settings_save(aconfig_getContext(), true);
+  haltCountdown = true;
+  menu();
+  display_refresh();
 }
 
 void cmdUTCOffset(const char *arg) {
@@ -2060,7 +2118,9 @@ static void preinit() {
   // Allocate memory for navState
   navState = (DirNavigation *)malloc(sizeof(DirNavigation));
   if (navState == NULL) {
+    // The file browser then refuses to open (navStateAvailable).
     term_printString("Error allocating memory for navState.\n");
+    return;
   }
   // Optional: zero out memory
   memset(navState, 0, sizeof(DirNavigation));
@@ -2098,6 +2158,7 @@ static void waitForSdFailureAndReturnToBooster(const char *message) {
 #ifdef BLINK_H
     blink_poll();
 #endif
+    select_poll();
   }
 
   jumpBooster = true;
@@ -2221,9 +2282,8 @@ void __not_in_flash_func(emul_start)() {
   // Short press: reset the device and restart the app
   // Long press: reset the device and erase the flash.
   select_configure();
-  select_coreWaitPush(handleSelectShortPress,
-                      reset_deviceAndEraseFlash);  // Wait for the SELECT
-                                                   // button to be pushed
+  select_setResetCallback(handleSelectShortPress);
+  select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   // 6. Init the sd card
   // Most of the apps or microfirmwares will need to read and write files
@@ -2377,14 +2437,25 @@ void __not_in_flash_func(emul_start)() {
   bool usbInitialized = false;         // USB not initialized yet
   bool usbMassStorageMounted = false;  // USB mass storage not mounted
 
+  // Debug builds only: serve the SWD mailbox of tools/dev/swd.py
+  devhooks_setAppHandler(emul_devhooksApp);
+
   // Initialize the timer for decrementing the countdown
   absolute_time_t lastDecrement = get_absolute_time();
 
   while (getKeepActive()) {
     blink_poll();
+    select_poll();
+    devhooks_poll();
     switch (appStatus) {
       case APP_EMULATION_RUNTIME: {
         // The app is running in emulation mode
+
+        if (gemdrive_restartRequested()) {
+          DPRINTF("Restarting the device: the Atari asked for it\n");
+          sleep_ms(50);  // let the answer reach the Atari first
+          reset_device();
+        }
 
         if (pendingDriveACycle) {
           pendingDriveACycle = false;
@@ -2458,11 +2529,13 @@ void __not_in_flash_func(emul_start)() {
         // Initialize the RTC
         DPRINTF("Initializing the RTC...\n");
         rtc_initf();  // Initialize the RTC emulator
+        poolfix_init();  // GEMDOS pool fix on or off (TOS 1.04/1.06)
 
         chandler_addCB(gemdrive_loop);  // Add the GEMDRIVE loop
         chandler_addCB(acsi_loop);      // Add the ACSI loop
         chandler_addCB(floppy_loop);    // Add the floppy drives loop
         chandler_addCB(rtc_loop);       // Add the RTC loop
+        chandler_addCB(poolfix_loop);   // GEMDOS pool fix (TOS 1.04/1.06)
 
         // Check remote commands
         appStatus = APP_EMULATION_RUNTIME;
@@ -2530,6 +2603,7 @@ void __not_in_flash_func(emul_start)() {
         if (usbInitialized) {
           // tinyusb device task
           tud_task();
+          usb_mass_poll();
 
           usbMassStorageMounted = usb_mass_get_mounted();
           // Show on screen the change in the status of the USB mass storage

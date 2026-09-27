@@ -24,7 +24,9 @@ static BPBData BPBDataA = {
     0,                  /* sidecnt     */
     0,                  /* secpcyl     */
     0,                  /* secptrack   */
-    {0, 0, 0},          /* reserved  */
+    0,                  /* bootsecptrack */
+    0,                  /* bootsidecnt */
+    0,                  /* reserved  */
     0                   /* diskNum */
 };
 
@@ -42,7 +44,9 @@ static BPBData BPBDataB = {
     0,                  /* sidecnt     */
     0,                  /* secpcyl     */
     0,                  /* secptrack   */
-    {0, 0, 0},          /* reserved  */
+    0,                  /* bootsecptrack */
+    0,                  /* bootsidecnt */
+    0,                  /* reserved  */
     1                   /* diskNum */
 };
 
@@ -122,8 +126,6 @@ static const char *const floppyDriveASlotKeys[FLOPPY_DRIVE_A_SLOT_MAX + 1] = {
 };
 
 static uint8_t currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
-static bool floppyMediaChangeClearPending[2] = {false, false};
-static uint16_t floppyMediaChangeClearSector[2] = {0, 0};
 
 // Write-behind flush state per drive. FLOPPYEMUL_WRITE_SECTORS marks the
 // drive dirty; floppy_tick() issues a deferred f_sync once no writes have
@@ -178,68 +180,64 @@ static inline void floppySetMediaChange(FloppyDrive drive, uint32_t status) {
                          FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
 }
 
-static inline uint16_t floppyGetRootDirStartSector(const BPBData *bpb) {
-  if (bpb == NULL || bpb->datrec < bpb->rdlen) {
-    return 0;
-  }
-  return (uint16_t)(bpb->datrec - bpb->rdlen);
-}
-
-static inline void floppyResetMediaChangeClearOnRootRead(FloppyDrive drive) {
-  floppyMediaChangeClearPending[drive] = false;
-  floppyMediaChangeClearSector[drive] = 0;
-}
-
-static inline void floppyArmMediaChangeClearOnRootRead(FloppyDrive drive) {
-  uint16_t rootSector =
-      floppyGetRootDirStartSector(floppyGetBPBData(drive));
-  if (rootSector == 0u) {
-    // Malformed BPB (datrec < rdlen, or NULL). If we armed with sector 0,
-    // the very common "read boot sector" that happens early in TOS's
-    // media-change detection would clear MED_CHANGED prematurely, before
-    // TOS has refreshed its cached directory state. Leave the flag set
-    // and let the Atari-side state machine deal with it.
-    floppyMediaChangeClearPending[drive] = false;
-    floppyMediaChangeClearSector[drive] = 0u;
-    return;
-  }
-  floppyMediaChangeClearSector[drive] = rootSector;
-  floppyMediaChangeClearPending[drive] = true;
-}
-
-static inline void floppyMaybeClearMediaChangeAfterRead(FloppyDrive drive,
-                                                        uint16_t lSector) {
-  if (!floppyMediaChangeClearPending[drive]) {
-    return;
-  }
-
-  if (lSector != floppyMediaChangeClearSector[drive]) {
-    return;
-  }
-
-  floppySetMediaChange(drive, FLOPPY_MEDIA_NOCHANGE);
-  floppyResetMediaChangeClearOnRootRead(drive);
-}
-
+// A .ST image is 512-byte sectors whatever its boot sector claims, so 512 is
+// the only size the ST sends and the only one a read or write may ask for. It
+// is a multiple of 4, as the ST's copy loop needs, and fits both the image
+// buffer and a write's payload.
 static inline bool floppyTransferSizeIsValid(uint16_t sSize) {
-  if (sSize == 0) {
-    DPRINTF("ERROR: Floppy transfer size must be greater than zero\n");
+  if (sSize != FLOPPY_SECTOR_SIZE) {
+    DPRINTF("ERROR: Floppy transfer size %u is not %u\n", sSize,
+            FLOPPY_SECTOR_SIZE);
     return false;
   }
 
-  if ((sSize & 1u) != 0u) {
-    DPRINTF("ERROR: Floppy transfer size must be even for 16-bit swaps: %u\n",
-            sSize);
+  return true;
+}
+
+// Where a Rwabs record is in the image. TOS's floprw places it with the boot
+// sector's own geometry - track record / (sides x sectors), then side 0 or 1;
+// 9 sectors of one side when that is 0, as TOS sets them - and reads that
+// sector of the disk, which the image holds as it physically is. The same
+// number whenever the boot sector describes the image, which is nearly always.
+static inline uint32_t __not_in_flash_func(floppyRecordToImageSector)(
+    const BPBData *bpb, uint16_t record) {
+  uint32_t spt = bpb->bootsecptrack;
+  uint32_t spc = spt * bpb->bootsidecnt;
+  if (spc == 0) {
+    spt = 9;
+    spc = 9;
+  }
+  uint32_t track = record / spc;
+  uint32_t sector = record % spc;
+  uint32_t side = 0;
+  if (sector >= spt) {
+    side = 1;
+    sector -= spt;
+  }
+  return (track * bpb->sidecnt + side) * bpb->secptrack + sector;
+}
+
+static inline void __not_in_flash_func(floppySetTransferStatus)(
+    int32_t status) {
+  WRITE_AND_SWAP_LONGWORD(memorySharedAddress, FLOPPYEMUL_TRANSFER_STATUS,
+                          (uint32_t)status);
+}
+
+// Debug-only fault injection (`swd.py app floppy_fail_read SECTOR`): the next
+// read of that logical sector, on either drive, fails as if the SD card had
+// returned an error, through the same path a real failure takes. FLOPTEST
+// reads it to see a failed read reported as one.
+static volatile int32_t floppyReadFailSector = -1;
+
+void floppy_setReadFail(uint16_t sector) { floppyReadFailSector = sector; }
+
+static inline bool __not_in_flash_func(floppyFailReadIfRequested)(
+    uint16_t lSector) {
+  if (floppyReadFailSector != (int32_t)lSector) {
     return false;
   }
-
-  if ((uint32_t)sSize > FLOPPYEMUL_IMAGE_BUFFER_SIZE) {
-    DPRINTF(
-        "ERROR: Floppy transfer size %u exceeds shared image buffer size %lu\n",
-        sSize, (unsigned long)FLOPPYEMUL_IMAGE_BUFFER_SIZE);
-    return false;
-  }
-
+  floppyReadFailSector = -1;
+  DPRINTF("Floppy read: failing sector %u on purpose\n", lSector);
   return true;
 }
 
@@ -435,10 +433,40 @@ static inline uint16_t floppyReadLe16(const BYTE *buffer, size_t offset) {
   return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
 }
 
-static inline uint32_t floppyReadLe32(const BYTE *buffer, size_t offset) {
-  return (uint32_t)buffer[offset] | ((uint32_t)buffer[offset + 1] << 8) |
-         ((uint32_t)buffer[offset + 2] << 16) |
-         ((uint32_t)buffer[offset + 3] << 24);
+// The image's physical geometry - sectors a track and sides - as Hatari finds
+// it (src/floppy.c, Floppy_FindDiskDetails): the boot sector's when its
+// sector count is the file's and its sides and sectors a track are sane;
+// otherwise two sides above 500 KB, and the sectors a track that 80 to 84
+// tracks of 9 to 12 sectors make the file of, else the boot sector's if 5 to
+// 48, else what 80 tracks leave. Menu disks with a one-sided file system on a
+// two-sided disk are why: their boot sector says one side.
+static void __not_in_flash_func(floppyPhysicalGeometry)(
+    uint16_t bootSpt, uint16_t bootSides, uint16_t bootTotal,
+    uint32_t imageBytes, uint16_t *spt, uint16_t *sides) {
+  uint32_t total = imageBytes / FLOPPY_SECTOR_SIZE;
+  *spt = bootSpt;
+  *sides = bootSides;
+  if (bootTotal == total && bootSides >= 1 && bootSides <= 2 && bootSpt >= 1 &&
+      bootSpt <= 48) {
+    return;
+  }
+  uint16_t guessedSides = (imageBytes < 500u * 1024u) ? 1 : 2;
+  uint16_t guessedSpt = 0;
+  for (uint16_t n = 9; n <= 12 && guessedSpt == 0; n++) {
+    for (uint32_t tracks = 80; tracks <= 84; tracks++) {
+      if (total == tracks * n * guessedSides) {
+        guessedSpt = n;
+        break;
+      }
+    }
+  }
+  if (guessedSpt == 0) {
+    guessedSpt = (bootSpt >= 5 && bootSpt <= 48)
+                     ? bootSpt
+                     : (uint16_t)(total / 80u / guessedSides);
+  }
+  *spt = guessedSpt;
+  *sides = guessedSides;
 }
 
 static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
@@ -466,39 +494,46 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
 
   BPBData bpb_tmp = {0};  // Temporary BPBData structure
 
-  uint16_t reservedSectors = floppyReadLe16(buffer, 14);
-  uint16_t rootEntryCount = floppyReadLe16(buffer, 17);
-  uint32_t totalSectors = floppyReadLe16(buffer, 19);
-  uint8_t fatCount = buffer[16];
-
-  bpb_tmp.recsize = floppyReadLe16(buffer, 11);  // Sector size in bytes
-  bpb_tmp.clsiz = (uint16_t)buffer[13];          // Cluster size
-  bpb_tmp.clsizb = bpb_tmp.clsiz * bpb_tmp.recsize;
-
-  if (totalSectors == 0) {
-    totalSectors = floppyReadLe32(buffer, 32);
-  }
-
-  if (bpb_tmp.recsize != 0) {
-    bpb_tmp.rdlen =
-        (uint16_t)(((uint32_t)rootEntryCount * 32U + bpb_tmp.recsize - 1U) /
-                   bpb_tmp.recsize);
-  }
-
+  // Built as TOS's own floppy Getbpb builds it (th-otto/tos1x bios/blkdev.c,
+  // bhdv_getbpb), and TOS 2.06 does the same - measured under Hatari: one
+  // reserved sector and two FATs whatever the boot sector says, the root
+  // directory truncated to whole sectors, the 16-bit sector count, and TOS's
+  // 16-bit signed arithmetic. A disk that works on a real ST is laid out the
+  // way TOS reads it; honouring the reserved and FAT counts instead read three
+  // of 1456 real images a sector off. Getbpb on the ST answers no BPB when the
+  // sector size is not positive or the cluster size is 0, as TOS does, so
+  // those values only need to keep the divisions here safe.
+  int16_t recsize = (int16_t)floppyReadLe16(buffer, 11);
+  int16_t clsiz = (int16_t)buffer[13];
+  bpb_tmp.recsize = (uint16_t)recsize;
+  bpb_tmp.clsiz = (uint16_t)clsiz;
+  bpb_tmp.clsizb = (uint16_t)(recsize * clsiz);
   bpb_tmp.fsiz = floppyReadLe16(buffer, 22);  // FAT size in sectors
-  bpb_tmp.fatrec = reservedSectors + bpb_tmp.fsiz;
-  bpb_tmp.datrec =
-      reservedSectors + ((uint16_t)fatCount * bpb_tmp.fsiz) + bpb_tmp.rdlen;
-
-  if (bpb_tmp.clsiz != 0 && totalSectors >= bpb_tmp.datrec) {
-    bpb_tmp.numcl = (uint16_t)((totalSectors - bpb_tmp.datrec) / bpb_tmp.clsiz);
+  bpb_tmp.fatrec = (uint16_t)(bpb_tmp.fsiz + 1);
+  if (recsize > 0) {
+    bpb_tmp.rdlen =
+        (uint16_t)((int16_t)(floppyReadLe16(buffer, 17) << 5) / recsize);
+  }
+  bpb_tmp.datrec = (uint16_t)(bpb_tmp.fatrec + bpb_tmp.rdlen + bpb_tmp.fsiz);
+  if (clsiz > 0) {
+    bpb_tmp.numcl = (uint16_t)((int16_t)(floppyReadLe16(buffer, 19) -
+                                         bpb_tmp.datrec) /
+                               clsiz);
   }
 
   bpb_tmp.bflags = 0;  // Magic flags
-  bpb_tmp.sidecnt = floppyReadLe16(buffer, 26);
-  bpb_tmp.secptrack = floppyReadLe16(buffer, 24);
+  // The boot sector's own geometry places a Rwabs record, as TOS's floprw
+  // does; the image's physical one places what the XBIOS reads.
+  bpb_tmp.bootsecptrack = floppyReadLe16(buffer, 24);
+  bpb_tmp.bootsidecnt = floppyReadLe16(buffer, 26);
+  floppyPhysicalGeometry(bpb_tmp.bootsecptrack, bpb_tmp.bootsidecnt,
+                         floppyReadLe16(buffer, 19), (uint32_t)f_size(fsrc),
+                         &bpb_tmp.secptrack, &bpb_tmp.sidecnt);
   bpb_tmp.secpcyl = (uint16_t)(bpb_tmp.secptrack * bpb_tmp.sidecnt);
-  bpb_tmp.trackcnt = 0;
+  bpb_tmp.trackcnt =
+      (bpb_tmp.secpcyl != 0)
+          ? (uint16_t)(f_size(fsrc) / FLOPPY_SECTOR_SIZE / bpb_tmp.secpcyl)
+          : 0;
 
   // Copy the temporary BPB data to the provided BPB structure
   *bpb = bpb_tmp;
@@ -518,8 +553,8 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
   DPRINTF("  sidecnt: %u\n", bpb->sidecnt);
   DPRINTF("  secpcyl: %u\n", bpb->secpcyl);
   DPRINTF("  secptrack: %u\n", bpb->secptrack);
-  DPRINTF("  reserved: %u %u %u\n", bpb->reserved[0], bpb->reserved[1],
-          bpb->reserved[2]);
+  DPRINTF("  boot sector: %u sectors a track, %u sides\n", bpb->bootsecptrack,
+          bpb->bootsidecnt);
   DPRINTF("  disk_number: %u\n", bpb->disk_number);
 
   return FR_OK;
@@ -535,11 +570,13 @@ static FRESULT __not_in_flash_func(createBPB)(FIL *fsrc, BPBData *bpb) {
  *
  * @param filename The name of the file to check.
  * @return True if the filename ends with ".rw", indicating a read-write floppy
- * disk image file. False otherwise.
+ * disk image file. False otherwise. Case does not matter, as it does not for
+ * the setup menu's filter: GAME.ST.RW was offered as writable and then opened
+ * read-only.
  */
 static inline bool isFloppyRW(const char *filename) {
   return (strlen(filename) >= 3 &&
-          strcmp(filename + strlen(filename) - 3, ".rw") == 0);
+          strcasecmp(filename + strlen(filename) - 3, ".rw") == 0);
 }
 
 static bool isTrue(const char *value) {
@@ -671,7 +708,6 @@ static FRESULT __not_in_flash_func(floppyMountDrivePath)(FloppyDrive drive, cons
   char *fullPath = floppyGetFullPath(drive);
   BPBData *bpb = floppyGetBPBData(drive);
   FloppyDiskState *state = floppyGetStatePtr(drive);
-  floppyResetMediaChangeClearOnRootRead(drive);
 
   snprintf(fullPath, FLOPPYEMUL_FATFS_MAX_FOLDER_LENGTH, "%s", fname);
   DPRINTF("Mounting drive %c path: %s\n",
@@ -716,8 +752,10 @@ FRESULT __not_in_flash_func(vDriveOpen)(uint8_t drive) {
   char *fname = NULL;
 
   if (drive == FLOPPY_DRIVE_A) {
+    // The current slot's image: this also re-opens the drive after an error,
+    // and slot 1 there would be a different disk with no change raised.
     SettingsConfigEntry *fnameDriveAParam = settings_find_entry(
-        aconfig_getContext(), ACONFIG_PARAM_DRIVES_FLOPPY_DRIVE_A);
+        aconfig_getContext(), floppyGetDriveASettingKey(currentDriveASlot));
     if (fnameDriveAParam != NULL) {
       fname = fnameDriveAParam->value;
     }
@@ -867,8 +905,9 @@ FRESULT floppy_cycleDriveA(uint8_t *newSlotIndex) {
   }
 
   currentDriveASlot = nextSlot;
+  // Changed until the ST's Getbpb for drive A ends it, as TOS's getbpb does:
+  // GEMDOS asks for the BPB as soon as Mediach or Rwabs tells it of the change.
   floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_CHANGED);
-  floppyArmMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
   if (newSlotIndex != NULL) {
     *newSlotIndex = currentDriveASlot;
   }
@@ -956,10 +995,10 @@ void __not_in_flash_func(floppy_init)() {
   SET_SHARED_PRIVATE_VAR(FLOPPYEMUL_SVAR_ENABLED,
                          floppyEnabled ? 0xFFFFFFFF : 0, memorySharedAddress,
                          FLOPPYEMUL_SHARED_VARIABLES_OFFSET);
+  // Drive B's image is fixed for the session - only drive A cycles - so the
+  // RP never raises a change on B; a program can still set one with Rwabs.
   floppySetMediaChange(FLOPPY_DRIVE_A, FLOPPY_MEDIA_NOCHANGE);
   floppySetMediaChange(FLOPPY_DRIVE_B, FLOPPY_MEDIA_NOCHANGE);
-  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_A);
-  floppyResetMediaChangeClearOnRootRead(FLOPPY_DRIVE_B);
   currentDriveASlot = FLOPPY_DRIVE_A_SLOT_MIN;
 
   fr = vDriveOpen(FLOPPY_DRIVE_A);  // Open floppy drive A
@@ -1081,6 +1120,21 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       break;
     }
 
+    case FLOPPYEMUL_FORMAT_TRACK: {
+      // An emulated disk is not formatted. The ST sends Flopfmt here instead
+      // of to the ROM, which formatted whatever disk was in the physical drive
+      // while the desktop's writes that follow it landed on the image. The
+      // answer is TOS's for a disk it cannot format: write protected for a
+      // read-only image, the general error otherwise.
+      uint16_t diskNum = TPROTO_GET_PAYLOAD_PARAM16(payloadPtr);  // d3.l
+      FloppyDiskState state =
+          diskNum == 0 ? floppyDiskStatus.stateA : floppyDiskStatus.stateB;
+      DPRINTF("Flopfmt on %s refused\n", diskNum == 0 ? "A:" : "B:");
+      floppySetTransferStatus(state == FLOPPY_DISK_MOUNTED_RO ? FLOPPY_EWRPRO
+                                                              : FLOPPY_ERROR);
+      break;
+    }
+
     case FLOPPYEMUL_SAVE_VECTORS: {
       // Save the vectors needed for the floppy emulation
       DPRINTF("Saving vectors\n");
@@ -1145,8 +1199,14 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d3.h register
       uint16_t diskNum =
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
+      // d4.h: 1 when the XBIOS sends a sector of the disk as it is, 0 when
+      // Rwabs sends a record
+      uint16_t physical = TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
       DPRINTF("DISK READ %s (%d) - LSECTOR: %i / SSIZE: %i\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize);
+      // A failure until the read has succeeded, so that no way out of here
+      // leaves the answer of the command before it.
+      floppySetTransferStatus(FLOPPY_ERROR);
       if (!floppyTransferSizeIsValid(sSize)) {
         return;
       }
@@ -1161,6 +1221,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive A (%d)\r\n", ferr);
             floppyDiskStatus.stateA =
                 FLOPPY_DISK_ERROR;  // Set error state for A
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive A mounted successfully.\n");
@@ -1175,6 +1236,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive B (%d)\r\n", ferr);
             floppyDiskStatus.stateB =
                 FLOPPY_DISK_ERROR;  // Set error state for B
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive B mounted successfully.\n");
@@ -1194,7 +1256,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         fullPathTmp = fullPathB;
       }
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
+      uint32_t imageSector =
+          physical ? lSector
+                   : floppyRecordToImageSector(
+                         floppyGetBPBData(diskNum == 0 ? FLOPPY_DRIVE_A
+                                                       : FLOPPY_DRIVE_B),
+                         lSector);
+      FRESULT ferr = f_lseek(fobjTmp, (FSIZE_t)imageSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
@@ -1204,11 +1272,15 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_E_SEEK);
         return;  // Return if the seek operation failed
       }
       ferr = f_read(fobjTmp, (void *)(memorySharedAddress + FLOPPYEMUL_IMAGE),
                     sSize,
                     &bytesRead); /* Read a chunk of data from the source file */
+      if (floppyFailReadIfRequested(lSector)) {
+        ferr = FR_DISK_ERR;
+      }
       if (ferr) {
         DPRINTF("ERROR: Could not read file %s (%d). Closing file.\n",
                 fullPathTmp, ferr);
@@ -1218,6 +1290,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_EREADF);
         return;  // Return if the read operation failed
       }
       if (bytesRead != sSize) {
@@ -1229,13 +1302,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
         }
+        floppySetTransferStatus(FLOPPY_ESECNF);
         return;
       }
       DPRINTF("Read sector %i of size %i bytes to memory address %08X\n",
               lSector, sSize, memorySharedAddress + FLOPPYEMUL_IMAGE);
       CHANGE_ENDIANESS_BLOCK16(memorySharedAddress + FLOPPYEMUL_IMAGE, sSize);
-      floppyMaybeClearMediaChangeAfterRead(
-          (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B, lSector);
+      floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
     case FLOPPYEMUL_WRITE_SECTORS: {
@@ -1244,12 +1317,25 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d3.h register
       uint16_t diskNum =
           TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);  // d4.l register
+      // d4.h: 1 for an XBIOS sector of the disk as it is, 0 for a record
+      uint16_t physical = TPROTO_GET_NEXT16_PAYLOAD_PARAM16(payloadPtr);
       uint32_t addrRemote =
-          TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);  // d5 register
+          TPROTO_GET_NEXT16_PAYLOAD_PARAM32(payloadPtr);  // d5 register
       TPROTO_NEXT32_PAYLOAD_PTR(payloadPtr);              // skip d5 register
       DPRINTF("DISK WRITE %s (%d) - LSECTOR: %i / SSIZE: %i at addr: %08X\n",
               diskNum == 0 ? "A:" : "B:", diskNum, lSector, sSize, addrRemote);
+      // A failure until the write has succeeded, as for a read.
+      floppySetTransferStatus(FLOPPY_ERROR);
       if (!floppyTransferSizeIsValid(sSize)) {
+        return;
+      }
+      // The sector's data follows the token, d3, d4 and d5 in the payload:
+      // never swap or write more of it than arrived.
+      if (lastProtocol->payload_size < 16u + sSize) {
+        DPRINTF("ERROR: Floppy write of %u bytes carries only %u\n", sSize,
+                (unsigned int)((lastProtocol->payload_size >= 16u)
+                                   ? lastProtocol->payload_size - 16u
+                                   : 0u));
         return;
       }
 
@@ -1263,6 +1349,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive A (%d)\r\n", ferr);
             floppyDiskStatus.stateA =
                 FLOPPY_DISK_ERROR;  // Set error state for A
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive A mounted successfully.\n");
@@ -1277,6 +1364,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
             DPRINTF("ERROR: Could not open drive B (%d)\r\n", ferr);
             floppyDiskStatus.stateB =
                 FLOPPY_DISK_ERROR;  // Set error state for B
+            floppySetTransferStatus(FLOPPY_EDRVNR);
             return;                 // Return if the drive is not mounted
           }
           DPRINTF("Drive B mounted successfully.\n");
@@ -1286,12 +1374,14 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         // Drive A. Use fobjA
         if (floppyDiskStatus.stateA != FLOPPY_DISK_MOUNTED_RW) {
           DPRINTF("ERROR: Drive A is not mounted for writing.\n");
+          floppySetTransferStatus(FLOPPY_EWRPRO);
           return;  // Return if the drive is not mounted for writing
         }
       } else {
         // Drive B. Use fobjB
         if (floppyDiskStatus.stateB != FLOPPY_DISK_MOUNTED_RW) {
           DPRINTF("ERROR: Drive B is not mounted for writing.\n");
+          floppySetTransferStatus(FLOPPY_EWRPRO);
           return;  // Return if the drive is not mounted for writing
         }
       }
@@ -1316,7 +1406,13 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
       }
 
       /* Set read/write pointer to logical sector position */
-      FRESULT ferr = f_lseek(fobjTmp, lSector * sSize);
+      uint32_t imageSector =
+          physical ? lSector
+                   : floppyRecordToImageSector(
+                         floppyGetBPBData(diskNum == 0 ? FLOPPY_DRIVE_A
+                                                       : FLOPPY_DRIVE_B),
+                         lSector);
+      FRESULT ferr = f_lseek(fobjTmp, (FSIZE_t)imageSector * sSize);
       if (ferr) {
         DPRINTF("ERROR: Could not seek file %s (%d). Closing file.\r\n",
                 fullPathTmp, ferr);
@@ -1326,6 +1422,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_E_SEEK);
         return;  // Return if the read operation failed
       }
       ferr =
@@ -1340,6 +1437,7 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;  // Set error state for B
         }
+        floppySetTransferStatus(FLOPPY_EWRITF);
         return;  // Return if the read operation failed
       }
       if (bytesRead != sSize) {
@@ -1351,11 +1449,31 @@ void __not_in_flash_func(floppy_loop)(TransmissionProtocol *lastProtocol,
         } else {
           floppyDiskStatus.stateB = FLOPPY_DISK_ERROR;
         }
+        floppySetTransferStatus(FLOPPY_EWRITF);
         return;
       }
       floppyMarkWriteDirty((uint8_t)diskNum);
       DPRINTF("Wrote sector %i of size %i bytes to file %s\n", lSector, sSize,
               fullPathTmp);
+      // A new boot sector is a new disk, as TOS's own driver has it: its
+      // flopwrt marks the drive changed when it writes track 0, side 0,
+      // sector 1, and its getbpb reads the boot sector on every call. The BPB
+      // is rebuilt from what was written and the change raised before the
+      // answer, so the ST's next Mediach or Rwabs tells GEMDOS to read the
+      // disk again - after a Disk Copy onto this drive it kept the old disk's
+      // FAT and wrote it over the copy.
+      if (imageSector == 0) {
+        FloppyDrive drive = (diskNum == 0) ? FLOPPY_DRIVE_A : FLOPPY_DRIVE_B;
+        BPBData *bpb = floppyGetBPBData(drive);
+        if (createBPB(fobjTmp, bpb) == FR_OK) {
+          memcpy((void *)(memorySharedAddress + ((drive == FLOPPY_DRIVE_A)
+                                                     ? FLOPPYEMUL_BPB_DATA_A
+                                                     : FLOPPYEMUL_BPB_DATA_B)),
+                 bpb, sizeof(BPBData));
+        }
+        floppySetMediaChange(drive, FLOPPY_MEDIA_CHANGED);
+      }
+      floppySetTransferStatus(FLOPPY_E_OK);
       break;
     }
   }

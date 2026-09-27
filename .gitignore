@@ -56,6 +56,9 @@ upload_s3.sh
 .history/
 build/
 dist/
+tools/dev/builds/
+tools/dev/logs/
+docs/
 .cache/
 settings.local.json
 *.pyc

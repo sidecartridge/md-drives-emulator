@@ -20,6 +20,10 @@ static bool blinkSequenceLedOn = false;
 static uint8_t blinkSequenceRemaining = 0;
 static absolute_time_t blinkSequenceNext = {0};
 static bool blinkActivityLedOn = false;
+// USB mass storage traffic: the LED is off while transfers keep coming and
+// back on after a quiet interval.
+static bool blinkTrafficDipActive = false;
+static absolute_time_t blinkTrafficDipEnd = {0};
 static absolute_time_t blinkActivityOffTime = {0};
 
 static void blink_set_hw(bool on) {
@@ -110,9 +114,28 @@ void blink_activityPulse(void) {
     return;
   }
 
-  blinkActivityLedOn = true;
-  blink_on();
+  // During a burst the LED is already on: only the first pulse writes it (on
+  // a Pico W every write is a ~200 us bus transaction to the Wi-Fi chip), the
+  // rest just push the off time back.
+  if (!blinkActivityLedOn) {
+    blinkActivityLedOn = true;
+    blink_on();
+  }
   blinkActivityOffTime = make_timeout_time_us(BLINK_ACTIVITY_ON_US);
+}
+
+void blink_trafficDip(void) {
+  if (blinkSequenceActive) {
+    return;
+  }
+  // On a Pico W every LED write is a bus transaction to the Wi-Fi chip, so
+  // the LED is touched only when a burst starts; later calls just push the
+  // end of the burst back.
+  if (!blinkTrafficDipActive) {
+    blink_off();
+    blinkTrafficDipActive = true;
+  }
+  blinkTrafficDipEnd = make_timeout_time_us(BLINK_TRAFFIC_QUIET_US);
 }
 
 void blink_startCountSequence(uint8_t count) {
@@ -151,6 +174,12 @@ void blink_poll(void) {
     blinkSequenceLedOn = true;
     blinkSequenceNext = make_timeout_time_ms(BLINK_SEQUENCE_ON_MS);
     return;
+  }
+
+  if (blinkTrafficDipActive &&
+      absolute_time_diff_us(get_absolute_time(), blinkTrafficDipEnd) <= 0) {
+    blink_on();
+    blinkTrafficDipActive = false;
   }
 
   if (!blinkActivityLedOn) {

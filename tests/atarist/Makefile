@@ -7,6 +7,8 @@ SOURCES_DIR = ./src
 BUILD_DIR = ./build
 DIST_DIR = ./dist
 EXE = FSTESTS.TOS
+FLOPTEST_EXE = FLOPTEST.TOS
+RTCTEST_EXE = RTCTEST.TOS
 
 # VASM PARAMETERS
 VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac
@@ -58,14 +60,14 @@ release: dist prepare
 prepare: clean
 	mkdir -p $(BUILD_DIR)
 
-clean-compile : clean main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o
+clean-compile : clean main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o sidecart.o
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/$@ $<
 
 # Compilation Rules
 %.o: $(SOURCES_DIR)/%.c prepare
 	$(CC) $(CFLAGS) $< -o $(BUILD_DIR)/$@
 
-main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o
+main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o files_tests.o chksum_tests.o sidecart.o
 	$(CC) $(LIBCMINI)/lib/crt0.o \
 		  $(BUILD_DIR)/main.o \
 		  $(BUILD_DIR)/test_runner.o \
@@ -74,12 +76,35 @@ main: main.o test_runner.o folder_tests.o folder_listing_tests.o workdir_tests.o
 		  $(BUILD_DIR)/workdir_tests.o \
 		  $(BUILD_DIR)/files_tests.o \
 		  $(BUILD_DIR)/chksum_tests.o \
+		  $(BUILD_DIR)/sidecart.o \
 		  -o $(BUILD_DIR)/$(EXE) $(LINKFLAGS)
 
+# The floppy harness: a program of its own, sharing the runner and the device
+# command with FSTESTS.
+floptest: floptest_main.o floppy_tests.o test_runner.o sidecart.o
+	$(CC) $(LIBCMINI)/lib/crt0.o \
+		  $(BUILD_DIR)/floptest_main.o \
+		  $(BUILD_DIR)/floppy_tests.o \
+		  $(BUILD_DIR)/test_runner.o \
+		  $(BUILD_DIR)/sidecart.o \
+		  -o $(BUILD_DIR)/$(FLOPTEST_EXE) $(LINKFLAGS)
+
+# The clock probe: what each TOS does with the date, with the IKBD's clock and
+# with the year bytes the RTC emulation sends.
+rtctest: rtctest_main.o rtc_tests.o test_runner.o sidecart.o
+	$(CC) $(LIBCMINI)/lib/crt0.o \
+		  $(BUILD_DIR)/rtctest_main.o \
+		  $(BUILD_DIR)/rtc_tests.o \
+		  $(BUILD_DIR)/test_runner.o \
+		  $(BUILD_DIR)/sidecart.o \
+		  -o $(BUILD_DIR)/$(RTCTEST_EXE) $(LINKFLAGS)
+
 .PHONY: dist
-dist: main
+dist: main floptest rtctest
 	mkdir -p $(DIST_DIR)
-	cp $(BUILD_DIR)/$(EXE) $(DIST_DIR)    
+	cp $(BUILD_DIR)/$(EXE) $(DIST_DIR)
+	cp $(BUILD_DIR)/$(FLOPTEST_EXE) $(DIST_DIR)    
+	cp $(BUILD_DIR)/$(RTCTEST_EXE) $(DIST_DIR)
 
 .PHONY: clean
 clean:

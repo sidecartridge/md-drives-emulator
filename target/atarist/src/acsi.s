@@ -68,6 +68,8 @@ REBIND_SKIP_MAX_SECTOR      equ 3
 REBIND_SKIP_NO_BCBS         equ 4
 REBIND_SKIP_NEED_EXCEEDS    equ 5
 REBIND_SKIP_MEMTOP_ZERO     equ 6
+REBIND_SKIP_NO_MAGIC        equ 7                   ; the reservation below _membot is not ours
+ACSIEMUL_BCB_MAGIC          equ $AC514BCB           ; stamped by the bit-26 hook in main.s
 
 _membot                 equ $432
 _v_bas_ad               equ $44E
@@ -82,7 +84,7 @@ ACSIEMUL_BPB_DATA_TOTAL_SIZE    equ 640
 ACSIEMUL_IMAGE_BUFFER           equ (ACSIEMUL_BPB_PTR_TABLE + ACSIEMUL_BPB_PTR_TABLE_SIZE + ACSIEMUL_BPB_DATA_TOTAL_SIZE)
 
 SVAR_ENABLED            equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 0)
-; slot 1 (ACSI ID) is RP-written only; no Atari-side reader.
+; slot 1 is unused: it held the ACSI ID, which nothing read.
 SVAR_HOOKS_INSTALLED    equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 2)
 SVAR_OLD_HDV_INIT       equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 3)
 SVAR_OLD_HDV_BPB        equ (ACSIEMUL_SHARED_VARIABLE_SIZE + 4)
@@ -106,7 +108,7 @@ _hdv_mediach            equ $47e                            ; Address of the HDV
 _bootdev                equ $446                            ; BIOS boot device number
 _dskbufp                equ $4c6                            ; Disk buffer pointer (used by sidecart_functions.s)
 
-PUN_INFO_P_MAX_SECTOR   equ 94
+PUN_INFO_P_MAX_SECTOR   equ $5C                  ; AHDI 3.0 pun_info: P_max_sector
 
 BCB_LINK                equ 0
 BCB_BUFDRV              equ 4
@@ -208,6 +210,7 @@ trace_rebind_decision macro
 acsi_start:
     cmp.l #$FFFFFFFF, (ACSIEMUL_SHARED_VARIABLES + (SVAR_ENABLED * 4))
     bne acsi_exit_graciously
+    bsr detect_hw                   ; the machine, for the Mega STE entries below
 
     move.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_PUN_INFO_PTR * 4)), d0
     beq.s .acsi_start_skip_pun_ptr
@@ -215,6 +218,19 @@ acsi_start:
 .acsi_start_skip_pun_ptr:
     bsr acsi_rebind_bcb_buffers
     bsr install_hdv_hooks
+
+    ; A hard-disk driver booted from the disk sets _bootdev to C:, after any
+    ; floppy boot sector has run, and TOS then runs C:\AUTO\ and reads
+    ; C:\DESKTOP.INF. Nothing loads such a driver here, so do its part. This
+    ; runs after the floppy driver, which sets _bootdev to A:.
+    cmp.l #2, (ACSIEMUL_SHARED_VARIABLES + (SVAR_FIRST_VOLUME_DRIVE * 4))
+    bne.s acsi_exit_graciously
+    move.w #2, _bootdev.w
+    ; And the current drive: GEMDOS took it from _bootdev before any of this
+    ; ran, and TOS looks for \AUTO\ there. The floppy driver, which runs
+    ; first, has made it A:.
+    move.w #2, -(sp)
+    gemdos Dsetdrv, 4
 
 acsi_exit_graciously:
     rts
@@ -224,39 +240,92 @@ install_hdv_hooks:
     cmp.l #acsi_hdv_init, d0
     bne.s .check_saved_vectors
     move.l _hdv_bpb.w, d0
-    cmp.l #acsi_hdv_bpb, d0
+    cmp.l #acsi_bpb_entry, d0
     bne.s .check_saved_vectors
     move.l _hdv_rw.w, d0
-    cmp.l #acsi_hdv_rw, d0
+    cmp.l #acsi_rw_entry, d0
     bne.s .check_saved_vectors
     move.l _hdv_boot.w, d0
     cmp.l #acsi_hdv_boot, d0
     bne.s .check_saved_vectors
     move.l _hdv_mediach.w, d0
-    cmp.l #acsi_hdv_mediach, d0
+    cmp.l #acsi_mediach_entry, d0
     bne.s .check_saved_vectors
     set_shared_var_long SVAR_HOOKS_INSTALLED, #1
     rts
 
 .check_saved_vectors:
-    tst.l (ACSIEMUL_SHARED_VARIABLES + (SVAR_HOOKS_INSTALLED * 4))
-    bne .patch_vectors
-
-    set_shared_var_long SVAR_OLD_HDV_INIT, _hdv_init.w
-    set_shared_var_long SVAR_OLD_HDV_BPB, _hdv_bpb.w
-    set_shared_var_long SVAR_OLD_HDV_RW, _hdv_rw.w
-    set_shared_var_long SVAR_OLD_HDV_BOOT, _hdv_boot.w
-    set_shared_var_long SVAR_OLD_HDV_MEDIACH, _hdv_mediach.w
+    ; Save what this machine has now, one vector at a time, unless it is
+    ; already ours. What an earlier session stored is not evidence about this
+    ; one: the RP keeps its memory across an Atari reset, and the flag that
+    ; said "already saved" made us keep those values without looking.
+    move.l _hdv_init.w, d0
+    cmp.l #acsi_hdv_init, d0
+    beq.s .saved_init
+    set_shared_var_long SVAR_OLD_HDV_INIT, d0
+.saved_init:
+    move.l _hdv_bpb.w, d0
+    cmp.l #acsi_bpb_entry, d0
+    beq.s .saved_bpb
+    set_shared_var_long SVAR_OLD_HDV_BPB, d0
+.saved_bpb:
+    move.l _hdv_rw.w, d0
+    cmp.l #acsi_rw_entry, d0
+    beq.s .saved_rw
+    set_shared_var_long SVAR_OLD_HDV_RW, d0
+.saved_rw:
+    move.l _hdv_boot.w, d0
+    cmp.l #acsi_hdv_boot, d0
+    beq.s .saved_boot
+    set_shared_var_long SVAR_OLD_HDV_BOOT, d0
+.saved_boot:
+    move.l _hdv_mediach.w, d0
+    cmp.l #acsi_mediach_entry, d0
+    beq.s .patch_vectors
+    set_shared_var_long SVAR_OLD_HDV_MEDIACH, d0
 
 .patch_vectors:
     move.l #acsi_hdv_init, _hdv_init.w
-    move.l #acsi_hdv_bpb, _hdv_bpb.w
-    move.l #acsi_hdv_rw, _hdv_rw.w
+    move.l #acsi_bpb_entry, _hdv_bpb.w
+    move.l #acsi_rw_entry, _hdv_rw.w
     move.l #acsi_hdv_boot, _hdv_boot.w
-    move.l #acsi_hdv_mediach, _hdv_mediach.w
+    move.l #acsi_mediach_entry, _hdv_mediach.w
 
     set_shared_var_long SVAR_HOOKS_INSTALLED, #1
     rts
+
+; A Mega STE's cache must be off while a disk vector talks to the cartridge
+; (megaste_cache_off in sidecart_macros.s). The ACSI hooks read their arguments
+; from the stack, so on a Mega STE the vector goes to an entry that keeps the
+; setting in a word, pushes the 16 bytes of arguments again - Rwabs's, the
+; longest - and calls the hook, which finds the call as it came. A hook that
+; passes a call on calls the vector before it the same way, and it comes back
+; here. Every register goes through as it was. hdv_init and hdv_boot run while
+; the cartridge starts, when the cache is off already.
+; \1: the hook
+acsi_megaste_entry  macro
+                    cmp.l #COOKIE_JAR_MEGASTE, (RANDOM_TOKEN_SEED_ADDR + 4 + (SHARED_VARIABLE_HARDWARE_TYPE * 4))
+                    bne \1
+                    subq.l #2, sp
+                    move.b MEGASTE_SPEED_CACHE_REG.w, (sp)
+                    bclr #0, MEGASTE_SPEED_CACHE_REG.w
+                    move.l 18(sp), -(sp)            ; four times: the next long up
+                    move.l 18(sp), -(sp)            ; is at 18(sp) again after each
+                    move.l 18(sp), -(sp)
+                    move.l 18(sp), -(sp)
+                    jsr \1
+                    lea 16(sp), sp
+                    move.b (sp), MEGASTE_SPEED_CACHE_REG.w
+                    addq.l #2, sp
+                    rts
+                    endm
+
+acsi_bpb_entry:
+    acsi_megaste_entry acsi_hdv_bpb
+acsi_rw_entry:
+    acsi_megaste_entry acsi_hdv_rw
+acsi_mediach_entry:
+    acsi_megaste_entry acsi_hdv_mediach
 
 acsi_hdv_init:
     trace_hook_none DEBUG_HDV_INIT
@@ -368,12 +437,25 @@ acsi_rebind_bcb_buffers:
     trace_rebind_decision #REBIND_SKIP_MEMTOP_ZERO, d1, #ACSIEMUL_BCB_POOL_BYTES
     bra .acsi_rebind_bcb_buffers_done
 .acsi_rebind_base_ok:
+    ; Only the region the bit-26 hook reserved is ours: it stamped its magic at
+    ; the base before raising _membot. Without that stamp the buffers would land
+    ; in memory the system is using, and the first access through them (a floppy
+    ; read is enough) takes the machine down.
+    movea.l d0, a3
+    cmp.l #ACSIEMUL_BCB_MAGIC, (a3)
+    bne.s .acsi_rebind_no_magic
+    cmp.l 4(a3), d0                 ; the stamp names its own base
+    beq.s .acsi_rebind_magic_ok
+.acsi_rebind_no_magic:
+    trace_rebind_decision #REBIND_SKIP_NO_MAGIC, d1, d0
+    bra .acsi_rebind_bcb_buffers_done
+.acsi_rebind_magic_ok:
     movea.l d0, a4
     movea.l bufl.w, a5
     bsr acsi_assign_bcb_list_buffers
     movea.l (bufl+4).w, a5
     bsr acsi_assign_bcb_list_buffers
-    trace_rebind_decision #REBIND_PLACED, d1, #ACSIEMUL_BCB_POOL_BYTES
+    trace_rebind_decision #REBIND_PLACED, d1, a3     ; a3 = the base: d0 was reused by the loops above
 
 .acsi_rebind_bcb_buffers_done:
     movem.l (sp)+, d0-d7/a0-a6
@@ -536,6 +618,7 @@ acsi_hdv_rw:
     ; Read path
     clr.w d5
     bsr.s acsi_do_transfer_sidecart
+    bsr clear_icache_after_copy              ; what was read may be code
     bra.s .acsi_hdv_rw_done
 .acsi_hdv_rw_write:
     ifne USE_BATCH_WRITE

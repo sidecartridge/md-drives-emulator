@@ -29,22 +29,22 @@
 
 // Index for the common shared variables
 #define RTCEMUL_HARDWARE_TYPE (CHANDLER_HARDWARE_TYPE)
-#define RTCEMUL_SVERSION (CHANDLER_SVERSION)
 
 // 0xA208 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_XBIOS_TRAP_ENABLED            │
+//        │ RTCEMUL_SVAR_ENABLED                       │
 //        │   size 4 bytes                             │
 // 0xA20C ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_BOOT_ENABLED                  │
-//        │   size 4 bytes                             │
-// 0xA210 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_EMULATION_MODE                │
-//        │   size 4 bytes                             │
-// 0xA214 ├────────────────────────────────────────────┤
 //        │ Empty space...                             │
 //        ...
+// 0xA220 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_DATETIME_BCD (RTCEMUL_VARIABLES_   │
+//        │   OFFSET): the IKBD command, 8 bytes       │
 // 0xA228 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_VARIABLES_OFFSET.                  │
+//        │ RTCEMUL_DATETIME_MSDOS, 8 bytes            │
+// 0xA230 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_OLD_XBIOS_TRAP, 4 bytes            │
+// 0xA234 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_CLOCK_SET, 4 bytes                 │
 //        ├────────────────────────────────────────────┤
 
 // We need a gap of 6KB after the random token and seed
@@ -56,8 +56,6 @@
 
 // Now the index for the shared variables of the program
 #define RTCEMUL_SVAR_ENABLED (RTCEMUL_SHARED_VARIABLE_SIZE + 0)  // enabled flag
-#define RTCEMUL_SVAR_GET_TIME_ADDR \
-  (RTCEMUL_SHARED_VARIABLE_SIZE + 1)  //  Get time address
 
 // We will need 32 bytes extra for the variables of the floppy emulator
 #define RTCEMUL_VARIABLES_OFFSET                    \
@@ -72,7 +70,9 @@
 #define RTCEMUL_OLD_XBIOS_TRAP \
   (RTCEMUL_DATETIME_MSDOS + 8)  // datetime_msdos + 8 bytes // old_bios trap + 4
                                 // bytes
-#define RTCEMUL_Y2K_PATCH (RTCEMUL_OLD_XBIOS_TRAP + 4)  // reentry_trap + 4 byte
+// $FFFFFFFF once the RP's clock has been set (NTP answered), 0 before: the ST
+// gives TOS no date the RP does not have.
+#define RTCEMUL_CLOCK_SET (RTCEMUL_OLD_XBIOS_TRAP + 4)
 
 #define RTC_ASSERT_ALIGNED_2(offset) \
   _Static_assert(((offset) & 0x1u) == 0u, #offset " must stay 2-byte aligned")
@@ -87,7 +87,7 @@ RTC_ASSERT_ALIGNED_4(RTCEMUL_VARIABLES_OFFSET);
 RTC_ASSERT_ALIGNED_4(RTCEMUL_DATETIME_BCD);
 RTC_ASSERT_ALIGNED_4(RTCEMUL_DATETIME_MSDOS);
 RTC_ASSERT_ALIGNED_4(RTCEMUL_OLD_XBIOS_TRAP);
-RTC_ASSERT_ALIGNED_4(RTCEMUL_Y2K_PATCH);
+RTC_ASSERT_ALIGNED_4(RTCEMUL_CLOCK_SET);
 
 #define NTP_DEFAULT_HOST "pool.ntp.org"
 #define NTP_DEFAULT_PORT 123
@@ -107,6 +107,8 @@ RTC_ASSERT_ALIGNED_4(RTCEMUL_Y2K_PATCH);
 #define RTCEMUL_SAVE_VECTORS \
   (APP_RTCEMUL << 8 | 2)  // Save the vectors of the RTC emulator
 #define RTCEMUL_SET_SHARED_VAR (APP_RTCEMUL << 8 | 3)  // Set a shared variable
+#define RTCEMUL_SET_TIME \
+  (APP_RTCEMUL << 8 | 4)  // Set the internal RTC from an XBIOS Settime
 
 #define RTCEMUL_PARAMETERS_MAX_SIZE 20  // Maximum size of the parameters
 

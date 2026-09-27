@@ -262,4 +262,15 @@ void term_cmdPutString(const char *arg);
 
 void __not_in_flash_func(term_loop)();
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/**
+ * @brief Debug-only: queue a protocol command as if the ST had sent it.
+ *
+ * Host side is tools/dev/swd.py through the devhooks mailbox (`swd.py key`).
+ * Returns false when another command is pending (retry later).
+ */
+bool term_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                         uint16_t payloadSize);
+#endif
+
 #endif  // TERML_H

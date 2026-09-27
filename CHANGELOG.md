@@ -1,5 +1,64 @@
 # Changelog
 
+## v1.2.0 (2026-09-27)
+This release is about reliability. The emulated hard disks and floppy drives now behave the way the Atari's own drives do, so the desktop, your programs and your games get the answers they expect. The Mega STE keeps the speed and cache you set, the Falcon with TOS 4.04 now works, and the clock shows the right date on every Atari.
+
+### New
+- **Falcon support**: the Multi-device now works on the Falcon with TOS 4.04 - the emulated hard disks, the floppy drives and the clock. The TT has not been tested.
+- **The Mega STE at full speed**: plugging in the Multi-device no longer slows your Mega STE down to 8 MHz with its cache off. It runs at the speed and cache setting you chose, and the emulated drives work at 8 MHz, at 16 MHz and with the cache on.
+- **The right date on every Atari**: with the clock (RTC) on, your Atari shows today's date whatever its TOS - an ST or STE, a Mega ST or Mega STE, or a Falcon - and the files you save get that date. There is nothing to set up: the old "Y2K patch" option is gone. If you have a Y2K fixer such as TIMEFIX in your AUTO folder, remove it: it would correct a date that is already right. When the Multi-device cannot reach the time server, your Atari's clock is left as it was.
+
+### Fixes
+
+#### Hard disk from a folder (GEMDRIVE)
+- **Saved files are no longer damaged**: when the microSD card was slow to answer, a piece of a file could be written twice and the end of the file lost.
+- **Many open windows and files no longer cause errors**: with several desktop windows open, or a program with many files open, the drive could run out of room and answer "file not found". It now handles four times as many, and says "too many open files" when it really is full.
+- **Free space shows correctly on large cards**: on cards bigger than 4 GB the desktop showed the wrong free space (a 32 GB card showed about 720 MB). It now shows up to 2 GB, the most TOS can display; the whole card is still yours to use.
+- **Files are closed when the program that opened them ends**, even when it crashes. Files left open used to stay open until the next reset, and after 32 of them no more files would open.
+- **Programs start from the right drive**: a program on another drive could be started as if it were on the emulated hard disk. On TOS 2.06 that could also crash the machine when you opened the floppy drive, and start the desktop in low resolution instead of the one saved in `DESKTOP.INF`.
+- **TOS 1.04: programs keep their text output**: on some boots every program printed nothing (its text went to the MIDI port), and the desktop could start in the wrong resolution.
+- **Redirecting output into a file works**, as in `prog > C:\OUT.TXT` from a command shell.
+- **A file's date and time can be read and set by programs**: this could fail depending on which drive was current, and setting a date could wipe the program's own copy of it.
+- **Folder listings are no longer mixed up between drives**, and a program that asks for more files after a listing has ended no longer crashes on TOS 1.00 and 1.02.
+- **Opening a folder no longer changes the current drive**, and after a reset the drive starts at its root folder instead of the folder you were last in.
+- **Smaller fixes**: changing a file's attributes reports the new ones, starting a program no longer overwrites a little of the emulator's memory, and programs are loaded exactly as TOS itself loads them.
+
+#### Floppy drives
+- **A failed read or write says so**: you get the desktop's usual alert with Retry, and a write-protected image reports that it is write-protected, instead of the emulation pretending all went well. Images named `.ST.RW` in capital letters are now writable too.
+- **Pressing Esc on the desktop no longer hangs your other drives**: after a second Esc, B:, the ACSI hard disk and every other disk could hang.
+- **Disk changes are noticed as your Atari's own drive notices them**: after you swap images with SELECT, or copy a disk onto an emulated drive with the desktop's Disk Copy, the window shows the new contents.
+- **Disks are read exactly as your Atari's own drive reads them**, including menu disks whose boot sector describes one side of a two-sided disk (34 of 1,456 real images tested).
+- **Game disks that run code from their boot sector no longer crash at boot.**
+- **Your Atari's own floppy drive works as B: while A: is emulated**, with TOS's usual "insert disk B" prompt on a one-drive machine.
+- **Formatting an emulated floppy is refused**: it used to format the disk in your Atari's real drive, while the desktop wrote to the image.
+- **Programs that use the MFP interrupts work with floppy emulation on**, and track reads and writes reach the right drive and side.
+
+#### Hard disks and booting
+- **TOS 1.04 and 1.06: the desktop no longer hangs after running programs**: a bug in these TOS versions (the one Atari's POOLFIX3.PRG fixes) could stop the drives from opening, or hang the desktop with the busy bee, after a Show Info. POOLFIX3 cannot install once a cartridge is running, so the Multi-device now carries its own fix, on by default (`[K]` in the setup menu).
+- **The AUTO folder and `DESKTOP.INF` come from the emulated hard disk** when it is drive C:, even with floppy emulation on, as with a real hard disk.
+- **A change of boot drive works on the first boot**: the AUTO folder is read from the new drive straight away.
+- **The emulated hard disks start cleanly after a reset**, with nothing left over from the previous session.
+
+#### Setup menu, USB and the Multi-device
+- **Copying files to and from the card over USB is 3 to 9 times faster**: about 720 KB/s reading and 610 KB/s writing, up from 130-257 KB/s and 65 KB/s.
+- **Holding SELECT for 10 seconds resets the settings and restarts**, as it should, instead of freezing the Multi-device until you power it off.
+- **Ejecting the card on your computer brings `[E]xit` back** in the setup menu.
+- **The LED no longer flickers during USB copies**, and the emulated drives answer a little faster: the activity LED no longer holds them up.
+- **The README tells you how to get back to the setup menu**: press RESET on the Multi-device, then reset your Atari.
+
+### Removed
+- **The "Y2K patch" option** (`[Y]` in the clock settings): the date is right without it.
+- **The ACSI ID option**: the emulated hard disk is not on the ACSI bus, so the option did nothing but could confuse other hard-disk tools.
+
+### Known issues
+- **Some menu disks report a virus at boot**: menu disks that check the system for boot-sector viruses, such as Medway's, can take the Multi-device's own drive hooks for a virus and warn you. It does no harm. Turning off **Boo[t] enabled** in the floppy settings avoids it. A fix is planned.
+- **The card can drop off your computer during a USB copy**: now and then, at the setup menu, the computer loses the card. Power the Multi-device off and on to recover. The fix will come with a future update of the Raspberry Pi Pico software the firmware is built on.
+
+### For developers
+- The test programs (FSTESTS, FLOPTEST, RTCTEST) and the host tools that run them on Hatari and on real hardware are described in the README and in `tools/dev/README.md`.
+
+---
+
 ## v1.1.0 (2026-03-30)
 This release focuses on RP2040 memory layout cleanup, splitting ROM emulation from command capture, removing obsolete DMA-era plumbing, and tightening several hot paths and board-support subsystems. It also adds experimental **ACSI hard disk emulation** at the BIOS level and a companion `scripts/atari-hd/atari_hd.py` image creator.
 

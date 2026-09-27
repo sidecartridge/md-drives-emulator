@@ -11,14 +11,19 @@ SECTIONS
         gemdrive.o(.text)
     }
 
-    /* Place floppy.s .text at 0x002800 */
-    .text_floppy 0x002800 : { 
+    /* Place floppy.s .text at 0x002A00 */
+    .text_floppy 0x002A00 : { 
         floppy.o(.text)
     }
 
     /* Place rtc.s .text at 0x003400 */
     .text_rtc 0x003400 : {
         rtc.o(.text)
+    }
+
+    /* Place poolfix.s .text at 0x004C00 (the tail of the RTC window) */
+    .text_poolfix 0x004C00 : {
+        poolfix.o(.text)
     }
 
     /* Place acsi.s .text at 0x005400 */

@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This repo is a microfirmware app for the **SidecarTridge Multi-device**, emulating hard disks (ACSI + GEMDrive) and floppy drives for the Atari ST/STe/Mega ST/Mega STe. It is split between code running on the RP2040 (`rp/`) and 68k code running on the Atari side (`target/atarist/`). See `AGENTS.md` for the authoritative set of workspace rules — the notes below summarize the parts most relevant to day-to-day code work.
+This repo is a microfirmware app for the **SidecarTridge Multi-device**, emulating hard disks (ACSI + GEMDrive), floppy drives and a real-time clock for the Atari ST/STe/Mega ST/Mega STe/Falcon. It is split between code running on the RP2040 (`rp/`) and 68k code running on the Atari side (`target/atarist/`). See `AGENTS.md` for the authoritative set of workspace rules — the notes below summarize the parts most relevant to day-to-day code work.
+
+**Model:** use Claude Opus 5.5 or a more capable model, at high effort or above. Lighter settings miss the register, stack and ordering rules below (see AGENTS.md).
 
 ## Build & Test Commands
 
@@ -35,9 +37,13 @@ Atari GEMDRIVE test binary (produces `tests/atarist/dist/FSTESTS.TOS`):
 ```
 Pass any non-empty third argument to enable file logging. Tests run from the Atari desktop while GEMDRIVE points at a writable folder.
 
+The same build produces `FLOPTEST.TOS`, the floppy-only harness: it tests the disk in A: that `tools/dev/make_floppy_image.py` makes, and `tools/dev/hatari_tests.py --harness floptest` runs it against TOS's own floppy driver under Hatari (see `tools/dev/README.md`). It also produces `RTCTEST.TOS`, the clock probe: what the TOS it runs on does with the date (`--harness rtctest` in `hatari_tests.py` and `hardware_tests.py`).
+
 To add a test, put the `test_*()` function in the closest suite file under `tests/atarist/src/` and call it from that suite's `run_*_tests()`. A new suite additionally needs its header included from `tests/atarist/src/main.c`, a `run_<name>_tests(FALSE)` call in `run()`, and the object file added to `tests/atarist/Makefile` (full steps in README.md § Atari GEMDRIVE Tests).
 
-Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` may need a PTY when run through an agent wrapper. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` wants a terminal; when run through an agent wrapper set `STCMD_NO_TTY=1`, as CI does. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
+
+With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD. `tools/dev/hardware_tests.py --harness floptest --disk rw` (or `--harness fstests`) makes a whole hardware run: deploy to the card, menu over SWD, eject, `[E]`, SELECT on cue, the log back in `tools/dev/logs/`. Snapshot the setup screen with `swd.py screen <png>` instead of asking what it shows, and end every program put on the ST for a hardware run by restarting the device and rebooting the ST (`sidecart_restart_device()` then the reset vector, as the harnesses' `end_of_run()` does), so runs follow each other without a hand on the reset button; `swd.py reset` restarts only the RP and leaves a running ST hanging. See AGENTS.md.
 
 ## Architecture — the parts that span multiple files
 
@@ -58,8 +64,9 @@ The Atari and RP communicate through shared memory tokens. The `send_sync` / `se
 ```
 $FA0000  Cart header + main.s code (~32 KB)
 $FA1000  GEMDRIVE code (gemdrive.s)
-$FA2800  FLOPPY code (floppy.s)
+$FA2A00  FLOPPY code (floppy.s)
 $FA3400  RTC code (rtc.s)
+$FA4C00  GEMDOS pool fix (poolfix.s, TOS 1.04/1.06 only)
 $FA5400  ACSI code (acsi.s)
 $FA8000  Framebuffer / exchange buffer (shared, 8 KB)
 $FA8208  Shared variables (token + SVARs per driver)
@@ -89,20 +96,47 @@ Key design points:
 - **Drive-letter gating**: `Dsetdrv()` and `Dsetpath()` in `create_virtual_hard_disk` are only called when the drive is C: (drive number 2). For other letters, these are skipped so TOS doesn't boot from / run AUTO programs from the GEMDRIVE drive. The drive still appears in `_drvbits` for desktop access.
 - **`_bootdev`** is only set for C:. Non-C: drives skip it.
 - **COMMAND_TIMEOUT** in `gemdrive.s` must be `$6FFF` or higher — FatFS operations (Fopen with SD card directory scan) can exceed the old `$FFF` (~20 ms) timeout, causing `send_write_sync` retries that duplicate file descriptors (every Fopen executes twice, leaking fds).
+- **Fwrite chunk dedup**: the RP serves a chunk sequence number at `GEMDRIVE_WRITE_CHK`; `gemdrive.s` reads it once per chunk (before the retry loop) and echoes it in d4 of `CMD_WRITE_BUFF_CALL`. A repeated sequence means the ST never heard the answer, so the RP replays the stored byte count instead of writing again — a retransmit used to append the chunk twice and lose the file tail. Ordering is load-bearing: the per-fd memo and the served-sequence bump must both happen **before** the `WRITE_BYTES` answer.
+- **Handles are closed when their program ends**: Fopen/Fcreate send the running basepage (`os_run`; TOS 1.00 `$602C`/`$873C`) in d4 and the RP records it as the handle's owner; Pterm0/Ptermres/Pterm send `CMD_PTERM_CALL` with the ending basepage and the RP closes that owner's files, as TOS's `ixterm()` does. A crash ends through a real `trap #1` Pterm, so it is covered.
+- **Fforce onto a GEMDRIVE file**: TOS refuses a handle it did not allocate, so GEMDRIVE keeps the alias itself. The RP holds a table of the six standard handles (`GEMDRIVE_FORCED`: the GEMDRIVE handle and the basepage that forced it) and the ST reads it to route `Fread`/`Fwrite`/`Fseek` on a standard handle, so a plain `printf` costs no RP call. The alias applies to the forcing process and its descendants (`p_parent` walk), and is dropped when the file is closed, when that process ends, or when the standard handle is forced back to a TOS handle. `Fdup` stays with TOS, and `Cconws`/`Cconout` do not follow the alias (neither does Hatari).
+- **`GEMDRIVE_EXEC_PD` is a 256-byte basepage buffer**, not a pointer: `CMD_SAVE_BASEPAGE` fills it. `sizeof(PD)` on the RP is larger (its `p_curdir` is a word array), so copies into it must use `GEMDRIVE_EXEC_PD_SIZE`; `sizeof(PD)` wrote 32 bytes past the buffer, over the next variables in the window.
+- **Dfree cluster counts are clamped** so `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a >4 GB card wrap (a 32 GB card showed ~720 MB). Don't "fix" the clamp by reporting real counts.
 
 ### Floppy drive emulation
 
-Media-change state is RP-owned. Atari-side `floppy.s` must only *read* the shared media-change flags. Working behavior: RP raises `MED_CHANGED` on drive-A slot swap and clears it after the first successful read of the new disk's root-directory start sector.
+The emulation hooks the disk vectors `hdv_bpb`/`hdv_rw`/`hdv_mediach`, not the BIOS trap in front of them: the desktop's Esc wraps those vectors and needs GEMDOS's calls for the drive to go through its wrappers, or it leaves them in and the next Esc hangs every other disk (see AGENTS.md). While the disk's boot sector runs it answers at the BIOS trap instead and leaves the vectors as TOS set them, since menu disks check that `hdv_bpb` is in the ROM (Medway: "A virus is lurking in memory"); it moves into the vectors once the boot sector returns. Medway still reports a virus on v1.2.0 (another hook it sees, not yet found); turning off `Boo[t]` avoids it. Media change follows TOS's own floppy driver: the RP raises `MED_CHANGED` on a drive-A slot swap, and on a write to a drive's boot sector after rebuilding its BPB from it (TOS's driver marks a boot-sector write a change and rereads the boot sector in every `Getbpb`); `Mediach` answers it and `Rwabs` (modes 0 and 1) answers `E_CHNG` while it is set; GEMDOS then calls `Getbpb`, which ends the change by telling the RP, as TOS's `getbpb` resets its own state. `Rwabs` with a NULL buffer sets the state, as TOS's does. See AGENTS.md.
+
+Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive B's BPB: the SVAR block is full), written before the token: 0, or the BIOS error TOS's own floppy driver gives for that failure (-13 for a read-only image, -11 for a read fault). `Rwabs` sends a failure through `etv_critic` and tries again on `$10000`, as TOS's driver does, so the desktop shows its usual alert; `Floprd` and `Flopwr` only return it, as TOS's do.
+
+The BPB handed to GEMDOS is built from the boot sector as TOS's own floppy `Getbpb` builds it, on 1.04 and 2.06 alike (measured under Hatari): one reserved sector and two FATs whatever the boot sector says, the root directory truncated to whole sectors. A disk that works on a real ST is laid out that way. An `Rwabs` record is placed as TOS's `floprw` places it, with the boot sector's own sectors per track and sides; the XBIOS reads the disk as it physically is, with the geometry the RP finds from the image's size (Hatari's rule). The two differ only on disks whose boot sector does not describe them, like menu disks with a one-sided BPB on two sides.
+
+Flopfmt on an emulated drive is refused: `floppy.s` sends it to the RP (`FLOPPYEMUL_FORMAT_TRACK`), which answers E_WRPRO for a read-only image and -1 otherwise. Handed to the ROM, as it used to be, it formatted whatever disk was in the physical drive while the desktop's follow-up writes landed on the image.
 
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
+### Start order and boot drive
+
+`main.s` starts the modules in this order: pool fix, floppy, GEMDRIVE, ACSI, RTC. The pool fix must be first (it has to see the ROM's GEMDOS entry). Floppy sets `_bootdev` to A: and may run the image's boot sector; GEMDRIVE (when it is C:) and ACSI (when its first partition is C:) then set C:, like a real hard-disk driver booting after the floppy, so `C:\AUTO\` and `C:\DESKTOP.INF` are used. Each of them also makes its drive GEMDOS's current drive (`Dsetdrv`): GEMDOS took the current drive from `_bootdev` when it started, before the cartridge runs, `_bootdev` survives a reset, and TOS looks for `\AUTO\*.PRG` on the current drive - without it the first boot after a change of boot drive searched the old one.
+
+### GEMDOS pool fix (TOS 1.04/1.06)
+
+TOS 1.04/1.06 GEMDOS has a broken pool-compaction routine (what Atari's POOLFIX3.PRG fixes); POOLFIX3 cannot install once the cartridge has hooked trap #1. `poolfix.s` installs its own XBRA `SDPF` hook first (only on GEMDOS $1500 + TOS 1.04/1.06 with the expected ROM code), compacts the pool before the next GEMDOS call after Mfree/Mshrink/Pterm, and chains to the ROM. It does that work on its own 1 KB stack (see the trap-hook rule below). Its variables live in its own window and are written by the RP (`rp/src/poolfix.c`, app $06), including `pf_enabled` at `$FA4C04` from the `POOLFIX_ENABLED` setting (setup menu `[K]`, default on). See AGENTS.md.
+
+### SELECT button
+
+Watched on core 0 by the non-blocking `select_poll()` (main loop, SD-error wait, Wi-Fi connect callback); core 1 is not used. Setup-menu short press restarts the RP; during emulation a short press cycles floppy A; a 10 s press is a factory reset (by design) and restarts. `tools/dev/select_harness.py` checks every behaviour on hardware; see AGENTS.md for why core 1 must not come back and why the edge interrupt cannot be the only debounce.
+
 ### LED ownership
 
-`blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during transfer. `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.
+`blink.c` owns the Pico W LED. Runtime activity goes through `blink_activityPulse()` + `blink_poll()`. USB MSC inverts: LED on when mounted, off during traffic (`blink_trafficDip()`, restored by `blink_poll()` after 100 ms quiet). `blink.c` may call `network_initChipOnly()` for LED access even when WiFi is down.
 
 ### USB mass storage
 
-MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption.
+MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption. `CFG_TUD_MSC_EP_BUFSIZE` is 4096 (16384 measured no faster). `usb_mass_poll()`, called right after every `tud_task()`, writes the chunk the last write callback parked and reads ahead the next one while USB transfers; every MSC callback finishes a parked write first. TinyUSB 0.18 has an RP2040 endpoint race that can panic (`ep XX was already available`); fixed in TinyUSB 0.21, to be taken with Pico SDK 2.3.2 (see AGENTS.md).
+
+### RTC clock
+
+What decides is the clock TOS reads, not the TOS version: TOS 1.00-2.06 cannot keep a year from 2000 in the keyboard processor's clock (the IKBD refuses the non-BCD byte TOS writes), while the Mega ST (from TOS 1.02), Mega STE, TT and Falcon clock chips keep any year. `rtc.s` sets the date through TOS (Tsetdate before Tsettime), asks TOS's own Gettime whether it kept it, and only when it did not hooks the XBIOS: Gettime is answered from the RP's clock, Settime goes to that clock and on to TOS unchanged. Never `Settime(Gettime())`, no year offsets, and nothing touched when NTP did not set the RP's clock (`RTCEMUL_CLOCK_SET`). RTCTEST measures it per TOS and machine. See AGENTS.md.
 
 ### RTC/NTP WiFi
 
@@ -112,7 +146,13 @@ On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emu
 
 - **`__not_in_flash_func`** on all RP functions in the ACSI/GEMDRIVE/floppy read/write hot path. XIP flash contention with PIO causes silent protocol failures.
 - **No `PRIu32` / `PRIx32` / other `PRI*` macros.** Cast explicitly: `(unsigned long)x` with `%lu`.
+- **`send_sync_command_to_sidecart` / `send_sync_write_command_to_sidecart` return with Z set exactly when d0 is 0.** `acsi.s` branches on the flags straight after the call instead of testing d0; any change to the wait loops must keep the closing `tst.w d0`.
 - **`COMMAND_TIMEOUT` is per-file** — each `.s` file includes its own `sidecart_functions.s`. Changing acsi.s's timeout does not affect gemdrive.s.
+- **A send destroys registers.** `send_sync` keeps d1-d6, `send_write_sync` keeps d1-d6 and a4; both destroy d0, d7 (the retry count) and a0-a3. The table is at the top of `inc/sidecart_macros.s`: check it before holding a pointer across a send, take what you need into a kept register first, and reload address registers after. See AGENTS.md for what it costs when you don't.
+- **Trap #1 hooks push nothing before they know they handle the call.** TOS 1.04 starts GEM on a 132-byte stack and calls GEMDOS from it with ~110 bytes to spare; overflowing it zeroed GEM's standard handles (every program's console output went to MIDI) and can hit the AES resolution variables. GEMDRIVE looks a call up with `d0` alone and runs the ones it takes on its own stack, as the pool fix does - at boot a nested call had less than 8 bytes to spare. Both give the caller its registers back as TOS's GEMDOS does (all but `d0` from supervisor mode, all but `a0` from user mode); the desktop's Esc depends on `a0`. See AGENTS.md.
+- **On a Mega STE the cache is off while the cartridge is talked to; the speed is the user's.** With the cache on, commands to the cartridge fail (ACSI crashed, floppy commands never arrived); 16 MHz alone is fine. Each driver clears bit 0 of `$FFFF8E21` once it knows a call is its own and puts the setting back after - GEMDRIVE on its own stack, the floppy through `floppy_serve` (NOPs on other machines, patched by the RP), ACSI through entries that re-push the vector's arguments, the RTC around its send, `main.s` for the setup menu and the drivers' start. Don't bring back the step-down to 8 MHz. See AGENTS.md.
+- **On a 68010 or later a trap hook finds a user-mode call at `usp` as it is.** The longer exception frame (`_longframe`) adds its word to the supervisor stack only; our hooks added it for user mode too, and on the Falcon every user-mode GEMDOS, BIOS and XBIOS call through them was read 2 bytes off. And code copied into RAM and run there needs a 68030's instruction cache cleared first: the senders' wait loop runs from the cache otherwise, half of it someone else's, and commands were sent twice (`clear_icache_after_copy`). See AGENTS.md.
+- **Code that gets control from a trap's RTE runs in the caller's mode.** `.pexec_mshrink_exit` in `gemdrive.s` (the TOS 1.00/1.02 `PE_GO` return hook) is entered that way, so it runs in user mode whenever an ordinary program starts another one. It must not touch the first 2 KB of memory, which bus-errors in user mode: that rules out `send_sync`, which reads `_dskbufp` at `$4C6`. See AGENTS.md.
 - **Cart window ($FA0000+) is read-only from the Atari CPU.** Writes are silently ignored by the bus. Use `CMD_SET_SHARED_VAR` commands to update SVARs.
 - **Every `.s` module must close with `even / nop × ≥8 / <module>_end:` AFTER `include "inc/sidecart_functions.s"`.** `target/atarist/firmware.py` strips trailing zeros from `BOOT.BIN` before generating `target_firmware.h`, and `COMMAND_SYNC_WRITE_CODE_SIZE` reads 4 bytes past `_end_sync_write_code_in_stack`. Without the NOP tail, the polling code becomes the last non-zero bytes of the firmware, the RP's `ROM_IN_RAM` region past `target_firmware_length` is uninitialized, and the over-read copies garbage into `_dskbufp` (or the 68000 prefetches garbage in modes 0/2). The symptom is 4-bomb bus errors only on write paths, intermittently — acsi.s hit this and it cost a full day to diagnose. Floppy/gemdrive/rtc already follow this convention; keep it.
 - Keep debug traces low-noise. Per-sector Rwabs traces were removed for performance (each `send_sync CMD_DEBUG` is a full bus round-trip).
@@ -136,6 +176,19 @@ Drift example we already caught with this skill: the "first AHDI partition must 
 
 - **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
 - Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`).
+
+## Release workflow
+
+These rules apply to every new version:
+
+- **A version starts with a release branch.** Create `release/vX.Y.Z` from `main`, where `vX.Y.Z`
+  is exactly what `version.txt` will contain for that release.
+- **One branch per epic, cut from the release branch**, named `epic/NN-<slug>`. All work for the
+  epic is committed there, including the `version.txt` bump in the first epic of a release.
+- **An epic's pull request targets `release/vX.Y.Z`, never `main`.** It is merged only after
+  Diego has verified the epic on real hardware.
+- **`main` receives the release branch once**, when the whole version is done and verified.
+- Commit, push, open and merge pull requests only when Diego asks.
 
 ## Working style
 
@@ -193,3 +246,16 @@ docs, or any other artifact. This means **no**:
 
 Write the message as the human author. Do not mention AI tools used to
 produce the work.
+
+### 6. No planning references in released content
+
+The local backlog lives in `docs/` (epics, stories, iterations), which is **gitignored** — it
+exists only on the developer's machine. **Never name an epic, story, iteration or task in
+anything that is committed or pushed**: code comments, documentation, the changelog, commit
+messages, PR descriptions. (Epic branches are the one exception: they are named
+`epic/NN-<slug>`, and the slug says what the work is.) A planning identifier tells a reader of this repository
+nothing and cannot be looked up — and a commit message cannot be cleaned up before a release.
+Write what the code does and why instead: the information, not the pointer. Traceability runs
+one way only: the local story notes record the commit hashes. Before tagging a release, check
+with `git grep -IiE "EPIC-|STORY-|docs/epics" -- ':!CLAUDE.md' ':!AGENTS.md'` (this rule is the
+only allowed match).

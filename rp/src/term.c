@@ -90,6 +90,30 @@ static inline void __not_in_flash_func(handle_protocol_command)(
   lastProtocolValid = true;
 };
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+// Debug-only entry point for tools/dev/swd.py: queue a protocol command (a
+// keystroke, usually) as if the ST had sent it, so the next term_loop()
+// handles it normally.
+bool term_injectProtocol(uint16_t commandId, const uint16_t *payload,
+                         uint16_t payloadSize) {
+  if (lastProtocolValid) {
+    return false;
+  }
+  uint16_t size = tprotocol_clamp_payload_size(payloadSize);
+  lastProtocol.command_id = commandId;
+  lastProtocol.payload_size = size;
+  lastProtocol.bytes_read = size;
+  lastProtocol.final_checksum = 0;
+  memset(lastProtocol.payload, 0, sizeof(lastProtocol.payload));
+  memcpy(lastProtocol.payload, payload, (size + 1u) & ~1u);
+  lastProtocolAcceptedAtUs = time_us_32();
+  lastProtocolValid = true;
+  DPRINTF("Injected terminal command %04x (%u bytes)\n", commandId,
+          (unsigned int)size);
+  return true;
+}
+#endif
+
 static inline void __not_in_flash_func(handle_protocol_checksum_error)(
     const TransmissionProtocol *protocol) {
   DPRINTF("Checksum error detected (ID=%u, Size=%u)\n", protocol->command_id,
