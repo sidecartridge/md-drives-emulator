@@ -23,7 +23,6 @@ CMD_RETRIES_COUNT   equ 5                         ; Number of retries to send th
 
 ; CONSTANTS
 APP_RTCEMUL             equ $0300                           ; MSB is the app code. RTC is $03
-CMD_TEST_NTP            equ ($0 + APP_RTCEMUL)              ; Command code to ping to the Sidecart
 CMD_READ_DATETME        equ ($1 + APP_RTCEMUL)              ; Command code to read the date and time from the Sidecart
 CMD_SAVE_VECTORS        equ ($2 + APP_RTCEMUL)              ; Command code to save the vectors in the Sidecart
 CMD_SET_SHARED_VAR      equ ($3 + APP_RTCEMUL)              ; Command code to set a shared variable in the Sidecart

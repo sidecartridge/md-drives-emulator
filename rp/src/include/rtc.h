@@ -31,19 +31,20 @@
 #define RTCEMUL_HARDWARE_TYPE (CHANDLER_HARDWARE_TYPE)
 
 // 0xA208 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_XBIOS_TRAP_ENABLED            │
+//        │ RTCEMUL_SVAR_ENABLED                       │
 //        │   size 4 bytes                             │
 // 0xA20C ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_BOOT_ENABLED                  │
-//        │   size 4 bytes                             │
-// 0xA210 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_SVAR_EMULATION_MODE                │
-//        │   size 4 bytes                             │
-// 0xA214 ├────────────────────────────────────────────┤
 //        │ Empty space...                             │
 //        ...
+// 0xA220 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_DATETIME_BCD (RTCEMUL_VARIABLES_   │
+//        │   OFFSET): the IKBD command, 8 bytes       │
 // 0xA228 ├────────────────────────────────────────────┤
-//        │ RTCEMUL_VARIABLES_OFFSET.                  │
+//        │ RTCEMUL_DATETIME_MSDOS, 8 bytes            │
+// 0xA230 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_OLD_XBIOS_TRAP, 4 bytes            │
+// 0xA234 ├────────────────────────────────────────────┤
+//        │ RTCEMUL_CLOCK_SET, 4 bytes                 │
 //        ├────────────────────────────────────────────┤
 
 // We need a gap of 6KB after the random token and seed

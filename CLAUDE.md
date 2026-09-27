@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This repo is a microfirmware app for the **SidecarTridge Multi-device**, emulating hard disks (ACSI + GEMDrive) and floppy drives for the Atari ST/STe/Mega ST/Mega STe. It is split between code running on the RP2040 (`rp/`) and 68k code running on the Atari side (`target/atarist/`). See `AGENTS.md` for the authoritative set of workspace rules — the notes below summarize the parts most relevant to day-to-day code work.
+This repo is a microfirmware app for the **SidecarTridge Multi-device**, emulating hard disks (ACSI + GEMDrive), floppy drives and a real-time clock for the Atari ST/STe/Mega ST/Mega STe/Falcon. It is split between code running on the RP2040 (`rp/`) and 68k code running on the Atari side (`target/atarist/`). See `AGENTS.md` for the authoritative set of workspace rules — the notes below summarize the parts most relevant to day-to-day code work.
 
 ## Build & Test Commands
 
@@ -131,6 +131,10 @@ Watched on core 0 by the non-blocking `select_poll()` (main loop, SD-error wait,
 ### USB mass storage
 
 MSC-only device (the old CDC composite path was removed from the TinyUSB config/descriptors), available only at the setup menu. The MSC read/write callbacks support chunked host transfers, including multi-sector and partial-sector accesses — do not regress them to the old single-sector `offset == 0` assumption. `CFG_TUD_MSC_EP_BUFSIZE` is 4096 (16384 measured no faster). `usb_mass_poll()`, called right after every `tud_task()`, writes the chunk the last write callback parked and reads ahead the next one while USB transfers; every MSC callback finishes a parked write first. TinyUSB 0.18 has an RP2040 endpoint race that can panic (`ep XX was already available`); fixed in TinyUSB 0.21, to be taken with Pico SDK 2.3.2 (see AGENTS.md).
+
+### RTC clock
+
+What decides is the clock TOS reads, not the TOS version: TOS 1.00-2.06 cannot keep a year from 2000 in the keyboard processor's clock (the IKBD refuses the non-BCD byte TOS writes), while the Mega ST (from TOS 1.02), Mega STE, TT and Falcon clock chips keep any year. `rtc.s` sets the date through TOS (Tsetdate before Tsettime), asks TOS's own Gettime whether it kept it, and only when it did not hooks the XBIOS: Gettime is answered from the RP's clock, Settime goes to that clock and on to TOS unchanged. Never `Settime(Gettime())`, no year offsets, and nothing touched when NTP did not set the RP's clock (`RTCEMUL_CLOCK_SET`). RTCTEST measures it per TOS and machine. See AGENTS.md.
 
 ### RTC/NTP WiFi
 

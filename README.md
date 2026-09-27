@@ -12,7 +12,8 @@
 
 A [SidecarTridge Multi-device](https://sidecartridge.com) microfirmware that
 emulates **hard disks** (GEMDrive and ACSI), **floppy drives**, and a
-**real-time clock** on the Atari ST, STe, Mega ST, and Mega STe.
+**real-time clock** on the Atari ST, STe, Mega ST, Mega STe, and Falcon (the TT has not
+been tested).
 
 > Learn how to install and use it:
 > <https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/drives_emulator/>
@@ -33,7 +34,7 @@ After launching, the app will automatically run every time your Atari computer i
 
 ## Usage
 
-When you boot your Atari ST/STE/Mega ST/Mega STe, the app displays a **setup screen** for 5 seconds.  
+When you boot your Atari ST/STE/Mega ST/Mega STe/Falcon, the app displays a **setup screen** for 5 seconds.  
 If no key is pressed, the emulator will start emulating the floppy and hard disk drives configured in the setup screen.
 
 This menu will pop up every time you power on your Atari computer, but not when you reset it. If you want to enter into this menu without powering off your Atari, press the **`RESET`** button on your Multi-device and then press the reset button on your Atari.
@@ -64,7 +65,7 @@ The Multi-device introduces a hard disk emulation feature for the Atari ST, offe
 - **Advantages**:
   - Unlimited hard disk size, allowing the use of the full capacity of the microSD card.
   - Not affected by the infamous Bad-DMA issue, as the Multi-device doesn't rely on the Atari ST's DMA controller.
-  - Compatibility across TOS versions 1.00 to 2.06 and EmuTOS.
+  - Compatibility across TOS versions 1.00 to 2.06, TOS 4.04 on the Falcon, and EmuTOS.
   - Enables organizing files into folders on the microSD card, simulating multiple hard disks on a single card.
   - Facilitates easy file transfer between the microSD card and computers (PC/Mac/Linux).
   - Requires less or no memory compared to other emulation drivers.
@@ -105,7 +106,7 @@ It is disabled by default.
   - Transferring files in and out of the image requires either USB Mass Storage at the setup screen or a host-side image editor.
   - Less battle-tested than GEMDrive; some corner cases may still trigger regressions.
 
-**TOS compatibility.** This release has been tested from **TOS 1.04 through TOS 2.06**. It does **not** currently work under **EmuTOS** — the embedded EmuTOS hard disk driver conflicts with the ACSI hooks installed by the emulator and prevents the emulated volumes from coming up. Running ACSI emulation on EmuTOS is not supported in this version.
+**TOS compatibility.** This release has been tested from **TOS 1.04 through TOS 2.06**, and with **TOS 4.04** on the Falcon. It does **not** currently work under **EmuTOS** — the embedded EmuTOS hard disk driver conflicts with the ACSI hooks installed by the emulator and prevents the emulated volumes from coming up. Running ACSI emulation on EmuTOS is not supported in this version.
 
 **Coexistence with real ACSI hardware.** The emulated drives can sit beside a real hard disk on the ACSI port, run by its own driver (PPDRIVER, HDDRIVER, AHDI): pick a starting drive letter after the ones the real driver takes, and both sets appear in TOS. The emulated drives are not on the ACSI bus, so they have no ACSI ID: their `pun_info` entries say "no physical unit" (`$FF`), and a real driver loaded from the real disk replaces that table with its own. Tested on TOS 1.04 with a real disk as `C:`–`E:` and the emulated one from `F:`.
 
@@ -182,7 +183,23 @@ When the RTC/NTP flow runs, the emulator shows the progress on screen:
 - the assigned IP address when a connection succeeds
 - NTP synchronization status
 
-If the NTP sync fails or times out, the emulator still continues into normal emulation.
+If the NTP sync fails or times out, the emulator still continues into normal emulation, and
+leaves the Atari's clock as it was.
+
+| Command | Description |
+|---|---|
+| **[R]TC Enabled** | Enable or disable the RTC emulation and its NTP sync. |
+| **[H]ost NTP** | The NTP server to ask (default `pool.ntp.org`). |
+| **[P]ort** | The NTP server's port (default 123). |
+| **[U] Offset** | Hours to add to UTC for the local time, e.g. `1` or `-5.5`. |
+
+With the date from NTP, the emulator sets the Atari's clock through TOS and then checks whether
+TOS kept it. A Mega ST (from TOS 1.02), a Mega STE and a Falcon have a clock chip that keeps any
+year, and TOS is left alone there. An ST or an STE has only the keyboard processor's clock, where
+TOS 1.00 to 2.06 cannot keep a year from 2000 (TOS 1.00 on a Mega ST uses it too): there the
+emulator answers the XBIOS `Gettime` call from its own clock, which also takes the date a program
+sets with `Settime`. No setting is needed. With the RTC on, remove any Y2K fixer (TIMEFIX and the
+like) from the AUTO folder: it would correct a year that is already right.
 
 Refer to the RTC Emulator documentation in the SidecarTridge docs for the complete setup and usage details.
 

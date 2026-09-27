@@ -7,7 +7,7 @@
 /* What each TOS does with the date in XBIOS Gettime and Settime: which clock
    it uses, how it writes the year into the keyboard processor's clock (the
    IKBD's, six BCD bytes: year, month, day, hour, minute, second), what it
-   makes of the year bytes our RTC emulation sends, and whether the IKBD keeps
+   makes of the year bytes an RTC emulation may send, and whether the IKBD keeps
    and advances them. Runs in supervisor mode: the 200 Hz counter and the
    IKBD's clock vector are system memory. */
 
@@ -143,7 +143,7 @@ static void test_year_bytes(void) {
     const char* what;
   } bytes[] = {
       {0x26, "26: plain BCD"},
-      {0x96, "96: 26 + 70, our Y2K patch's"},
+      {0x96, "96: 26 + 70, the old Y2K patch's"},
       {0xC6, "C6: BCD 46 + $80, TOS's own for 2026"},
   };
   char name[80];
