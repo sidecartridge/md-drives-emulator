@@ -28,7 +28,7 @@ This release is about reliability. The emulated hard disks and floppy drives now
 - **Pressing Esc on the desktop no longer hangs your other drives**: after a second Esc, B:, the ACSI hard disk and every other disk could hang.
 - **Disk changes are noticed as your Atari's own drive notices them**: after you swap images with SELECT, or copy a disk onto an emulated drive with the desktop's Disk Copy, the window shows the new contents.
 - **Disks are read exactly as your Atari's own drive reads them**, including menu disks whose boot sector describes one side of a two-sided disk (34 of 1,456 real images tested).
-- **Game disks that run code from their boot sector no longer crash at boot**, and menu disks that check for boot-sector viruses (such as Medway's) no longer raise a false alarm.
+- **Game disks that run code from their boot sector no longer crash at boot.**
 - **Your Atari's own floppy drive works as B: while A: is emulated**, with TOS's usual "insert disk B" prompt on a one-drive machine.
 - **Formatting an emulated floppy is refused**: it used to format the disk in your Atari's real drive, while the desktop wrote to the image.
 - **Programs that use the MFP interrupts work with floppy emulation on**, and track reads and writes reach the right drive and side.
@@ -51,6 +51,7 @@ This release is about reliability. The emulated hard disks and floppy drives now
 - **The ACSI ID option**: the emulated hard disk is not on the ACSI bus, so the option did nothing but could confuse other hard-disk tools.
 
 ### Known issues
+- **Some menu disks report a virus at boot**: menu disks that check the system for boot-sector viruses, such as Medway's, can take the Multi-device's own drive hooks for a virus and warn you. It does no harm. Turning off **Boo[t] enabled** in the floppy settings avoids it. A fix is planned.
 - **The card can drop off your computer during a USB copy**: now and then, at the setup menu, the computer loses the card. Power the Multi-device off and on to recover. The fix will come with a future update of the Raspberry Pi Pico software the firmware is built on.
 
 ### For developers
