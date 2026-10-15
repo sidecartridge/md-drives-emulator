@@ -610,6 +610,31 @@ static void __not_in_flash_func(cleanFileDescriptors)(FileDescriptors **head) {
   DPRINTF("All file descriptors cleaned.\n");
 }
 
+// GEMDOS reads each part of a name as 8.3 - 8 characters before the dot, 3
+// after it - and drops the rest: a program can ask for "dmalogo.imgg" and get
+// DMALOGO.IMG (PP's Gamex Lemmings does). Cut `name` that way, in place, and
+// say whether anything was dropped.
+static bool __not_in_flash_func(cutGemdos83)(char *name) {
+  bool cut = false;
+  int room = 8;  // what is left of this part's name, then of its extension
+  char *out = name;
+  for (const char *in = name; *in; in++) {
+    if (*in == '\\' || *in == '/') {
+      room = 8;
+    } else if (*in == '.') {
+      room = 3;
+    } else if (room == 0) {
+      cut = true;
+      continue;
+    } else {
+      room--;
+    }
+    *out++ = *in;
+  }
+  *out = '\0';
+  return cut;
+}
+
 // dpathStr, hdFolder are global variables
 static void __not_in_flash_func(getLocalFullPathname)(uint16_t *pyldPtr,
                                                       char *tmp_filepath) {
@@ -651,6 +676,27 @@ static void __not_in_flash_func(getLocalFullPathname)(uint16_t *pyldPtr,
 
   // Remove duplicated forward slashes
   sdcard_removeDupSlashes(tmp_filepath);
+
+  // A name only TOS's 8.3 reading finds: when the name as it came is not on
+  // the card and its 8.3 form is, use that, as GEMDOS would. Only the
+  // program's part is cut, never the card's folder or the current path.
+  char cut_filepath[GEMDRIVE_MAX_FOLDER_LENGTH] = {0};
+  int cut_from = snprintf(cut_filepath, GEMDRIVE_MAX_FOLDER_LENGTH, "%s/",
+                          tmp_path);
+  if (cut_from > 0 && cut_from < GEMDRIVE_MAX_FOLDER_LENGTH) {
+    snprintf(cut_filepath + cut_from, GEMDRIVE_MAX_FOLDER_LENGTH - cut_from,
+             "%s", path_filename);
+    if (cutGemdos83(cut_filepath + cut_from)) {
+      sdcard_back2ForwardSlash(cut_filepath);
+      sdcard_removeDupSlashes(cut_filepath);
+      if (f_stat(tmp_filepath, NULL) != FR_OK &&
+          f_stat(cut_filepath, NULL) == FR_OK) {
+        DPRINTF("Not on the card: %s. As 8.3: %s\n", tmp_filepath,
+                cut_filepath);
+        strcpy(tmp_filepath, cut_filepath);
+      }
+    }
+  }
 }
 
 static void printVars(uint32_t mem) {
