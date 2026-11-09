@@ -37,6 +37,12 @@ HATARI = os.path.join(HERE, "builds/emumd-cache/hatari-fork/build/src/hatari")
 ENV = dict(os.environ, EMUMD_HATARI=HATARI)
 MEMSIZE = "4"
 FLOPPY_FOLDER = "floppies"
+# ACSI's disk images come from https://github.com/sidecartridge/atari-hd
+ATARI_HD = os.environ.get("ATARI_HD", os.path.join(
+    os.path.dirname(ROOT), "atari-hd", "atari_hd.py"))
+ACSI_IMAGE = "ACSITEST.img"
+ACSI_FIRST_LBA = 2  # where the builder starts an AHDI image's first partition
+ACSI_RUN = "fstests-acsi"
 
 # Every driver set explicitly: what a run leaves on is what it tests.
 SETTINGS = {
@@ -59,11 +65,45 @@ KNOWN_LIMITS = [
     ("FDTOTHER.TXT ", "f_utime is a stand-in"),
 ]
 
+# From an ACSI image the file system is TOS's own, and these cases, written for
+# GEMDRIVE, get TOS's answers: on the hardware as well.
+TOS_OWN_ANSWERS = [
+    ("Concurrent read handles file ", "TOS numbers its handles its own way"),
+    ("Directory-inclusive listing returns two entries", "TOS lists . and .."),
+]
 
-def limit_of(test):
-    """Why a failed test is a known limit of EmuMD, or None."""
+
+def mtools(*command, **kwargs):
+    """An mtools command on a partition of the ACSI image."""
+    return subprocess.run(command, check=True, capture_output=True,
+                          env=dict(os.environ, MTOOLS_SKIP_CHECK="1"), **kwargs)
+
+
+def make_acsi_image(work, harness):
+    """An AHDI image, one 31 MB partition, with the harness in its AUTO folder.
+    Returns the mtools name of the partition."""
+    folder = os.path.join(work, "sd", "images")
+    os.makedirs(folder)
+    # The builder's prompts, in order: file name, format (AHDI), not TOS < 1.04,
+    # the partition's name, its size in MB, and defaults for the rest.
+    subprocess.run([sys.executable, ATARI_HD, "--no-tui", "--size", "32",
+                    "--auto", "off"], cwd=folder, check=True,
+                   input="%s\n\n\nC\n31\n\n\n\n\n\n\n\n" % ACSI_IMAGE,
+                   capture_output=True, text=True)
+    partition = "%s@@%d" % (os.path.join(folder, ACSI_IMAGE), ACSI_FIRST_LBA * 512)
+    program = os.path.join(DIST, harness["program"])
+    mtools("mmd", "-i", partition, "::AUTO")
+    for copy in harness["copies"]:
+        mtools("mcopy", "-i", partition, program, "::/" + copy)
+    mtools("mcopy", "-i", partition, program,
+           "::AUTO/" + harness["program"].split(".")[0] + ".PRG")
+    return partition
+
+
+def limit_of(test, acsi):
+    """Why a failed test is expected in this run, or None."""
     name = test[len("(user) "):] if test.startswith("(user) ") else test
-    for start, why in KNOWN_LIMITS:
+    for start, why in TOS_OWN_ANSWERS if acsi else KNOWN_LIMITS:
         if name.startswith(start):
             return why
     return None
@@ -94,7 +134,8 @@ def make_seed(tos_dir):
 
 def run(name, disk, version, tos_dir, seed, timeout):
     """One harness on one TOS. Returns (results, log), or (None, None)."""
-    harness = HARNESSES[name]
+    acsi = name == ACSI_RUN
+    harness = HARNESSES["fstests" if acsi else name]
     image, machine = TOS_IMAGES[version]
     work = os.path.join(LOGS, "%s-%s" % (name + ("-" + disk if disk else ""),
                                          version))
@@ -109,15 +150,41 @@ def run(name, disk, version, tos_dir, seed, timeout):
     log_path = os.path.join(drive, harness["log"])
 
     settings = dict(SETTINGS)
+    partition = None
+    if acsi:
+        partition = make_acsi_image(work, harness)
+        settings.update(ACSI_ENABLED="true", GEMDRIVE_ENABLED="false",
+                        ACSI_IMAGE="/images/" + ACSI_IMAGE, ACSI_DRIVE="C")
+
+    def read_log():
+        """The harness's log so far, or None."""
+        if partition:
+            # The firmware syncs the image a while after a write and Hatari
+            # stops answering at the restart, so the end of a log inside the
+            # image may never get there: the console's copy is whole.
+            hatari_log = os.path.join(work, "hatari.log")
+            if not os.path.exists(hatari_log):
+                return None
+            with open(hatari_log, errors="replace") as handle:
+                text = handle.read()
+            return text if harness["banner"] in text else None
+        if not os.path.exists(log_path):
+            return None
+        with open(log_path, errors="replace") as handle:
+            return handle.read()
+
     if name == "rtctest":
         settings["RTC_ENABLED"] = "true"
     image_a = None
-    if disk:
+    # FSTESTS has cases about another drive: the writable disk in A:, as on
+    # the hardware runs.
+    in_drive = disk or ("rw" if harness is HARNESSES["fstests"] else None)
+    if in_drive:
         floppies = os.path.join(work, "sd", FLOPPY_FOLDER)
         os.makedirs(floppies)
-        a_name, other_kind, other_name = FLOPTEST_DISKS[disk]
+        a_name, other_kind, other_name = FLOPTEST_DISKS[in_drive]
         image_a = os.path.join(floppies, a_name)
-        for kind, path in ((disk, image_a),
+        for kind, path in ((in_drive, image_a),
                            (other_kind, os.path.join(floppies, other_name))):
             subprocess.run([sys.executable, MAKE_IMAGE, kind, path], check=True,
                            stdout=subprocess.DEVNULL)
@@ -134,6 +201,8 @@ def run(name, disk, version, tos_dir, seed, timeout):
     command = mdfw_run(os.path.join(tos_dir, image), machine, work, flash,
                        # headless runs stop after 500 frames by default
                        ("--frames", "100000000", "--timeout", str(timeout + 30)))
+    if acsi:
+        command += ["--conout", "2"]
     with open(os.path.join(work, "mdfw.out"), "w") as out:
         # Its own session: a run must end Hatari as well as mdfw.
         process = subprocess.Popen(command, env=ENV, stdout=out,
@@ -143,21 +212,19 @@ def run(name, disk, version, tos_dir, seed, timeout):
         # The harness ends by restarting the device, after which Hatari stops
         # answering, even to SIGTERM: what the log holds by then is the result.
         while time.time() < deadline and process.poll() is None:
-            if os.path.exists(log_path):
-                with open(log_path, errors="replace") as handle:
-                    if DONE_MARKER in handle.read():
-                        time.sleep(2)
-                        break
+            log = read_log()
+            if log and DONE_MARKER in log:
+                time.sleep(2)
+                break
             time.sleep(1)
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         process.wait()
-    if not os.path.exists(log_path):
+    log = read_log()
+    if log is None:
         return None, None
-    with open(log_path, errors="replace") as handle:
-        log = handle.read()
     if disk == "rw":
         check = subprocess.run([sys.executable, MAKE_IMAGE, "check-rw", image_a],
                                stdout=subprocess.PIPE, universal_newlines=True)
@@ -168,8 +235,9 @@ def run(name, disk, version, tos_dir, seed, timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--harness", action="append",
-                        choices=list(HARNESSES),
-                        help="repeatable; default all of them")
+                        choices=list(HARNESSES) + [ACSI_RUN],
+                        help="repeatable; default all of them. %s is FSTESTS "
+                        "from an ACSI image as C:, GEMDRIVE off" % ACSI_RUN)
     parser.add_argument("--tos", action="append", metavar="VERSION",
                         help="a TOS of %s (repeatable; default 1.04)"
                         % ", ".join(TOS_IMAGES))
@@ -181,7 +249,7 @@ def main():
     seed = make_seed(args.tos_dir)
     ok = True
     for version in args.tos or ["1.04"]:
-        for name in args.harness or list(HARNESSES):
+        for name in args.harness or list(HARNESSES) + [ACSI_RUN]:
             for disk in FLOPTEST_DISKS if name == "floptest" else [None]:
                 print("%s%s, TOS %s" % (name.upper(), " " + disk if disk else "",
                                         version), flush=True)
@@ -195,8 +263,8 @@ def main():
                     print("  the run did not finish: partial results")
                     ok = False
                 failed = [t for t, r in results.items() if r == "FAIL"]
-                limits = [t for t in failed if limit_of(t)]
-                real = [t for t in failed if not limit_of(t)]
+                limits = [t for t in failed if limit_of(t, name == ACSI_RUN)]
+                real = [t for t in failed if t not in limits]
                 values = list(results.values())
                 if name == "rtctest":
                     # A measurement of what TOS does with the date, and with
@@ -205,7 +273,7 @@ def main():
                     print("  measured: %d yes, %d no (not a pass or fail)" % (
                         values.count("OK"), values.count("FAIL")))
                     continue
-                print("  %d OK, %d FAIL, %d SKIP, %d EmuMD limits" % (
+                print("  %d OK, %d FAIL, %d SKIP, %d expected failures" % (
                     values.count("OK"), len(real), values.count("SKIP"),
                     len(limits)))
                 for test in real:
