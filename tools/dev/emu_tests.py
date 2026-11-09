@@ -195,6 +195,10 @@ def run(name, disk, version, tos_dir, seed, timeout):
     flash = os.path.join(work, "flash.bin")
     with open(seed, "rb") as handle:
         contents = md_settings.set_values(handle.read(), settings)
+    if name == "rtctest":
+        # EmuMD joins any network and reaches NTP through the host's.
+        contents = md_settings.set_values(contents, {"WIFI_MODE": "1"},
+                                          md_settings.GLOBAL)
     with open(flash, "wb") as handle:
         handle.write(contents)
 
@@ -267,9 +271,9 @@ def main():
                 real = [t for t in failed if t not in limits]
                 values = list(results.values())
                 if name == "rtctest":
-                    # A measurement of what TOS does with the date, and with
-                    # no NTP the firmware leaves TOS alone: compare with
-                    # hatari_tests.py --harness rtctest, nothing passes or fails.
+                    # A measurement of what TOS does with the date: compare
+                    # with hatari_tests.py --harness rtctest, nothing passes or
+                    # fails.
                     print("  measured: %d yes, %d no (not a pass or fail)" % (
                         values.count("OK"), values.count("FAIL")))
                     continue

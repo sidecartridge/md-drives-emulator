@@ -22,6 +22,7 @@ LOOKUP = 0x1FE000
 LOOKUP_ENTRY = 38
 UUID_SIZE = 36
 CONFIG = 0x1E0000
+GLOBAL = 0x1FF000  # the Booster's settings, Wi-Fi among them
 SECTOR = 0x1000
 KEY, TYPE, VALUE = 30, 1, 96
 ENTRY = KEY + TYPE + VALUE
@@ -52,10 +53,13 @@ def entries(flash, sector):
     return out
 
 
-def set_values(flash, changes):
-    """A copy of the flash image with the given {key: value} changed."""
+def set_values(flash, changes, sector=None):
+    """A copy of the flash image with the given {key: value} changed, in the
+    app's settings or in the sector given."""
     flash = bytearray(flash)
-    found = {key: off for off, key, _, _ in entries(flash, app_sector(flash))}
+    if sector is None:
+        sector = app_sector(flash)
+    found = {key: off for off, key, _, _ in entries(flash, sector)}
     for key, value in changes.items():
         if key not in found:
             raise KeyError(f"{key}: no such setting in this flash")

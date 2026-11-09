@@ -47,6 +47,8 @@ Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-do
 
 With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD. `tools/dev/hardware_tests.py --harness floptest --disk rw` (or `--harness fstests`) makes a whole hardware run: deploy to the card, menu over SWD, eject, `[E]`, SELECT on cue, the log back in `tools/dev/logs/`. Snapshot the setup screen with `swd.py screen <png>` instead of asking what it shows, and end every program put on the ST for a hardware run by restarting the device and rebooting the ST (`sidecart_restart_device()` then the reset vector, as the harnesses' `end_of_run()` does), so runs follow each other without a hand on the reset button; `swd.py reset` restarts only the RP and leaves a running ST hanging. See AGENTS.md.
 
+Without hardware, EmuMD (submodule `emu/emumd`) runs the firmware's own C code and cartridge image in its fork of Hatari: `tools/dev/build_hatari_fork.sh` once, then `tools/dev/mdfw.sh build` and `run`, and `tools/dev/emu_tests.py` for FSTESTS, FLOPTEST, RTCTEST and FSTESTS from an ACSI image against the real drivers (`--harness`, `--tos`). Use it first for logic and the ST side. It times nothing and has no PIO, DMA or USB, so it does not replace a hardware run. A Hatari GEMDOS drive (`--harddrive`) must never be used with it: it takes the first 1 KB of the cartridge. See `emu/README.md`.
+
 ## Architecture — the parts that span multiple files
 
 ### Two cores, two bus paths
@@ -82,7 +84,7 @@ The cart window is **read-only from the Atari CPU**. The RP populates it. Atari-
 
 ### ACSI hard disk emulation
 
-Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER. Tested on TOS 1.04–2.06; **not supported under EmuTOS** — its embedded hard disk driver conflicts with the ACSI hooks.
+Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. No ACSI port is involved: `acsi.s` hooks TOS's disk vectors and `pun_ptr` and the sectors come over the cartridge port, which is why it also works on a Falcon, which has no ACSI port. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER. Tested on TOS 1.04–2.06; **not supported under EmuTOS** — its embedded hard disk driver conflicts with the ACSI hooks.
 
 Key design points:
 - **`bflags = 1`** in the BPB is critical — without it TOS interprets FAT as FAT12 instead of FAT16, truncating cluster numbers and corrupting the FAT walk. This was the root cause of the original "large files garble" bug.
@@ -178,7 +180,7 @@ Drift example we already caught with this skill: the "first AHDI partition must 
 
 ## Editing guardrails
 
-- **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
+- **Never modify** `pico-sdk/`, `pico-extras/`, `fatfs-sdk/` or `emu/emumd/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
 - Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`). `cmake --build rp/build --target clang-format` rewrites every `.c` file under `rp/src` recursively, `rp/src/u8g2` included, so for normal edits run `clang-format -i <file>`.
 
 ## Release workflow

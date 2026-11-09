@@ -10,36 +10,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "blink.h"
 #include "f_util.h"
 #include "floppy.h"
 #include "hardware/rtc.h"
-#include "network.h"
 #include "select.h"
 #include "usb_mass.h"
-
-/* The LED. */
-void blink_activityPulse(void) {}
-void blink_off() {}
-void blink_poll(void) {}
-void blink_startCountSequence(uint8_t count) { (void)count; }
-
-/* The Wi-Fi: never started, never connected. */
-const char *network_WifiStaConnStatusString(wifi_sta_conn_process_status_t status) {
-  (void)status;
-  return "Wi-Fi not available";
-}
-void network_deInit() {}
-ip_addr_t network_getCurrentIp() { return (ip_addr_t){0}; }
-void network_safePoll() {}
-void network_setPollingCallback(NetworkPollingCallback callback) { (void)callback; }
-int network_wifiInit(wifi_mode_t mode) {
-  (void)mode;
-  return -1;
-}
-wifi_sta_conn_process_status_t network_wifiStaConnect() {
-  return NETWORK_WIFI_STA_CONN_ERR_NOT_INITIALIZED;
-}
 
 /* The SELECT button. The firmware's main loop polls it; emumd keeps it
  * unpressed and drops the callbacks the firmware registers. The bench presses

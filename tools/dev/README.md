@@ -5,6 +5,9 @@ Multi-device on an Atari ST, with a Raspberry Pi Debug Probe wired to the RP2040
 its debug UART (GPIO 0/1). Python tools use the standard library only. Brought over from the
 `md-devops` microfirmware and adapted to this firmware's layout.
 
+The other bench, the firmware in EmuMD's Hatari with no hardware (`mdfw.sh`, `build_hatari_fork.sh`,
+`emu_tests.py`, `md_settings.py`), is described in `emu/README.md`.
+
 ## Debug console: `console.py`
 
 Captures the debug console of a `debug` build (921,600 baud) to `tools/dev/logs/console.log`, with
