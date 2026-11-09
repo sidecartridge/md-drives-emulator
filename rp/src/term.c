@@ -17,9 +17,9 @@ static bool lastProtocolValid = false;
 static uint32_t lastProtocolAcceptedAtUs = 0;
 static uint8_t lastInputScanCode = 0;
 
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
 
 // Command table
 static const Command *commands;
@@ -555,7 +555,7 @@ void term_printScreen(void) {
 
 void term_init(void) {
   // Memory shared address
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   memoryRandomTokenAddress = memorySharedAddress + TERM_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + TERM_RANDON_TOKEN_SEED_OFFSET;

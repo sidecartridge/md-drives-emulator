@@ -29,13 +29,15 @@ Atari target firmware (run from inside `target/atarist/` so `$PWD` resolves corr
 ```bash
 cd target/atarist && ./build.sh "$PWD" release
 ```
-The Atari build produces `target_firmware.h` which is auto-copied to `rp/src/include/`. After any Atari-side change, rebuild the RP too.
+The Atari build produces `target_firmware.h` which is auto-copied to `rp/src/include/`. After any Atari-side change, rebuild the RP too. The `release` argument is the make target, not the debug switch: the Makefile defaults to `DEBUG_MODE = 1`, so pass `0` as a third argument (or set `DEBUG_MODE=0`) for a non-debug image. The top-level `build.sh` sets it from the build type.
 
 Atari GEMDRIVE test binary (produces `tests/atarist/dist/FSTESTS.TOS`):
 ```bash
 ./tests/atarist/build.sh "$PWD/tests/atarist" release
 ```
 Pass any non-empty third argument to enable file logging. Tests run from the Atari desktop while GEMDRIVE points at a writable folder.
+
+To run part of `FSTESTS`, give it selectors as arguments (rename it `.TTP` to be asked for them on the desktop): suites `files`, `folder`, `listing`, `workdir`, `chksum`; cases `pterm`, `fforce`, `pexec`, `prgflags`, `registers`, `wd-chdir`, `wd-noexist`, `wd-parent`, `wd-dfreec`, `wd-dfree`, `wd-drive`, `wd-relative`, `wd-search`. With no arguments it runs everything. `hatari_tests.py` and `hardware_tests.py` always run a whole harness; `hatari_tests.py --tos 1.04` limits a run to one TOS. `FLOPTEST` and `RTCTEST` have no selectors.
 
 The same build produces `FLOPTEST.TOS`, the floppy-only harness: it tests the disk in A: that `tools/dev/make_floppy_image.py` makes, and `tools/dev/hatari_tests.py --harness floptest` runs it against TOS's own floppy driver under Hatari (see `tools/dev/README.md`). It also produces `RTCTEST.TOS`, the clock probe: what the TOS it runs on does with the date (`--harness rtctest` in `hatari_tests.py` and `hardware_tests.py`).
 
@@ -44,6 +46,8 @@ To add a test, put the `test_*()` function in the closest suite file under `test
 Toolchain: Pico SDK + Pico Extras + ARM GCC for RP2040; `stcmd` (via `atarist-docker-toolkit`) for the Atari side — `stcmd` wants a terminal; when run through an agent wrapper set `STCMD_NO_TTY=1`, as CI does. Submodules `pico-sdk`, `pico-extras`, `fatfs-sdk` are vendored — do not edit them unless explicitly asked.
 
 With the Raspberry Pi Debug Probe attached, `tools/dev/` drives the hardware from the host: `tools/dev/flash.sh debug` builds out of tree, flashes and verifies over SWD; `tools/dev/console.py watch` captures the debug UART (921,600 baud); `tools/dev/swd.py` inspects and drives a running RP (`screen`, `text`, `shared`, `key`, `app gemdrive_stall`, `postmortem`, …). See `tools/dev/README.md`. Debug builds carry a devhooks mailbox (`rp/src/include/devhooks.h`) that swd.py writes over SWD. `tools/dev/hardware_tests.py --harness floptest --disk rw` (or `--harness fstests`) makes a whole hardware run: deploy to the card, menu over SWD, eject, `[E]`, SELECT on cue, the log back in `tools/dev/logs/`. Snapshot the setup screen with `swd.py screen <png>` instead of asking what it shows, and end every program put on the ST for a hardware run by restarting the device and rebooting the ST (`sidecart_restart_device()` then the reset vector, as the harnesses' `end_of_run()` does), so runs follow each other without a hand on the reset button; `swd.py reset` restarts only the RP and leaves a running ST hanging. See AGENTS.md.
+
+Without hardware, EmuMD (submodule `emu/emumd`) runs the firmware's own C code and cartridge image in its fork of Hatari: `tools/dev/build_hatari_fork.sh` once, then `tools/dev/mdfw.sh build` and `run`, and `tools/dev/emu_tests.py` for FSTESTS, FLOPTEST, RTCTEST and FSTESTS from an ACSI image against the real drivers (`--harness`, `--tos`). Use it first for logic and the ST side. It times nothing and has no PIO, DMA or USB, so it does not replace a hardware run. A Hatari GEMDOS drive (`--harddrive`) must never be used with it: it takes the first 1 KB of the cartridge. See `emu/README.md`.
 
 ## Architecture — the parts that span multiple files
 
@@ -57,28 +61,30 @@ Both paths can touch shared bus control signals, so any PIO/DMA/linker change is
 
 ### Shared-memory protocol
 
-The Atari and RP communicate through shared memory tokens. The `send_sync` / `send_write_sync` macros on the Atari side send commands via ROM3 bus reads, then poll a random token at `$FAF000` until the RP writes a matching value. ACK ordering matters: delays behind slow handlers can cause retransmit. Each `.s` file includes its own copy of `sidecart_functions.s`, so **COMMAND_TIMEOUT is per-file** — changing it in one file does not affect others.
+The Atari and RP communicate through shared memory tokens. The `send_sync` / `send_write_sync` macros on the Atari side send commands via ROM3 bus reads, then poll a random token until the RP writes a matching value: `$FA8200` for the ACSI, GEMDRIVE and floppy drivers, `$FAF000` for the setup terminal and `main.s`. ACK ordering matters: delays behind slow handlers can cause retransmit. Each `.s` file includes its own copy of `sidecart_functions.s`, so **COMMAND_TIMEOUT is per-file** — changing it in one file does not affect others.
 
 ### ROM4 window memory map ($FA0000–$FAFFFF, 64 KB)
 
 ```
-$FA0000  Cart header + main.s code (~32 KB)
+$FA0000  Cart header + main.s code (translation table at $FA0800)
 $FA1000  GEMDRIVE code (gemdrive.s)
 $FA2A00  FLOPPY code (floppy.s)
 $FA3400  RTC code (rtc.s)
 $FA4C00  GEMDOS pool fix (poolfix.s, TOS 1.04/1.06 only)
 $FA5400  ACSI code (acsi.s)
 $FA8000  Framebuffer / exchange buffer (shared, 8 KB)
-$FA8208  Shared variables (token + SVARs per driver)
+$FA8200  Drivers' random token (seed at $FA8204)
+$FA8208  Shared variables (SVARs per driver)
 $FAA440  PUN_INFO (160 B) + BPB tables (704 B)
 $FAA7A0  IMAGE_BUFFER (~22 KB, used for ACSI sector delivery)
+$FAF000  Setup terminal's random token (seed at $FAF004)
 ```
 
 The cart window is **read-only from the Atari CPU**. The RP populates it. Atari-side code sends commands to the RP to "write" shared variables (`CMD_SET_SHARED_VAR`).
 
 ### ACSI hard disk emulation
 
-Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER. Tested on TOS 1.04–2.06; **not supported under EmuTOS** — its embedded hard disk driver conflicts with the ACSI hooks.
+Full block-device emulation of ACSI hard disks from raw disk image files on the SD card. No ACSI port is involved: `acsi.s` hooks TOS's disk vectors and `pun_ptr` and the sectors come over the cartridge port, which is why it also works on a Falcon, which has no ACSI port. Supports Peter Putnik's **PPDRIVER TOS&DOS dual-BPB format** and HDDRIVER. Tested on TOS 1.04–2.06; **not supported under EmuTOS** — its embedded hard disk driver conflicts with the ACSI hooks.
 
 Key design points:
 - **`bflags = 1`** in the BPB is critical — without it TOS interprets FAT as FAT12 instead of FAT16, truncating cluster numbers and corrupting the FAT walk. This was the root cause of the original "large files garble" bug.
@@ -148,7 +154,7 @@ On-demand only. Boot does no unconditional STA init. `APP_MODE_NTP_INIT` in `emu
 - **No `PRIu32` / `PRIx32` / other `PRI*` macros.** Cast explicitly: `(unsigned long)x` with `%lu`.
 - **`send_sync_command_to_sidecart` / `send_sync_write_command_to_sidecart` return with Z set exactly when d0 is 0.** `acsi.s` branches on the flags straight after the call instead of testing d0; any change to the wait loops must keep the closing `tst.w d0`.
 - **`COMMAND_TIMEOUT` is per-file** — each `.s` file includes its own `sidecart_functions.s`. Changing acsi.s's timeout does not affect gemdrive.s.
-- **A send destroys registers.** `send_sync` keeps d1-d6, `send_write_sync` keeps d1-d6 and a4; both destroy d0, d7 (the retry count) and a0-a3. The table is at the top of `inc/sidecart_macros.s`: check it before holding a pointer across a send, take what you need into a kept register first, and reload address registers after. See AGENTS.md for what it costs when you don't.
+- **A send destroys registers.** `send_sync` keeps d1-d6 and destroys d0, d7 (its retry count) and a0-a3; `send_write_sync` keeps d1-d5 and a4 and destroys d0, d6 (its retry count), d7 and a0-a3. The table is at the top of `inc/sidecart_macros.s`: check it before holding a pointer across a send, take what you need into a kept register first, and reload address registers after. See AGENTS.md for what it costs when you don't.
 - **Trap #1 hooks push nothing before they know they handle the call.** TOS 1.04 starts GEM on a 132-byte stack and calls GEMDOS from it with ~110 bytes to spare; overflowing it zeroed GEM's standard handles (every program's console output went to MIDI) and can hit the AES resolution variables. GEMDRIVE looks a call up with `d0` alone and runs the ones it takes on its own stack, as the pool fix does - at boot a nested call had less than 8 bytes to spare. Both give the caller its registers back as TOS's GEMDOS does (all but `d0` from supervisor mode, all but `a0` from user mode); the desktop's Esc depends on `a0`. See AGENTS.md.
 - **On a Mega STE the cache is off while the cartridge is talked to; the speed is the user's.** With the cache on, commands to the cartridge fail (ACSI crashed, floppy commands never arrived); 16 MHz alone is fine. Each driver clears bit 0 of `$FFFF8E21` once it knows a call is its own and puts the setting back after - GEMDRIVE on its own stack, the floppy through `floppy_serve` (NOPs on other machines, patched by the RP), ACSI through entries that re-push the vector's arguments, the RTC around its send, `main.s` for the setup menu and the drivers' start. Don't bring back the step-down to 8 MHz. See AGENTS.md.
 - **On a 68010 or later a trap hook finds a user-mode call at `usp` as it is.** The longer exception frame (`_longframe`) adds its word to the supervisor stack only; our hooks added it for user mode too, and on the Falcon every user-mode GEMDOS, BIOS and XBIOS call through them was read 2 bytes off. And code copied into RAM and run there needs a 68030's instruction cache cleared first: the senders' wait loop runs from the cache otherwise, half of it someone else's, and commands were sent twice (`clear_icache_after_copy`). See AGENTS.md.
@@ -174,8 +180,8 @@ Drift example we already caught with this skill: the "first AHDI partition must 
 
 ## Editing guardrails
 
-- **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
-- Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`).
+- **Never modify** `pico-sdk/`, `pico-extras/`, `fatfs-sdk/` or `emu/emumd/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up via `target_include_directories(... BEFORE PRIVATE)` so this file wins over the submodule's default.
+- Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`). `cmake --build rp/build --target clang-format` rewrites every `.c` file under `rp/src` recursively, `rp/src/u8g2` included, so for normal edits run `clang-format -i <file>`.
 
 ## Release workflow
 

@@ -460,6 +460,48 @@ void network_safePoll() {
   }
 }
 
+// Check if the BSSID already exists in the found networks
+static bool bssid_exists(wifi_network_info_t *network) {
+  for (size_t i = 0; i < wifiScanData.count; i++) {
+    if (strcmp(wifiScanData.networks[i].bssid, network->bssid) == 0) {
+      return true;  // BSSID found
+    }
+  }
+  return false;  // BSSID not found
+}
+
+static int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
+  if (result && wifiScanData.count < MAX_NETWORKS) {
+    wifi_network_info_t network;
+
+    // Copy SSID
+    snprintf(network.ssid, sizeof(network.ssid), "%s", result->ssid);
+
+    // Format BSSID
+    snprintf(network.bssid, sizeof(network.bssid),
+             "%02x:%02x:%02x:%02x:%02x:%02x", result->bssid[0],
+             result->bssid[1], result->bssid[2], result->bssid[3],
+             result->bssid[4], result->bssid[5]);
+
+    // Store authentication mode
+    network.auth_mode = result->auth_mode;
+
+    // Store signal strength
+    network.rssi = result->rssi;
+
+    // Check if BSSID already exists
+    if (!bssid_exists(&network)) {
+      if (strlen(network.ssid) > 0) {
+        wifiScanData.networks[wifiScanData.count] = network;
+        wifiScanData.count++;
+        DPRINTF("FOUND NETWORK %s (%s) with auth %d and RSSI %d\n",
+                network.ssid, network.bssid, network.auth_mode, network.rssi);
+      }
+    }
+  }
+  return 0;
+}
+
 /**
  * @brief Scans for available Wi-Fi networks and stores the results.
  *
@@ -475,46 +517,6 @@ int network_scan(absolute_time_t *wifiScanTime, int wifiScanInterval) {
   if (!cyw43Initialized) {
     // If the network is not initialized, we cancel the scan
     return -1;
-  }
-  int scan_result(void *env, const cyw43_ev_scan_result_t *result) {
-    // Check if the BSSID already exists in the found networks
-    bool bssid_exists(wifi_network_info_t * network) {
-      for (size_t i = 0; i < wifiScanData.count; i++) {
-        if (strcmp(wifiScanData.networks[i].bssid, network->bssid) == 0) {
-          return true;  // BSSID found
-        }
-      }
-      return false;  // BSSID not found
-    }
-    if (result && wifiScanData.count < MAX_NETWORKS) {
-      wifi_network_info_t network;
-
-      // Copy SSID
-      snprintf(network.ssid, sizeof(network.ssid), "%s", result->ssid);
-
-      // Format BSSID
-      snprintf(network.bssid, sizeof(network.bssid),
-               "%02x:%02x:%02x:%02x:%02x:%02x", result->bssid[0],
-               result->bssid[1], result->bssid[2], result->bssid[3],
-               result->bssid[4], result->bssid[5]);
-
-      // Store authentication mode
-      network.auth_mode = result->auth_mode;
-
-      // Store signal strength
-      network.rssi = result->rssi;
-
-      // Check if BSSID already exists
-      if (!bssid_exists(&network)) {
-        if (strlen(network.ssid) > 0) {
-          wifiScanData.networks[wifiScanData.count] = network;
-          wifiScanData.count++;
-          DPRINTF("FOUND NETWORK %s (%s) with auth %d and RSSI %d\n",
-                  network.ssid, network.bssid, network.auth_mode, network.rssi);
-        }
-      }
-    }
-    return 0;
   }
   // DPRINTF("Time diff: %lld\n", absolute_time_diff_us(get_absolute_time(),
   // (absolute_time_t)*wifi_scan_time));

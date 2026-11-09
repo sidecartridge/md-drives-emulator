@@ -219,10 +219,14 @@ static inline void __not_in_flash_func(tprotocol_parse)(
       break;
     case PAYLOAD_READ_INPROGRESS:
       // Store the 16-bit chunk into the payload array
+#if defined(__arm__)
       asm("strh %0, [%1]"
           :
           : "r"(data), "r"(&transmission.payload[(transmission.bytes_read / 2)])
           : "memory");
+#else
+      transmission.payload[transmission.bytes_read / 2] = data;
+#endif
       // *((uint16_t *)(&transmission.payload[transmission.bytes_read])) =
       // data;
       transmission.bytes_read += 2;

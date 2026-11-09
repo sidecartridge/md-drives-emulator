@@ -198,7 +198,7 @@ static bool isTrue(const char *value) {
 }
 
 // Erase the values in the DTA transfer area
-static void __not_in_flash_func(nullifyDTA)(uint32_t mem) {
+static void __not_in_flash_func(nullifyDTA)(uintptr_t mem) {
   // defensive overflow guard
   const uint32_t off = GEMDRIVE_DTA_TRANSFER;
   const uint32_t size = DTA_SIZE_ON_ST;
@@ -393,7 +393,7 @@ static void __not_in_flash_func(remove_trailing_spaces)(char *str) {
   str[len] = '\0';
 }
 
-static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
+static void __not_in_flash_func(populateDTA)(uintptr_t memory_address_dta,
                                              uint32_t dta_address,
                                              int16_t gemdos_err_code,
                                              FILINFO *fno) {
@@ -575,7 +575,7 @@ static uint16_t __not_in_flash_func(getFirstAvailableFD)(
 
 // Forget every Fforce alias whose file handle is `fd` (0: all of them) or
 // whose forcing process is `owner` (0: any).
-static void __not_in_flash_func(unforceHandles)(uint32_t memory, uint16_t fd,
+static void __not_in_flash_func(unforceHandles)(uintptr_t memory, uint16_t fd,
                                                 uint32_t owner) {
   for (int std = 0; std < GEMDRIVE_FORCED_COUNT; std++) {
     uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
@@ -754,10 +754,10 @@ static void printPayload(uint8_t *payloadShowBytesPtr) {
 }
 
 #define NUM_SHARED_VARS 4096
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
-static uint32_t memoryFirmwareCode = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memoryFirmwareCode = 0;
 
 // Write-chunk sequence served to the ST at GEMDRIVE_WRITE_CHK. The ST reads
 // it once per Fwrite chunk and echoes it in d4 of the write command, so every
@@ -832,7 +832,7 @@ static void gemdrive_stallIfRequested(void) {
 }
 #endif
 
-static void initVariables(uint32_t mem) {
+static void initVariables(uintptr_t mem) {
   const uint16_t numSharedVars = (0x10000 - GEMDRIVE_RANDOM_TOKEN_OFFSET) / 4;
   DPRINTF("Initializing shared variables\n");
   for (uint32_t i = 0; i < numSharedVars; i++) {
@@ -848,7 +848,7 @@ void __not_in_flash_func(gemdrive_init)() {
   dpathStr[0] = '\\';  // Set the root folder as default
   dpathStr[1] = '\0';
 
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   if ((memorySharedAddress & 0x3u) != 0u) {
     DPRINTF("ERROR: GEMDRIVE shared memory base 0x%08lx is not 4-byte aligned\n",
             (unsigned long)memorySharedAddress);

@@ -7,7 +7,10 @@
 ; window, and reading a payload from there makes the RP reject the command.
 ;
 ;   send_sync        keeps d1-d6          destroys d0, d7, a0-a3
-;   send_write_sync  keeps d1-d6, a4      destroys d0, d7, a0-a3
+;   send_write_sync  keeps d1-d5, a4      destroys d0, d6, d7, a0-a3
+;
+; Each keeps its retry count in a register it destroys: send_sync in d7,
+; send_write_sync in d6 (the function it calls also uses d7).
 ;
 ; Take what you need into a kept register before the send, and reload address
 ; registers after it.
