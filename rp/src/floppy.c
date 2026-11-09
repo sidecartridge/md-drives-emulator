@@ -103,10 +103,10 @@ static TransmissionProtocol lastProtocol;
 static bool lastProtocolValid = false;
 static uint32_t incrementalCmdCount = 0;
 
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
-static uint32_t memoryFirmwareCode = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memoryFirmwareCode = 0;
 
 #define FLOPPY_DRIVE_A_SLOT_MIN 1
 #define FLOPPY_DRIVE_A_SLOT_MAX 10
@@ -920,7 +920,7 @@ void __not_in_flash_func(floppy_init)() {
   srand(time(0));
   DPRINTF("Initializing Floppies...\n");  // Print always
 
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   if ((memorySharedAddress & 0x3u) != 0u) {
     DPRINTF("ERROR: FLOPPY shared memory base 0x%08lx is not 4-byte aligned\n",
             (unsigned long)memorySharedAddress);
