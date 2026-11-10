@@ -110,7 +110,7 @@ It is disabled by default.
 
 **Coexistence with real ACSI hardware.** The emulated drives can sit beside a real hard disk on the ACSI port, run by its own driver (PPDRIVER, HDDRIVER, AHDI): pick a starting drive letter after the ones the real driver takes, and both sets appear in TOS. The emulated drives are not on the ACSI bus, so they have no ACSI ID: their `pun_info` entries say "no physical unit" (`$FF`), and a real driver loaded from the real disk replaces that table with its own. Tested on TOS 1.04 with a real disk as `C:`–`E:` and the emulated one from `F:`.
 
-When ACSI is **enabled** in the setup screen, the emulator also reserves a small RAM pool (~34 KB) under `_membot` on boot so TOS can rebind its buffer control blocks to the larger logical sector sizes used by the image. If you later **disable** ACSI from the setup menu, the emulator triggers a warm reset so that reservation is released.
+When ACSI is **enabled** in the setup screen, the emulator also reserves a small RAM pool (~34 KB) under `_membot` on boot so TOS can rebind its buffer control blocks to the larger logical sector sizes used by the image. If ACSI is **disabled** in the setup menu, that reservation stays until the next time you reset the computer.
 
 The GEMDrive drive letter and the ACSI starting drive letter are checked for conflicts at save time.
 
@@ -122,7 +122,7 @@ The companion tool for building AHDI / PPDRIVER / HDDRIVER images compatible wit
 
 | Command | Description |
 |---------|-------------|
-| **A[C]SI Enabled** | Enable or disable ACSI block-device emulation. Toggling this setting from the setup menu may trigger a warm reset to reclaim or reserve the BCB RAM pool. |
+| **A[C]SI Enabled** | Enable or disable ACSI block-device emulation. Turning it off leaves the BCB RAM pool reserved until the next reset. |
 | **[I]mage** | Select the hard disk image file on the microSD card to mount. The internal browser navigates the microSD card so you can pick any regular file. |
 | **Dri[v]e** | Choose the starting drive letter for the first announced partition (`C:` to `P:`). Subsequent partitions take consecutive letters. Must not overlap with the GEMDrive drive letter when both are enabled. |
 
