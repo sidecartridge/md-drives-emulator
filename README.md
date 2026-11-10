@@ -87,6 +87,8 @@ The concept for the GEMdrive hard disk emulation originated with the GEMDOS comp
 | **F[o]lder** | Select the folder for the GEMDrive. By default, the emulator uses `/hd` and creates it automatically on first use if needed. You can change it at boot time by navigating through the microSD card's directory structure. |
 | **[D]rive** | Choose the drive letter for the GEMDrive (e.g., `C:`). Change it if there is a conflict with other hard disk drivers. |
 
+As on a real disk, a program that asks for a name longer than 8.3 gets the file with that name cut to 8.3: `dmalogo.imgg` opens `DMALOGO.IMG`. A file on the microSD card with the full, long name is opened as it is.
+
 ### ACSI hard disk emulation
 
 #### What is ACSI emulation?
@@ -146,7 +148,7 @@ The Floppies Emulation represents a significant enhancement to the Multi-device.
 
 Formatting floppy images and converting `.MSA` images to `.ST` are no longer done from the Drives Emulator setup menu. Use the **[File & Download Manager](https://docs.sidecartridge.com/sidecartridge-multidevice/microfirmwares/browser/)** microfirmware for those maintenance tasks. The desktop's **Format** does not work on an emulated drive either: the emulator answers that the disk cannot be formatted (write protected, for a read-only `.ST` image), and the disk in the computer's own drive is never touched.
 
-On a computer with a single floppy drive, that drive stays usable as **B:** while **A:** is emulated: TOS treats a single drive as both A: and B: (it may ask you to insert disk B the first time), and A: is now the emulated one. The desktop's **Disk Copy** can then copy a real disk from B: onto an emulated A: whose image has the same shape: a 360 KB image for a single-sided disk, 720 KB for a double-sided one.
+When **A:** is emulated and no image is mounted in **B:**, **B:** is the image in **A:**, as on a computer with a single floppy drive: a program that asks for B: reads the same disk. The computer's own floppy drive cannot be used while **A:** is emulated. The other way round works: leave **[A] Drive** empty and mount an image in **[B] Drive** to have the computer's own drive as **A:** and the image as **B:**. The desktop's **Disk Copy** can then copy a real disk from **A:** onto the image in **B:**, as long as the image has the same shape: a 360 KB image for a single-sided disk, 720 KB for a double-sided one.
 
 #### Runtime floppy A image cycling
 

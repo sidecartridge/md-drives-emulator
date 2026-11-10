@@ -52,7 +52,7 @@ _longframe      equ $59e    ; Address of the long frame flag. If this value is 0
     include inc/tos.s
     include inc/sidecart_macros.s
 
-    org $FA3400         ; Start of the code. First 4KB bytes are reserved for the terminal.
+    org $FA3600         ; Start of the code. First 4KB bytes are reserved for the terminal.
 
 rom_function:
     tst.l (RTCEMUL_SHARED_VARIABLES + (SVAR_ENABLED * 4))
