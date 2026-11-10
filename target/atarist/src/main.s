@@ -44,7 +44,6 @@ POOLFIX 			equ $FA4C00 ; GEMDOS pool fix (TOS 1.04 and 1.06)
 ; constant on the ACSI side (acsi.s).
 ACSIEMUL_BCB_POOL_BYTES		equ (32*1024+2*1024)
 ACSIEMUL_SVAR_ENABLED_ADDR	equ $FAA408
-ACSIEMUL_SVAR_ENABLED_VALUE	equ $FFFFFFFF
 ACSIEMUL_SVAR_DISABLED_VALUE equ $DEAD0000
 ACSIEMUL_BCB_MAGIC			equ $AC514BCB
 
@@ -355,28 +354,6 @@ boot_gem:
     rts
 
 rom_function:
-	; Check if the pool reservation matches the ACSI config:
-	; - ACSI enabled ($FFFFFFFF) → pool should be reserved → proceed.
-	; - ACSI disabled ($DEAD0000) + pool reserved → wasted 34 KB → warm reset
-	;   so bit 26 sees the disabled sentinel and skips the reservation.
-	; - ACSI disabled + pool not reserved → already correct → proceed.
-	; - Cold boot unknown + pool reserved → proceed (ACSI config TBD was
-	;   reserved speculatively and we just confirmed ACSI is on).
-	cmp.l #ACSIEMUL_SVAR_ENABLED_VALUE, ACSIEMUL_SVAR_ENABLED_ADDR
-	beq.s .rom_function_no_reset		; ACSI enabled — pool needed, proceed
-	; ACSI not enabled. Check if pool was reserved unnecessarily.
-	move.l $432.w, d0					; d0 = current _membot
-	sub.l #ACSIEMUL_BCB_POOL_BYTES, d0	; d0 = expected pool base
-	movea.l d0, a0
-	cmp.l #ACSIEMUL_BCB_MAGIC, (a0)
-	bne.s .rom_function_no_reset		; no pool reserved — proceed without ACSI
-	; Pool reserved but ACSI disabled — warm reset to reclaim the 34 KB.
-	clr.l $420.w						; memvalid
-	clr.l $43A.w						; memval2
-	clr.l $51A.w						; memval3
-	move.l $4.w, a0
-	jmp (a0)
-.rom_function_no_reset:
 	; Place here your driver code
 	; The pool fix must see the ROM's GEMDOS entry, so it goes before any
 	; driver hooks the GEMDOS trap.
