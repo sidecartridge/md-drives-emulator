@@ -17,7 +17,7 @@ SECTIONS
     }
 
     /* Place rtc.s .text at 0x003400 */
-    .text_rtc 0x003400 : {
+    .text_rtc 0x003600 : {
         rtc.o(.text)
     }
 

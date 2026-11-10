@@ -69,7 +69,7 @@ The Atari and RP communicate through shared memory tokens. The `send_sync` / `se
 $FA0000  Cart header + main.s code (translation table at $FA0800)
 $FA1000  GEMDRIVE code (gemdrive.s)
 $FA2A00  FLOPPY code (floppy.s)
-$FA3400  RTC code (rtc.s)
+$FA3600  RTC code (rtc.s)
 $FA4C00  GEMDOS pool fix (poolfix.s, TOS 1.04/1.06 only)
 $FA5400  ACSI code (acsi.s)
 $FA8000  Framebuffer / exchange buffer (shared, 8 KB)
@@ -106,6 +106,7 @@ Key design points:
 - **Handles are closed when their program ends**: Fopen/Fcreate send the running basepage (`os_run`; TOS 1.00 `$602C`/`$873C`) in d4 and the RP records it as the handle's owner; Pterm0/Ptermres/Pterm send `CMD_PTERM_CALL` with the ending basepage and the RP closes that owner's files, as TOS's `ixterm()` does. A crash ends through a real `trap #1` Pterm, so it is covered.
 - **Fforce onto a GEMDRIVE file**: TOS refuses a handle it did not allocate, so GEMDRIVE keeps the alias itself. The RP holds a table of the six standard handles (`GEMDRIVE_FORCED`: the GEMDRIVE handle and the basepage that forced it) and the ST reads it to route `Fread`/`Fwrite`/`Fseek` on a standard handle, so a plain `printf` costs no RP call. The alias applies to the forcing process and its descendants (`p_parent` walk), and is dropped when the file is closed, when that process ends, or when the standard handle is forced back to a TOS handle. `Fdup` stays with TOS, and `Cconws`/`Cconout` do not follow the alias (neither does Hatari).
 - **`GEMDRIVE_EXEC_PD` is a 256-byte basepage buffer**, not a pointer: `CMD_SAVE_BASEPAGE` fills it. `sizeof(PD)` on the RP is larger (its `p_curdir` is a word array), so copies into it must use `GEMDRIVE_EXEC_PD_SIZE`; `sizeof(PD)` wrote 32 bytes past the buffer, over the next variables in the window.
+- **A name is found the way GEMDOS cuts it**: GEMDOS reads each part of a name as 8.3 and drops the rest, so a program can open `dmalogo.imgg` and get `DMALOGO.IMG`. `getLocalFullPathname` (Fopen, Fcreate, Fdelete, Fattrib, Frename, Dcreate, Ddelete) takes the 8.3 form only when the name as it came is not on the card and that form is, and only the program's part of the path is cut, so long names on the card still open. `Dsetpath` and `Fsfirst` build their paths elsewhere.
 - **Dfree cluster counts are clamped** so `b_free × b_clsize × b_secsize` stays ≤ 0x7FFFFFFF: TOS and the desktop do that multiplication in 32-bit longs, and honest FAT32 numbers from a >4 GB card wrap (a 32 GB card showed ~720 MB). Don't "fix" the clamp by reporting real counts.
 
 ### Floppy drive emulation
@@ -117,6 +118,8 @@ Every read and write answers a status, `FLOPPYEMUL_TRANSFER_STATUS` (after drive
 The BPB handed to GEMDOS is built from the boot sector as TOS's own floppy `Getbpb` builds it, on 1.04 and 2.06 alike (measured under Hatari): one reserved sector and two FATs whatever the boot sector says, the root directory truncated to whole sectors. A disk that works on a real ST is laid out that way. An `Rwabs` record is placed as TOS's `floprw` places it, with the boot sector's own sectors per track and sides; the XBIOS reads the disk as it physically is, with the geometry the RP finds from the image's size (Hatari's rule). The two differ only on disks whose boot sector does not describe them, like menu disks with a one-sided BPB on two sides.
 
 Flopfmt on an emulated drive is refused: `floppy.s` sends it to the RP (`FLOPPYEMUL_FORMAT_TRACK`), which answers E_WRPRO for a read-only image and -1 otherwise. Handed to the ROM, as it used to be, it formatted whatever disk was in the physical drive while the desktop's follow-up writes landed on the image.
+
+With A: emulated and B: not, B: is the image in A:, as a one-drive ST reads the disk in A when asked for B: `Getbpb`, `Mediach`, `Rwabs` and the XBIOS calls for B: are served from A's image and never reach TOS's driver, whose wait loop on an empty physical drive can hang on TOS 1.62. An emulated A: with a physical B: is not a supported set-up; a physical A: with an emulated B: is. B:'s own media-change state stays clear, so a `Getbpb` on B: cannot end a change on A:.
 
 Floppy A multi-slot: 10 persistent slots in flash. Setup submenu `CTRL+A` configures them. Runtime short-`SELECT` cycles A if ≥2 slots configured.
 
