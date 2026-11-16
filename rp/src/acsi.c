@@ -12,9 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
 static char acsiImagePath[MAX_FILENAME_LENGTH + 1] = {0};
 // Set whenever acsiImagePath is (re)written; cleared after
 // acsiEnsureRuntimeImageOpen confirms the currently-open image still
@@ -1879,6 +1879,12 @@ static FRESULT acsiFat16FindEntry(AcsiImageContext *context,
 // the linear FAT walk. Non-fatal on failure — the context is still usable
 // via regular lseek; only the optimisation is lost.
 static FRESULT acsiSetupFastseek(AcsiImageContext *context) {
+#if defined(EMUMD)
+  // emumd's FatFs has no fast seek (FF_USE_FASTSEEK): the optimisation is
+  // lost, as when the table cannot be built.
+  (void)context;
+  return FR_NOT_ENOUGH_CORE;
+#else
   DWORD *tbl = (DWORD *)malloc(ACSI_IMAGE_CLTBL_INITIAL * sizeof(DWORD));
   if (tbl == NULL) {
     return FR_NOT_ENOUGH_CORE;
@@ -1920,6 +1926,7 @@ static FRESULT acsiSetupFastseek(AcsiImageContext *context) {
                          ? (context->cltblEntries - 1u) / 2u
                          : 0u));
   return FR_OK;
+#endif
 }
 
 FRESULT acsi_image_open(AcsiImageContext *context, const char *imagePath,
@@ -3115,7 +3122,7 @@ void __not_in_flash_func(acsi_init)() {
   DPRINTF("Initializing ACSI placeholder...\n");
 
   acsi_image_close(&acsiRuntimeImage);
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   memoryRandomTokenAddress = memorySharedAddress + ACSIEMUL_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + ACSIEMUL_RANDOM_TOKEN_SEED_OFFSET;

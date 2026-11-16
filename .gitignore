@@ -63,3 +63,10 @@ docs/
 settings.local.json
 *.pyc
 __pycache__/
+
+# EmuMD: the plugin, the emulated microSD card, the TOS images linked from elsewhere,
+# and the part of sdcard.c generated for it
+/build/
+emu/sd/
+emu/tos/
+emu/fw_sdcard_logic.c

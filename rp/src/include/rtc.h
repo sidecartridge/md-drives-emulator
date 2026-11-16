@@ -140,7 +140,7 @@ typedef struct {
   uint8_t magic_sequence[66];
   uint16_t size_magic_sequence;
   uint16_t size_clock_sequence;
-  uint32_t rom_address;
+  uintptr_t rom_address;
 } DallasClock;
 
 int rtc_queryNTPTime();

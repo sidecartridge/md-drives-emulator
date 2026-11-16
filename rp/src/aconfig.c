@@ -128,7 +128,7 @@ int aconfig_init(const char *currentAppId) {
   //      next 2 bytes  => sector index
   //    Stop on zero-filled UUID or invalid data or out-of-bounds.
   uint8_t *ptr = lookupStart;
-  uint32_t flashAddress = 0;  // Will remain 0 if we don't find a match
+  uintptr_t flashAddress = 0;  // Will remain 0 if we don't find a match
 
   while ((size_t)(ptr - lookupStart) + ACONFIG_LOOKUP_ENTRY_SIZE <= lookupLen) {
     DPRINTF("Lookup entry at %X is %s\n", ptr, (const char *)ptr);
@@ -154,7 +154,7 @@ int aconfig_init(const char *currentAppId) {
 
       // Convert sector number to actual flash address
       flashAddress =
-          (uint32_t)&_config_flash_start + (sector * FLASH_SECTOR_SIZE);
+          (uintptr_t)&_config_flash_start + (sector * FLASH_SECTOR_SIZE);
       DPRINTF("Configuration flash address found sector:%u addr: 0x%X\n",
               sector, flashAddress);
       break;

@@ -57,7 +57,7 @@ int gconfig_init(const char *currentAppName) {
   uint16_t entriesCount = CONFIG_BUFFER_SIZE / sizeof(SettingsConfigEntry);
 
   int err = settings_init(&gSettingsCtx, defaultEntries, entriesCount,
-                          (unsigned int)&_global_config_flash_start - XIP_BASE,
+                          (uint32_t)((uintptr_t)&_global_config_flash_start - XIP_BASE),
                           CONFIG_BUFFER_SIZE, CONFIG_MAGIC_NUMBER,
                           CONFIG_VERSION_NUMBER);
 

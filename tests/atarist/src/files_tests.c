@@ -238,6 +238,28 @@ void test_open_nonexistent_file() {
   assert_result("Open non-existent file", handle < 0, 1);
 }
 
+// GEMDOS reads each part of a name as 8.3 and drops the rest: PP's Gamex
+// launcher opens "dmalogo.imgg" and gets DMALOGO.IMG.
+static void open_cut_name(const char *cut, const char *what) {
+  char content[3];
+  int handle = Fopen(cut, 0);
+  assert_result(what, handle >= 0, TRUE);
+  if (handle < 0) return;
+  long got = Fread(handle, sizeof(content), content);
+  Fclose(handle);
+  assert_result("It reads the file", got == 3 && content[0] == 'C', TRUE);
+}
+
+void test_open_name_cut_to_8_3() {
+  int handle = Fcreate("CUTNAMES.TXT", 0);
+  Fwrite(handle, 3, "CUT");
+  Fclose(handle);
+  open_cut_name("CUTNAMES.TXTX", "Open with too long an extension");
+  open_cut_name("CUTNAMESXX.TXT", "Open with too long a name");
+  open_cut_name("CUTNAMESXX.TXTXX", "Open with both too long");
+  Fdelete("CUTNAMES.TXT");
+}
+
 void test_write_empty_file() {
   int handle = Fcreate("EMPTY.TXT", 0);
   long written = Fwrite(handle, 0, "");
@@ -1157,6 +1179,7 @@ int run_files_tests(int presskey) {
   test_fseek_overwrite_middle();
   if (presskey) press_key("");
   test_open_nonexistent_file();
+  test_open_name_cut_to_8_3();
   if (presskey) press_key("");
   test_write_empty_file();
   if (presskey) press_key("");

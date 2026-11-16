@@ -30,7 +30,7 @@ static int run(void) {
   mega_ste_setup();
   print_clock("supervisor mode");
   /* The physical drives TOS counted at boot (its hdv_boot recounts them after
-     the cartridge has started): with one, TOS itself serves B: from it. */
+     the cartridge has started). */
   print("_nflops %d, _drvbits %08lx\r\n", *(const short*)0x4A6L,
         *(const long*)0x4C2L);
 

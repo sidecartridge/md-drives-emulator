@@ -18,19 +18,19 @@
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 
-static inline volatile uint8_t *memfunc_byte_ptr(const uint32_t address,
+static inline volatile uint8_t *memfunc_byte_ptr(const uintptr_t address,
                                                  const uint32_t offset) {
   return (volatile uint8_t *)((uintptr_t)address + (uintptr_t)offset);
 }
 
-static inline void memfunc_write_u8(const uint32_t address,
+static inline void memfunc_write_u8(const uintptr_t address,
                                     const uint32_t offset,
                                     const uint8_t value) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
   ptr[0] = value;
 }
 
-static inline void memfunc_write_u16(const uint32_t address,
+static inline void memfunc_write_u16(const uintptr_t address,
                                      const uint32_t offset,
                                      const uint16_t value) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
@@ -38,7 +38,7 @@ static inline void memfunc_write_u16(const uint32_t address,
   ptr[1] = (uint8_t)((value >> 8) & 0xFFu);
 }
 
-static inline void memfunc_write_u32(const uint32_t address,
+static inline void memfunc_write_u32(const uintptr_t address,
                                      const uint32_t offset,
                                      const uint32_t value) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
@@ -48,29 +48,39 @@ static inline void memfunc_write_u32(const uint32_t address,
   ptr[3] = (uint8_t)((value >> 24) & 0xFFu);
 }
 
-static inline uint8_t memfunc_read_u8(const uint32_t address,
+static inline uint8_t memfunc_read_u8(const uintptr_t address,
                                       const uint32_t offset) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
   return ptr[0];
 }
 
-static inline uint16_t memfunc_read_u16(const uint32_t address,
+static inline uint16_t memfunc_read_u16(const uintptr_t address,
                                         const uint32_t offset) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
   return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8);
 }
 
-static inline uint32_t memfunc_read_u32(const uint32_t address,
+static inline uint32_t memfunc_read_u32(const uintptr_t address,
                                         const uint32_t offset) {
   volatile uint8_t *ptr = memfunc_byte_ptr(address, offset);
   return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8) |
          ((uint32_t)ptr[2] << 16) | ((uint32_t)ptr[3] << 24);
 }
 
+#if defined(EMUMD)
+// emumd (the firmware built for a host computer) has no XIP streaming DMA:
+// copy the image as the DMA does, emulROM_length 16-bit words.
+#define COPY_FIRMWARE_TO_RAM(emulROM, emulROM_length)                      \
+  do {                                                                     \
+    memcpy((void *)&__rom_in_ram_start__, (const void *)&(emulROM)[0],     \
+           (size_t)(emulROM_length) * 2);                                  \
+  } while (0)
+#else
 #define COPY_FIRMWARE_TO_RAM(emulROM, emulROM_length)  \
   do {                                                 \
     COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length); \
   } while (0)
+#endif
 
 #define COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length)                     \
   do {                                                                        \
@@ -118,26 +128,26 @@ static inline uint32_t memfunc_read_u32(const uint32_t address,
 #define WRITE_AND_SWAP_LONGWORD(address, offset, data)                        \
   do {                                                                        \
     memfunc_write_u32(                                                        \
-        (uint32_t)(address), (uint32_t)(offset),                              \
+        (uintptr_t)(address), (uint32_t)(offset),                              \
         ((((uint32_t)(data) << 16) & 0xFFFF0000u) |                           \
          (((uint32_t)(data) >> 16) & 0x0000FFFFu)));                          \
   } while (0)
 
 #define WRITE_LONGWORD_RAW(address, offset, data)                             \
   do {                                                                        \
-    memfunc_write_u32((uint32_t)(address), (uint32_t)(offset),                \
+    memfunc_write_u32((uintptr_t)(address), (uint32_t)(offset),                \
                       (uint32_t)(data));                                      \
   } while (0)
 
 #define WRITE_BYTE(address, offset, data)                                     \
   do {                                                                        \
-    memfunc_write_u8((uint32_t)(address), (uint32_t)(offset),                 \
+    memfunc_write_u8((uintptr_t)(address), (uint32_t)(offset),                 \
                      (uint8_t)(data));                                        \
   } while (0)
 
 #define WRITE_WORD(address, offset, data)                                     \
   do {                                                                        \
-    memfunc_write_u16((uint32_t)(address), (uint32_t)(offset),                \
+    memfunc_write_u16((uintptr_t)(address), (uint32_t)(offset),                \
                       (uint16_t)(data));                                      \
   } while (0)
 
@@ -149,13 +159,13 @@ static inline uint32_t memfunc_read_u32(const uint32_t address,
   } while (0)
 
 #define READ_BYTE(address, offset) \
-  (memfunc_read_u8((uint32_t)(address), (uint32_t)(offset)))
+  (memfunc_read_u8((uintptr_t)(address), (uint32_t)(offset)))
 
 #define READ_WORD(address, offset) \
-  (memfunc_read_u16((uint32_t)(address), (uint32_t)(offset)))
+  (memfunc_read_u16((uintptr_t)(address), (uint32_t)(offset)))
 
 #define READ_LONGWORD(address, offset) \
-  (memfunc_read_u32((uint32_t)(address), (uint32_t)(offset)))
+  (memfunc_read_u32((uintptr_t)(address), (uint32_t)(offset)))
 
 #define READ_AND_SWAP_LONGWORD(address, offset) \
   (SWAP_LONGWORD(READ_LONGWORD((address), (offset))))
@@ -289,7 +299,7 @@ static inline uint32_t memfunc_read_u32(const uint32_t address,
   do {                                                                       \
     DPRINTF("Setting bit %d of private shared variable %d\n", bit_position,  \
             p_shared_variable_index);                                        \
-    uint32_t addr = memory_shared_address + memory_shared_variables_offset + \
+    uintptr_t addr = memory_shared_address + memory_shared_variables_offset + \
                     (p_shared_variable_index * 4);                           \
     uint32_t value = READ_WORD(addr, 2) | ((uint32_t)READ_WORD(addr, 0) << 16); \
     value |= (1 << bit_position);                                            \
@@ -316,7 +326,7 @@ static inline uint32_t memfunc_read_u32(const uint32_t address,
   do {                                                                       \
     DPRINTF("Clearing bit %d of private shared variable %d\n", bit_position, \
             p_shared_variable_index);                                        \
-    uint32_t addr = memory_shared_address + memory_shared_variables_offset + \
+    uintptr_t addr = memory_shared_address + memory_shared_variables_offset + \
                     (p_shared_variable_index * 4);                           \
     uint32_t value = READ_WORD(addr, 2) | ((uint32_t)READ_WORD(addr, 0) << 16); \
     value &= ~(1 << bit_position);                                           \

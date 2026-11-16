@@ -139,7 +139,7 @@ void display_drawProductInfo();
  *
  * @param memoryAddress The memory address where the mask table will be stored.
  */
-void display_generateMaskTable(uint32_t memoryAddress);
+void display_generateMaskTable(uintptr_t memoryAddress);
 
 /**
  * @brief Returns a reference to the u8g2 display structure.
@@ -168,7 +168,7 @@ void display_scrollup(uint16_t blankBytes);
  *
  * @return The display buffer memory address.
  */
-uint32_t display_getAddress();
+uintptr_t display_getAddress();
 
 /**
  * @brief Retrieves the display command address.
@@ -178,7 +178,7 @@ uint32_t display_getAddress();
  *
  * @return The display command address.
  */
-uint32_t display_getCommandAddress();
+uintptr_t display_getCommandAddress();
 
 /**
  * @brief Retrieves the high-resolution translation table address. Used to
@@ -189,6 +189,6 @@ uint32_t display_getCommandAddress();
  *
  * @return The high-resolution translation table memory address.
  */
-uint32_t display_getHighresTranstableAddress();
+uintptr_t display_getHighresTranstableAddress();
 
 #endif  // DISPLAY_H

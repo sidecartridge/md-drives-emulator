@@ -16,9 +16,9 @@ static bool protocolPending = false;
 
 static uint32_t incrementalCmdCount = 0;
 
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
 
 // Head of the callback list
 static CommandCallbackNode *callbackListHead = NULL;
@@ -49,7 +49,7 @@ static inline bool __not_in_flash_func(chandler_protocol_matches_pending)(
 void __not_in_flash_func(chandler_init)() {
   DPRINTF("Initializing Command Handler...\n");  // Print alwayse
 
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   memoryRandomTokenAddress = memorySharedAddress + CHANDLER_RANDOM_TOKEN_OFFSET;
   memoryRandomTokenSeedAddress =
       memorySharedAddress + CHANDLER_RANDOM_TOKEN_SEED_OFFSET;

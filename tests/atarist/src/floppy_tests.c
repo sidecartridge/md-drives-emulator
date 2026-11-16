@@ -1,6 +1,7 @@
 #include "floppy_tests.h"
 
 #include <osbind.h>
+#include <string.h>
 
 #include "folder_listing_tests.h" /* DTA */
 #include "test_runner.h"
@@ -14,6 +15,7 @@
 #define MAX_SECTORS_PER_TRACK 18
 #define SIDES 2
 #define DRIVE_A 0
+#define DRIVE_B 1
 #define PATTERN_SIZE 20480L
 #define WRITTEN_SECTOR 1300     /* left written for the host to check */
 #define SCRATCH_SECTOR 1301     /* written and put back */
@@ -166,6 +168,45 @@ static void test_mediach_after_boot(void) {
   long answer = Mediach(DRIVE_A);
   print("Mediach(A:) = %ld\r\n", answer);
   assert_result("Mediach(A:) does not claim a change", answer != 2, TRUE);
+}
+
+static long read_drvbits(void) { return *(volatile long*)0x4C2L; }
+
+/* With A: emulated and B: not, B: is the image in A:, as a one-drive ST reads
+   the disk in A when asked for B:. TOS's own driver would look for it on the
+   physical drive, and TOS 1.62's can stay in its wait loop when that is empty. */
+static void test_b_is_the_image_in_a(void) {
+  short bpb_a[9];
+  const short* bpb = (const short*)Getbpb(DRIVE_A);
+  assert_result("Getbpb(A:) answers before B:", bpb != NULL, TRUE);
+  if (bpb == NULL) return;
+  memcpy(bpb_a, bpb, sizeof(bpb_a));
+  bpb = (const short*)Getbpb(DRIVE_B);
+  assert_result("Getbpb(B:) answers", bpb != NULL, TRUE);
+  if (bpb == NULL) return;
+  assert_result("B:'s BPB is A:'s", memcmp(bpb, bpb_a, sizeof(bpb_a)), 0);
+  assert_result("Mediach(B:) does not claim a change", Mediach(DRIVE_B) != 2,
+                TRUE);
+
+  assert_result("Rwabs(A:) reads its boot sector",
+                Rwabs(0, spare, 1, 0, DRIVE_A), 0);
+  assert_result("Rwabs(B:) reads a boot sector",
+                Rwabs(0, buffer, 1, 0, DRIVE_B), 0);
+  assert_result("B:'s boot sector is A:'s", memcmp(buffer, spare, SECTOR), 0);
+  assert_result("Floprd(B:) reads a boot sector",
+                Floprd(buffer, 0, DRIVE_B, 1, 0, 0, 1), 0);
+  assert_result("Floprd(B:)'s boot sector is A:'s",
+                memcmp(buffer, spare, SECTOR), 0);
+
+  if ((Supexec(read_drvbits) & 2) == 0) {
+    print("[SKIP] No B: in _drvbits, GEMDOS will not ask\r\n");
+    return;
+  }
+  /* What the game that showed the hang does: it looks for its second disk. */
+  assert_result("Fsfirst of a file not on the disk fails at once",
+                Fsfirst("B:\\DISK2", 0) < 0, TRUE);
+  assert_result("Fsfirst of a file on the disk finds it",
+                Fsfirst("B:\\README.TXT", 0), 0);
 }
 
 static void test_rwabs_boot_sector(void) {
@@ -876,6 +917,7 @@ int run_floppy_tests(int from_user_mode) {
   } else {
     print("=== Floppy: BIOS ===\r\n");
     test_getbpb();
+    test_b_is_the_image_in_a();
     test_mediach_after_boot();
     test_rwabs_boot_sector();
     test_rwabs_free_sector();

@@ -35,49 +35,50 @@ static void blink_set_hw(bool on) {
 #endif
 }
 
-void blink_morse(char chr) {
-  void blink_morse_container() {
-    const char *morseCode = NULL;
-    // Search for character's Morse code
-    for (int i = 0; morseAlphabet[i].character != '\0'; i++) {
-      if (morseAlphabet[i].character == chr) {
-        morseCode = morseAlphabet[i].morse;
-        break;
-      }
-    }
-
-    // If character not found in Morse alphabet, return
-    if (!morseCode) return;
-
-    // Blink pattern
-    for (int i = 0; morseCode[i] != '\0'; i++) {
-#if defined(CYW43_WL_GPIO_LED_PIN)
-      cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-#else
-      gpio_put(PICO_DEFAULT_LED_PIN, 1);
-#endif
-      if (morseCode[i] == '.') {
-        // Short blink for dot
-        sleep_ms(DOT_DURATION_MS);
-      } else {
-        // Long blink for dash
-        sleep_ms(DASH_DURATION_MS);
-      }
-#if defined(CYW43_WL_GPIO_LED_PIN)
-      cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
-#else
-      gpio_put(PICO_DEFAULT_LED_PIN, 0);
-#endif
-      // Gap between symbols
-      sleep_ms(SYMBOL_GAP_MS);
+static void blink_morse_container(char chr) {
+  const char *morseCode = NULL;
+  // Search for character's Morse code
+  for (int i = 0; morseAlphabet[i].character != '\0'; i++) {
+    if (morseAlphabet[i].character == chr) {
+      morseCode = morseAlphabet[i].morse;
+      break;
     }
   }
+
+  // If character not found in Morse alphabet, return
+  if (!morseCode) return;
+
+  // Blink pattern
+  for (int i = 0; morseCode[i] != '\0'; i++) {
+#if defined(CYW43_WL_GPIO_LED_PIN)
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+#else
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+#endif
+    if (morseCode[i] == '.') {
+      // Short blink for dot
+      sleep_ms(DOT_DURATION_MS);
+    } else {
+      // Long blink for dash
+      sleep_ms(DASH_DURATION_MS);
+    }
+#if defined(CYW43_WL_GPIO_LED_PIN)
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+#else
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+#endif
+    // Gap between symbols
+    sleep_ms(SYMBOL_GAP_MS);
+  }
+}
+
+void blink_morse(char chr) {
 #if defined(CYW43_WL_GPIO_LED_PIN)
 #ifdef NETWORK_H
   network_initChipOnly();
 #endif
 #endif
-  blink_morse_container();
+  blink_morse_container(chr);
 }
 
 void blink_error() {

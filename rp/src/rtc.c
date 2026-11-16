@@ -15,9 +15,9 @@ static TransmissionProtocol lastProtocol;
 static bool lastProtocolValid = false;
 
 // MEmory base
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
 
 // RTC type to emulate
 static RTC_TYPE rtcTypeVar = RTC_UNKNOWN;
@@ -367,7 +367,7 @@ static int8_t day_of_week(int year, int month, int day) {
 // year, as EmuTOS keeps it: TOS 1.00-2.06 write a year from 2000 as a byte the
 // IKBD refuses, so where TOS reads the IKBD the ST answers Gettime from this
 // clock instead (rtc.s).
-static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
+static void set_ikb_datetime_msg(uintptr_t mem_shared_addr,
                                  uint16_t rtcemul_datetime_bcd_idx,
                                  uint16_t rtcemul_clock_set_idx,
                                  uint16_t rtcemul_datetime_msdos_idx) {
@@ -415,7 +415,7 @@ static void set_ikb_datetime_msg(uint32_t mem_shared_addr,
 
 void rtc_initf() {
   DPRINTF("RTC init\n");
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   if ((memorySharedAddress & 0x3u) != 0u) {
     DPRINTF("ERROR: RTC shared memory base 0x%08lx is not 4-byte aligned\n",
             (unsigned long)memorySharedAddress);

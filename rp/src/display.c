@@ -8,9 +8,9 @@
 
 #include "display.h"
 
-static uint32_t displayAddress = 0;
-static uint32_t displayCommandAddress = 0;
-static uint32_t displaysHighresTranstableAddress = 0;
+static uintptr_t displayAddress = 0;
+static uintptr_t displayCommandAddress = 0;
+static uintptr_t displaysHighresTranstableAddress = 0;
 
 // Static assert to ensure buffer size fits within uint32_t
 _Static_assert(DISPLAY_BUFFER_SIZE <= UINT32_MAX,
@@ -73,26 +73,26 @@ static const u8x8_display_info_t u8x8Ataristlow320x200DisplayInfo = {
 u8g2_t *display_getU8g2Ref() { return &u8g2; }
 
 // Getter function for display address
-uint32_t display_getAddress() { return displayAddress; }
+uintptr_t display_getAddress() { return displayAddress; }
 
 // Setter function for display address
-void setDisplayAddress(uint32_t address) { displayAddress = address; }
+void setDisplayAddress(uintptr_t address) { displayAddress = address; }
 
 // Getter function for display command address
-uint32_t display_getCommandAddress() { return displayCommandAddress; }
+uintptr_t display_getCommandAddress() { return displayCommandAddress; }
 
 // Setter function for display command address
-void setDisplayCommandAddress(uint32_t address) {
+void setDisplayCommandAddress(uintptr_t address) {
   displayCommandAddress = address;
 }
 
 // Getter function for highres translation table address
-uint32_t display_getHighresTranstableAddress() {
+uintptr_t display_getHighresTranstableAddress() {
   return displaysHighresTranstableAddress;
 }
 
 // Setter function for highres translation table address
-void setDisplaysHighresTranstableAddress(uint32_t address) {
+void setDisplaysHighresTranstableAddress(uintptr_t address) {
   displaysHighresTranstableAddress = address;
 }
 
@@ -112,18 +112,18 @@ void display_setupU8g2() {
 
 #if DISPLAY_BYPASS_FRAMEBUFFER == 1
   u8g2Buffer =
-      (void *)((unsigned int)&__rom_in_ram_start__ + DISPLAY_BUFFER_OFFSET);
+      (void *)((uintptr_t)&__rom_in_ram_start__ + DISPLAY_BUFFER_OFFSET);
 #else
   DPRINTF("Initializing u8g2 with a buffer size of %d bytes\n",
           DISPLAY_BUFFER_SIZE);
 #endif
 
-  setDisplayAddress((unsigned int)&__rom_in_ram_start__ +
+  setDisplayAddress((uintptr_t)&__rom_in_ram_start__ +
                     DISPLAY_BUFFER_OFFSET);
-  setDisplayCommandAddress((unsigned int)&__rom_in_ram_start__ +
+  setDisplayCommandAddress((uintptr_t)&__rom_in_ram_start__ +
                            DISPLAY_BUFFER_OFFSET +
                            DISPLAY_COMMAND_ADDRESS_OFFSET);
-  setDisplaysHighresTranstableAddress((unsigned int)&__rom_in_ram_start__ +
+  setDisplaysHighresTranstableAddress((uintptr_t)&__rom_in_ram_start__ +
                                       DISPLAY_HIGHRES_TRANSTABLE_OFFSET);
   DPRINTF("Display buffer address: 0x%08x\n", (unsigned int)u8g2Buffer);
   DPRINTF("Display command address: 0x%08x\n", display_getCommandAddress());
@@ -172,7 +172,7 @@ void display_drawProductInfo() {
       DISPLAY_HEIGHT, productStr);
 }
 
-void display_generateMaskTable(uint32_t memoryAddress) {
+void display_generateMaskTable(uintptr_t memoryAddress) {
   for (int i = 0; i < DISPLAY_MASK_TABLE_SIZE; i++) {
     unsigned int mask = 0;
 

@@ -346,7 +346,12 @@ _floppy_xbios_call:
     cmp.w #1, d1
     bne.s _floppy_xbios_not_ours    ; neither A: nor B:
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
-    beq.s _floppy_xbios_not_ours    ; a B: that is not emulated is TOS's
+    bne.s _floppy_xbios_emulated_b
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
+    beq.s _floppy_xbios_not_ours    ; neither emulated: TOS's
+    lea _floppy_xbios_a_go(pc), a1
+    bra.s _floppy_xbios_serve
+_floppy_xbios_emulated_b:
     lea _floppy_xbios_b(pc), a1
     bra.s _floppy_xbios_serve
 
@@ -494,7 +499,12 @@ bios_trap:
     cmp.w #1, d0
     bhi.s .bt_pass                      ; not A: or B:
     btst d0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3)
-    beq.s .bt_pass                      ; not emulated
+    bne.s .bt_ours
+    tst.w d0                            ; A: not emulated is TOS's
+    beq.s .bt_pass
+    btst #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3)
+    beq.s .bt_pass                      ; B: not emulated: the image in A: if A: is
+.bt_ours:
     pea .bt_done(pc)
     cmp.w #Getbpb, 6(a0)
     beq floppy_getbpb
@@ -536,7 +546,17 @@ _bios_get_bpb_load_emul_bpp_A:
 _bios_get_bpb_load_emul_bpp_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    bne.s _bios_get_bpb_emulated_b
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_get_bpb_not_emul_bpp
+    ; A: emulated and B: not: B: is the image in A:, as a one-drive ST reads
+    ; the disk in A when asked for B:. An emulated A: with a physical B: is
+    ; not a set-up that exists (a physical A: with an emulated B: is), and
+    ; TOS's driver would look for the disk on an empty physical drive: on
+    ; TOS 1.62 it can stay in its FDC wait loop.
+    move.l #BPB_data_A,d0
+    bra.s _bios_get_bpb_serve
+_bios_get_bpb_emulated_b:
     move.l #BPB_data_B,d0         ; Load the emulated BPP B
 _bios_get_bpb_serve:
     lea _bios_get_bpb_check(pc), a1
@@ -599,7 +619,12 @@ _bios_mediach_changed_A:
 _bios_mediach_changed_B:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    bne.s _bios_mediach_emulated_b
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_mediach_continue
+    lea _bios_mediach_read_A(pc), a1    ; B: is the image in A:
+    bra floppy_serve
+_bios_mediach_emulated_b:
     lea _bios_mediach_read_B(pc), a1
     bra floppy_serve
 _bios_mediach_read_A:
@@ -636,7 +661,10 @@ _bios_rwabs_a:
 _bios_rwabs_b:
     ; Test Drive B
     btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    bne.s _bios_rwabs_emulated_b
+    btst   #0, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 0: Emulate A
     beq.s _bios_rwabs_continue
+_bios_rwabs_emulated_b:
     moveq #1, d2               ; Use B:
 _bios_rwabs_serve:
     lea _bios_rwabs_emulated(pc), a1
@@ -670,6 +698,12 @@ _bios_rwabs_check_change:
 _bios_rwabs_go:
     movem.l d3-d7/a3-a6, -(sp)
     move.l d2, d4              ; the drive
+    btst   #1, (FLOPPY_SHARED_VARIABLES + (SVAR_EMULATION_MODE * 4) + 3) ; Bit 1: Emulate B
+    bne.s _bios_rwabs_drive_set
+    moveq #0, d4               ; B: is not emulated, so this is the image in A:.
+                               ; d2 stays B:'s for the media change above: a
+                               ; Getbpb on B: must not end a change on A:
+_bios_rwabs_drive_set:
     move.w #SECTOR_SIZE, d2    ; Sector size
     move.l a0, a5              ; the arguments: a send does not keep a0
 _bios_rwabs_transfer:

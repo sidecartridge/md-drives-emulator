@@ -198,7 +198,7 @@ static bool isTrue(const char *value) {
 }
 
 // Erase the values in the DTA transfer area
-static void __not_in_flash_func(nullifyDTA)(uint32_t mem) {
+static void __not_in_flash_func(nullifyDTA)(uintptr_t mem) {
   // defensive overflow guard
   const uint32_t off = GEMDRIVE_DTA_TRANSFER;
   const uint32_t size = DTA_SIZE_ON_ST;
@@ -393,7 +393,7 @@ static void __not_in_flash_func(remove_trailing_spaces)(char *str) {
   str[len] = '\0';
 }
 
-static void __not_in_flash_func(populateDTA)(uint32_t memory_address_dta,
+static void __not_in_flash_func(populateDTA)(uintptr_t memory_address_dta,
                                              uint32_t dta_address,
                                              int16_t gemdos_err_code,
                                              FILINFO *fno) {
@@ -575,7 +575,7 @@ static uint16_t __not_in_flash_func(getFirstAvailableFD)(
 
 // Forget every Fforce alias whose file handle is `fd` (0: all of them) or
 // whose forcing process is `owner` (0: any).
-static void __not_in_flash_func(unforceHandles)(uint32_t memory, uint16_t fd,
+static void __not_in_flash_func(unforceHandles)(uintptr_t memory, uint16_t fd,
                                                 uint32_t owner) {
   for (int std = 0; std < GEMDRIVE_FORCED_COUNT; std++) {
     uint32_t offset = GEMDRIVE_FORCED + (uint32_t)std * 8u;
@@ -608,6 +608,31 @@ static void __not_in_flash_func(cleanFileDescriptors)(FileDescriptors **head) {
   // Reset head to empty list
   *head = NULL;
   DPRINTF("All file descriptors cleaned.\n");
+}
+
+// GEMDOS reads each part of a name as 8.3 - 8 characters before the dot, 3
+// after it - and drops the rest: a program can ask for "dmalogo.imgg" and get
+// DMALOGO.IMG (PP's Gamex Lemmings does). Cut `name` that way, in place, and
+// say whether anything was dropped.
+static bool __not_in_flash_func(cutGemdos83)(char *name) {
+  bool cut = false;
+  int room = 8;  // what is left of this part's name, then of its extension
+  char *out = name;
+  for (const char *in = name; *in; in++) {
+    if (*in == '\\' || *in == '/') {
+      room = 8;
+    } else if (*in == '.') {
+      room = 3;
+    } else if (room == 0) {
+      cut = true;
+      continue;
+    } else {
+      room--;
+    }
+    *out++ = *in;
+  }
+  *out = '\0';
+  return cut;
 }
 
 // dpathStr, hdFolder are global variables
@@ -651,6 +676,27 @@ static void __not_in_flash_func(getLocalFullPathname)(uint16_t *pyldPtr,
 
   // Remove duplicated forward slashes
   sdcard_removeDupSlashes(tmp_filepath);
+
+  // A name only TOS's 8.3 reading finds: when the name as it came is not on
+  // the card and its 8.3 form is, use that, as GEMDOS would. Only the
+  // program's part is cut, never the card's folder or the current path.
+  char cut_filepath[GEMDRIVE_MAX_FOLDER_LENGTH] = {0};
+  int cut_from = snprintf(cut_filepath, GEMDRIVE_MAX_FOLDER_LENGTH, "%s/",
+                          tmp_path);
+  if (cut_from > 0 && cut_from < GEMDRIVE_MAX_FOLDER_LENGTH) {
+    snprintf(cut_filepath + cut_from, GEMDRIVE_MAX_FOLDER_LENGTH - cut_from,
+             "%s", path_filename);
+    if (cutGemdos83(cut_filepath + cut_from)) {
+      sdcard_back2ForwardSlash(cut_filepath);
+      sdcard_removeDupSlashes(cut_filepath);
+      if (f_stat(tmp_filepath, NULL) != FR_OK &&
+          f_stat(cut_filepath, NULL) == FR_OK) {
+        DPRINTF("Not on the card: %s. As 8.3: %s\n", tmp_filepath,
+                cut_filepath);
+        strcpy(tmp_filepath, cut_filepath);
+      }
+    }
+  }
 }
 
 static void printVars(uint32_t mem) {
@@ -754,10 +800,10 @@ static void printPayload(uint8_t *payloadShowBytesPtr) {
 }
 
 #define NUM_SHARED_VARS 4096
-static uint32_t memorySharedAddress = 0;
-static uint32_t memoryRandomTokenAddress = 0;
-static uint32_t memoryRandomTokenSeedAddress = 0;
-static uint32_t memoryFirmwareCode = 0;
+static uintptr_t memorySharedAddress = 0;
+static uintptr_t memoryRandomTokenAddress = 0;
+static uintptr_t memoryRandomTokenSeedAddress = 0;
+static uintptr_t memoryFirmwareCode = 0;
 
 // Write-chunk sequence served to the ST at GEMDRIVE_WRITE_CHK. The ST reads
 // it once per Fwrite chunk and echoes it in d4 of the write command, so every
@@ -832,7 +878,7 @@ static void gemdrive_stallIfRequested(void) {
 }
 #endif
 
-static void initVariables(uint32_t mem) {
+static void initVariables(uintptr_t mem) {
   const uint16_t numSharedVars = (0x10000 - GEMDRIVE_RANDOM_TOKEN_OFFSET) / 4;
   DPRINTF("Initializing shared variables\n");
   for (uint32_t i = 0; i < numSharedVars; i++) {
@@ -848,7 +894,7 @@ void __not_in_flash_func(gemdrive_init)() {
   dpathStr[0] = '\\';  // Set the root folder as default
   dpathStr[1] = '\0';
 
-  memorySharedAddress = (unsigned int)&__rom_in_ram_start__;
+  memorySharedAddress = (uintptr_t)&__rom_in_ram_start__;
   if ((memorySharedAddress & 0x3u) != 0u) {
     DPRINTF("ERROR: GEMDRIVE shared memory base 0x%08lx is not 4-byte aligned\n",
             (unsigned long)memorySharedAddress);

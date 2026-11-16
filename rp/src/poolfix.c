@@ -20,7 +20,7 @@ void poolfix_init(void) {
   bool on = (enabled == NULL) || (enabled->value[0] == 't') ||
             (enabled->value[0] == 'T') || (enabled->value[0] == 'y') ||
             (enabled->value[0] == 'Y') || (enabled->value[0] == '1');
-  WRITE_AND_SWAP_LONGWORD((uint32_t)&__rom_in_ram_start__,
+  WRITE_AND_SWAP_LONGWORD((uintptr_t)&__rom_in_ram_start__,
                           POOLFIX_ENABLED_ADDR & 0xFFFFu,
                           on ? 0xFFFFFFFFu : 0u);
   DPRINTF("Pool fix: %s\n", on ? "enabled" : "disabled");
@@ -30,7 +30,7 @@ void __not_in_flash_func(poolfix_loop)(TransmissionProtocol *lastProtocol,
                                        uint16_t *payloadPtr) {
   if (((lastProtocol->command_id >> 8) & 0xFF) != APP_POOLFIX) return;
 
-  uint32_t memory = (uint32_t)&__rom_in_ram_start__;
+  uintptr_t memory = (uintptr_t)&__rom_in_ram_start__;
   switch (lastProtocol->command_id) {
     case POOLFIX_SET_LONG: {
       uint32_t address = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
