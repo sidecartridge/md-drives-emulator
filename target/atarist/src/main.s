@@ -160,6 +160,11 @@ megaste_hand_back	macro
 					addq.l #2, sp
 					endm
 
+; The console setting as start_rom_code found it, off the stack.
+restore_conterm		macro
+					move.b (sp)+, _conterm.w
+					endm
+
 check_commands		macro
 					move.l (FRAMEBUFFER_ADDR + FRAMEBUFFER_SIZE), d6	; Store in the D6 register the remote command value
 					cmp.l #CMD_RESET, d6		; Check if the command is a reset
@@ -247,7 +252,12 @@ start_rom_code:
 ; We assume the screen memory address is in D0 after the get_screen_base call
 	move.l d0, a6				; Save the screen memory address in A6
 
-; Enable bconin to return shift key status
+; Enable bconin to return shift key status. The setting as TOS left it goes on
+; the stack, over the Mega STE's word, and back before TOS boots on
+; (restore_conterm): with the bit set, Bconin and GEMDOS's character input put
+; the shift keys' state in bits 24-31 of every key, which games that compare
+; the scancode's word do not expect.
+	move.b _conterm.w, -(sp)
 	or.b #%1000, _conterm.w
 
 ; Check if reset after power on or reset button
@@ -350,10 +360,12 @@ start_rom_code:
 
 boot_gem:
 	; If we get here, continue loading GEM
+	restore_conterm
 	megaste_hand_back
     rts
 
 rom_function:
+	restore_conterm		; the drivers and the boot sector see TOS's setting
 	; Place here your driver code
 	; The pool fix must see the ROM's GEMDOS entry, so it goes before any
 	; driver hooks the GEMDOS trap.
